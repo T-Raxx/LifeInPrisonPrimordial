@@ -62,6 +62,24 @@ return function(require, LIP, Lib)
         vp2:AddSlider("ESPMaxDist",     { Text = "Max distance", Min = 50, Max = 2000, Default = 1000, Suffix = "m" })
         vp2:AddToggle("ESPTeamCheck",   { Text = "Team Check", Default = true })
         vp2:AddToggle("ESPFriendCheck", { Text = "Friend Check", Default = false })
+
+        --== Categoría MOVEMENT ==--
+        local Mov  = Window:AddCategory("Movement", "move")
+        local MSec = Mov:AddSection("Movement", "Fly · Noclip · Speed")
+        local m1 = MSec:AddPanel("Fly / Noclip", { Column = 1 })
+        m1:AddToggle("Fly", { Text = "Fly", Default = false, Tooltip = "WASD + Space/Shift (arriba/abajo), mira con la cámara" })
+        m1:AddKeybind("FlyKey", { Text = "Fly Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Fly; if t then t:SetValue(a) end end })
+        m1:AddSlider("FlySpeed", { Text = "Fly Speed", Min = 10, Max = 300, Default = 60, Suffix = "studs/s" })
+        m1:AddToggle("Noclip", { Text = "Noclip", Default = false, Tooltip = "Atraviesa paredes (CanCollide=false)" })
+        m1:AddKeybind("NoclipKey", { Text = "Noclip Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Noclip; if t then t:SetValue(a) end end })
+        local m2 = MSec:AddPanel("Speed / Jump", { Column = 2 })
+        m2:AddToggle("WalkSpeedOn", { Text = "WalkSpeed", Default = false })
+        m2:AddSlider("WalkSpeed", { Text = "Speed", Min = 16, Max = 200, Default = 32 })
+        m2:AddToggle("JumpOn", { Text = "JumpPower", Default = false })
+        m2:AddSlider("JumpPower", { Text = "Jump", Min = 50, Max = 300, Default = 80 })
+        m2:AddToggle("InfJump", { Text = "Infinite Jump", Default = false })
     end
 
     return UI

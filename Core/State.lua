@@ -17,6 +17,7 @@ return function(require, _unused, Lib)
         swapOn    = false,           -- silent aim arg-swap activo
         target    = nil,             -- Player resuelto
         conns     = {},              -- RBXScriptConnections trackeadas
+        cleanups  = {},              -- funciones de limpieza (destruir instancias en Unload)
         -- refs cacheadas del framework netevgen (1 RemoteEvent multiplexado, opcode=arg1)
         Events    = RS:FindFirstChild("Events"),
     }
@@ -29,9 +30,12 @@ return function(require, _unused, Lib)
     end
 
     function LIP.track(c) LIP.conns[#LIP.conns + 1] = c ; return c end
+    function LIP.onCleanup(fn) LIP.cleanups[#LIP.cleanups + 1] = fn ; return fn end
 
     function LIP.Unload()
         LIP.enabled, LIP.swapOn = false, false
+        for _, fn in ipairs(LIP.cleanups) do pcall(fn) end   -- destruir instancias (fly BV, etc.)
+        LIP.cleanups = {}
         for _, c in ipairs(LIP.conns) do pcall(function() c:Disconnect() end) end
         LIP.conns = {}
         -- los hooks (__namecall) NO se desinstalan (hookmetamethod); pasan transparentes

@@ -10,6 +10,7 @@ return function(require, LIP, Lib)
     local Target  = require("Combat.Target")
     local Melee   = require("Combat.Melee")
     local Net     = require("Net")
+    local Move    = require("Movement.Movement")
     local ESP     = require("Visuals.ESP")
     local UI      = require("UI")
 
@@ -17,6 +18,7 @@ return function(require, LIP, Lib)
     LIP.Library = Lib
     UI.build(Window)
     Net.install()   -- 1 hook __namecall (silent aim op14 + melee aura op16)
+    Move.init()     -- Movement (fly/noclip/speed/jump, client-side)
     ESP.init()      -- Visuals (Drawing + Highlight, client-side)
 
     local T, O = Lib.Toggles, Lib.Options

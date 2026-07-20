@@ -8,6 +8,7 @@ local ORDER = {
     "Combat/Target.lua",
     "Combat/Ragdoll.lua",
     "Combat/Melee.lua",
+    "Movement/Movement.lua",
     "Visuals/ESP.lua",
     "UI.lua",
     "main.lua",
