@@ -6,20 +6,35 @@ return function(require, LIP, Lib)
     local Players    = game:GetService("Players")
     local LP = Players.LocalPlayer
 
+    local UIS = game:GetService("UserInputService")
+
     local Ragdoll = require("Combat.Ragdoll")
     local Target  = require("Combat.Target")
     local Melee   = require("Combat.Melee")
+    local Strafe  = require("Combat.Strafe")
+    local Weapon  = require("Combat.Weapon")
     local Net     = require("Net")
     local Move    = require("Movement.Movement")
+    local Vehicle = require("Movement.Vehicle")
     local ESP     = require("Visuals.ESP")
     local UI      = require("UI")
 
     local Window = Lib:CreateWindow({ Title = "life in prison", Size = Vector2.new(834, 586) })
     LIP.Library = Lib
     UI.build(Window)
-    Net.install()   -- 1 hook __namecall (silent aim op14 + melee aura op16)
-    Move.init()     -- Movement (fly/noclip/speed/jump, client-side)
-    ESP.init()      -- Visuals (Drawing + Highlight, client-side)
+    Net.install()    -- 1 hook __namecall (silent aim op14 + melee aura op16)
+    Move.init()      -- Movement (fly/noclip/speed/jump, client-side)
+    Vehicle.init()   -- Vehicle (speed multiplier, client-owned physics)
+    ESP.init()       -- Visuals (Drawing + Highlight, client-side)
+
+    -- Rapid fire: al disparar (mouse1), ráfaga extra de op14 al target de silent aim
+    LIP.track(UIS.InputBegan:Connect(function(input, gpe)
+        if gpe then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           and Lib.Toggles.RapidFire and Lib.Toggles.RapidFire.Value then
+            Weapon.rapidBurst()
+        end
+    end))
 
     local T, O = Lib.Toggles, Lib.Options
 
@@ -30,7 +45,9 @@ return function(require, LIP, Lib)
         local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
         LIP.cachedHitPart = part
         if part then
-            LIP.cachedHitPos = LIP.antiInvis and (part.Position + Vector3.new(0, -1.4, 0)) or part.Position
+            local base = part.Position
+            if T.Resolver and T.Resolver.Value then base = Strafe.resolvePos(t, base) end  -- centro resuelto
+            LIP.cachedHitPos = LIP.antiInvis and (base + Vector3.new(0, -1.4, 0)) or base
         else
             LIP.cachedHitPos = nil
         end
@@ -51,6 +68,20 @@ return function(require, LIP, Lib)
             cacheHit()
         else
             LIP.cachedHitPart, LIP.cachedHitPos = nil, nil
+        end
+
+        -- Target Strafe (desync HvH) + resolver sampling
+        local strafeOn = T.TargetStrafe and T.TargetStrafe.Value
+        if LIP.swapOn or strafeOn then Strafe.sampleAll(os.clock()) end
+        if strafeOn then
+            -- target del strafe = el de silent aim (mismo que apuntás), o el enemigo cercano (≤200)
+            -- para no teleportarte por todo el mapa a orbitar a uno lejano
+            local st = LIP.target or Target.nearestEnemy({ range = 200,
+                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            if st then
+                Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
+                                  speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value })
+            end
         end
 
         -- Melee aura: precache del target (el hook redirige op16)

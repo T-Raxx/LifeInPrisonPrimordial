@@ -24,10 +24,18 @@ return function(require, _unused, Lib)
     LIP.RE = LIP.Events and LIP.Events:FindFirstChild("RemoteEvent")
     getgenv().LIP = LIP
 
-    -- dispara el RemoteEvent multiplexado con opcode + payload. Único punto de salida.
+    -- dispara el RemoteEvent multiplexado con opcode + payload (client→server). Único punto de salida.
     function LIP.fire(op, ...)
         if LIP.RE then LIP.RE:FireServer(op, ...) end
     end
+
+    -- dispara el OnClientEvent LOCAL (el dispatcher del juego rutea por opcode=arg1). Se usa para
+    -- entrar por caminos "sancionados" del cliente (ej. buffs op47 → ruta graceada, sin flag AC).
+    local firesig = firesignal or replicatesignal
+    function LIP.fireLocal(op, ...)
+        if LIP.RE and firesig then pcall(firesig, LIP.RE.OnClientEvent, op, ...) end
+    end
+    LIP.hasFireLocal = firesig ~= nil
 
     function LIP.track(c) LIP.conns[#LIP.conns + 1] = c ; return c end
     function LIP.onCleanup(fn) LIP.cleanups[#LIP.cleanups + 1] = fn ; return fn end

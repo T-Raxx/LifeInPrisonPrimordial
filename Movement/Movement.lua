@@ -66,13 +66,26 @@ return function(require, LIP, Lib)
         end
     end
 
-    ------------------------------------------------------------------ SPEED / JUMP
+    ------------------------------------------------------------------ SPEED / JUMP  (AC-SAFE)
+    -- Escribir Humanoid.WalkSpeed/JumpHeight CRUDO dispara el AC (WalkSpeedUnexpected/JumpHeightUnexpected)
+    -- → auto-kill a los 0.5s. La vía sancionada = el sistema de buffs op47 (CharacterDeOrBuff local),
+    -- que entra por el setter graceado del juego (u2686). Verificado en vivo: WalkSpeed sube, sin kill.
+    -- El buff SUMA en una lista → firamos solo el DELTA cuando cambia (no per-frame), y lo revertimos.
+    local WS_BASE, JH_BASE = 16, 7.2
+    local wsApplied, jhApplied = 0, 0
+    local function applyBuff(effect, want, appliedRef)
+        local applied = appliedRef()
+        if want == applied then return applied end
+        local c = char(); if not c then return applied end
+        -- op47: (Model, Effects[WalkSpeed=1|JumpHeight=2], deltaValue, Type.Duration=1, bigTime, Interp.None=1)
+        LIP.fireLocal(47, c, effect, want - applied, 1, 1e9, 1)
+        return want
+    end
     local function updateSpeed()
-        local h = hum(); if not h then return end
-        if T("WalkSpeedOn") then h.WalkSpeed = O("WalkSpeed") or 16 end
-        if T("JumpOn") then
-            pcall(function() h.UseJumpPower = true; h.JumpPower = O("JumpPower") or 50 end)
-        end
+        local wantWS = (T("WalkSpeedOn") and ((O("WalkSpeed") or WS_BASE) - WS_BASE)) or 0
+        wsApplied = applyBuff(1, wantWS, function() return wsApplied end)
+        local wantJH = (T("JumpOn") and ((O("JumpHeight") or JH_BASE) - JH_BASE)) or 0
+        jhApplied = applyBuff(2, wantJH, function() return jhApplied end)
     end
 
     ------------------------------------------------------------------ INIT
@@ -99,8 +112,10 @@ return function(require, LIP, Lib)
             end
         end))
 
-        -- respawn: soltar el fly viejo (el char nuevo no tiene el BV)
-        LIP.track(LP.CharacterAdded:Connect(function() stopFly() end))
+        -- respawn: soltar el fly viejo + resetear buffs aplicados (el char nuevo no tiene ninguno)
+        LIP.track(LP.CharacterAdded:Connect(function()
+            stopFly(); wsApplied, jhApplied = 0, 0
+        end))
     end
 
     return Move
