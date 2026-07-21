@@ -183,7 +183,12 @@ return function(require, LIP, Lib)
 
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
-        if opts.posSpoof then
+        if opts.connExploit then
+            -- CONNECTION WELD: server te ve en connPart (solo posición); cuerpo REAL libre. Caminás/disparás normal.
+            if LIP.spoofOn then Spoof.stop(cam) end
+            Spoof.weldTo(goCF)
+        elseif opts.posSpoof then
+            if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
@@ -195,7 +200,7 @@ return function(require, LIP, Lib)
             pcall(function() root.CFrame = goCF end)
         else
             -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear+angular (no acumula momentum).
-            if LIP.spoofOn then Spoof.stop(cam) end
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function()
                 root.CFrame = goCF
                 root.AssemblyLinearVelocity = Vector3.zero

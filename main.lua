@@ -126,6 +126,7 @@ return function(require, LIP, Lib)
 
         -- ── POSICIÓN: Godmode > Strafe > Void (EXCLUYENTES). PosSpoof/ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
+        local connExp  = T.ConnExploit and T.ConnExploit.Value
         if godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
@@ -136,14 +137,15 @@ return function(require, LIP, Lib)
             if st then
                 Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
                                   speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
-                                  posSpoof = posSpoof, bait = T.StrafeBait.Value,
+                                  posSpoof = posSpoof, connExploit = connExp, bait = T.StrafeBait.Value,
                                   predict = O.ResolverPredict.Value,
                                   resolve = T.Resolver and T.Resolver.Value,
                                   resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value })
             else Strafe.stop() end
         elseif voidOn then
             if LIP.godBase then Godmode.stop() end
-            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value, posSpoof = posSpoof })
+            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value,
+                        posSpoof = posSpoof, connExploit = connExp })
         else
             if LIP.godBase then Godmode.stop() end
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end

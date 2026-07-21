@@ -64,7 +64,11 @@ return function(require, LIP, Lib)
         local goCF = patternCF(dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
-        if opts.posSpoof then
+        if opts.connExploit then
+            if LIP.spoofOn then Spoof.stop(cam) end
+            Spoof.weldTo(goCF)   -- server te ve lejos/alto (solo pos); cuerpo real libre
+        elseif opts.posSpoof then
+            if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
@@ -107,10 +111,14 @@ return function(require, LIP, Lib)
         if dot then dot.Visible = false end
     end
     local function updateViz()
-        if not (T("VoidViz") and LIP.spoofOn and LIP.spoofFakePos) then return hideViz() end
+        -- viz cuando hay pos spoofeada por CUALQUIER método (desync spoofOn o connection weld connRep)
+        if not (T("VoidViz") and (LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos) then return hideViz() end
         ensureViz()
+        local c = O("VizColor") or Color3.fromRGB(202,151,161)
         local pos = LIP.spoofFakePos
-        vizPart.Transparency = 0.3; vizPart.Position = pos; vizBillboard.Enabled = true
+        vizPart.Transparency = 0.3; vizPart.Position = pos; vizPart.Color = c; vizBillboard.Enabled = true
+        if vizBillboard:FindFirstChildOfClass("TextLabel") then vizBillboard:FindFirstChildOfClass("TextLabel").TextColor3 = c end
+        tracer.Color = c; dot.Color = c
         local cam = Workspace.CurrentCamera
         local sp, on = cam:WorldToViewportPoint(pos)
         if on then

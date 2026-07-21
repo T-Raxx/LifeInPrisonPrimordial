@@ -56,11 +56,13 @@ return function(require, LIP, Lib)
     -- a connPart, el server te ve en connPart.CFrame mientras tu CUERPO REAL queda LIBRE (sin escribir
     -- root.CFrame, sin pelea de física, sin restore). Camina/dispara normal; el server te ve en el weld.
     local sethidden = sethiddenproperty
+    -- weld a la POSICIÓN (sin rotación): el server te ve en connPart. NO seguir la rotación del jugador/
+    -- órbita → evita jitters no deseados (pedido del usuario).
     function Spoof.weldTo(goCF)
         local r = myRoot()
         if r and sethidden and LIP.connPart then
             pcall(function()
-                LIP.connPart.CFrame = goCF
+                LIP.connPart.CFrame = CFrame.new(goCF.Position)   -- solo posición, rotación identidad
                 sethidden(r, "PhysicsRepRootPart", LIP.connPart)
             end)
             LIP.connRep = true
