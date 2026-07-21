@@ -53,6 +53,12 @@ return function(require, LIP, Lib)
         c3:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 25, Default = 10, Decimals = 1, Suffix = "studs" })
         c3:AddSlider("StrafeSpeed",  { Text = "Speed", Min = 1, Max = 40, Default = 4 })
         c3:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
+        c3:AddToggle("StrafePosSpoof", { Text = "Pos Spoof", Default = true,
+            Tooltip = "ON = desync (cuerpo/cámara reales quietos). OFF = mueve el cuerpo real a orbitar." })
+        c3:AddToggle("StrafeChase", { Text = "Dynamic Chase", Default = true,
+            Tooltip = "Predice la pos del target por su velocidad (orbita su posición futura)" })
+        c3:AddToggle("StrafeBait", { Text = "Bait", Default = false,
+            Tooltip = "Invierte el sentido del strafe al azar (baitea el aim enemigo)" })
         c3:AddDivider()
         c3:AddKeybind("SetTargetKey", { Text = "Set Target (crosshair)", Mode = "Toggle",
             Callback = function() Strafe.pickCrosshair() end })
@@ -69,8 +75,27 @@ return function(require, LIP, Lib)
         r1:AddSlider("ResolverSamples", { Text = "Samples", Min = 3, Max = 16, Default = 8 })
         r1:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
             Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
+        r1:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead por velocidad del target (compensa ping/movimiento). 0 = off" })
         local r2 = RSR:AddPanel("Notes", { Column = 2 })
-        r2:AddLabel("Median = robusto a extremos. Weighted = frames recientes pesan más. Latest = crudo.", {})
+        r2:AddLabel("Median = robusto a extremos. Weighted = recientes pesan más. Predict = lead por velocidad.", {})
+
+        -- Sección Void Spam (en Rage)
+        local RSV = Rage:AddSection("Void Spam", "Anti-aim posicional (desync)")
+        local vd = RSV:AddPanel("Void Spam", { Column = 1 })
+        vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
+            Tooltip = "Manda la pos spoofeada a alto/lejos en patrones (NO al vacío). Rotación CFrame random." })
+        vd:AddDropdown("VoidPreset", { Text = "Preset", Values = { "High", "FarOrbit", "RandomFar", "TweenPoints" }, Default = "FarOrbit",
+            Callback = function(v) Void.applyPreset(v) end })
+        vd:AddDropdown("VoidPattern", { Text = "Pattern", Values = { "High", "Orbit", "Random", "Tween" }, Default = "Orbit" })
+        vd:AddSlider("VoidHeight", { Text = "Height", Min = 50, Max = 1000, Default = 200, Suffix = "studs" })
+        vd:AddSlider("VoidDist", { Text = "Distance", Min = 0, Max = 2000, Default = 400, Suffix = "studs" })
+        vd:AddSlider("VoidSpeed", { Text = "Speed", Min = 1, Max = 60, Default = 8 })
+        local vd2 = RSV:AddPanel("Combo & Viz", { Column = 2 })
+        vd2:AddToggle("VoidAbsolute", { Text = "Absolute (combo strafe)", Default = false,
+            Tooltip = "Con Target Strafe: salta a posiciones ABSOLUTAS por intervalos en vez de relativas" })
+        vd2:AddSlider("VoidInterval", { Text = "Interval", Min = 0.1, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s" })
+        vd2:AddToggle("VoidViz", { Text = "Visualizer", Default = true, Tooltip = "Part + icono + tracer a la pos spoofeada" })
 
         --========================= LEGIT =========================--
         local Legit = Window:AddCategory("Legit", "target")
@@ -109,18 +134,8 @@ return function(require, LIP, Lib)
         m3:AddButton("Sit Nearest", function() Vehicle.sitNearest() end)
         m3:AddSlider("SitRange", { Text = "Sit Range", Min = 10, Max = 150, Default = 40 })
 
-        local VS = Misc:AddSection("Void & Body", "Void spam · Ragdoll · Utility", { Columns = 3 })
-        local v1 = VS:AddPanel("Void Spam", { Column = 1 })
-        v1:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
-            Tooltip = "Manda la pos spoofeada a alto/lejos en patrones (NO al vacío). Desync." })
-        v1:AddDropdown("VoidPreset", { Text = "Preset", Values = { "High", "FarOrbit", "RandomFar", "TweenPoints" }, Default = "FarOrbit",
-            Callback = function(v) Void.applyPreset(v) end })
-        v1:AddDropdown("VoidPattern", { Text = "Pattern", Values = { "High", "Orbit", "Random", "Tween" }, Default = "Orbit" })
-        v1:AddSlider("VoidHeight", { Text = "Height", Min = 50, Max = 1000, Default = 200, Suffix = "studs" })
-        v1:AddSlider("VoidDist", { Text = "Distance", Min = 0, Max = 2000, Default = 400, Suffix = "studs" })
-        v1:AddSlider("VoidSpeed", { Text = "Speed", Min = 1, Max = 60, Default = 8 })
-        v1:AddToggle("VoidViz", { Text = "Visualizer", Default = true, Tooltip = "Part + icono + tracer a la pos spoofeada" })
-        local v2 = VS:AddPanel("Self", { Column = 2 })
+        local VS = Misc:AddSection("Body & Utility", "Ragdoll · Godmode · Utility", { Columns = 2 })
+        local v2 = VS:AddPanel("Self", { Column = 1 })
         v2:AddButton("Self Ragdoll", function() Ragdoll.toggle() end)
         v2:AddKeybind("RagdollKey", { Text = "Ragdoll Key", Mode = "Toggle", Callback = function() Ragdoll.toggle() end })
         v2:AddToggle("RagdollLock", { Text = "Permanent Ragdoll", Default = false })
@@ -128,7 +143,7 @@ return function(require, LIP, Lib)
             Tooltip = "Self-ragdoll + mueve el assembly lejos (hitbox real fuera). Dispara con AutoFire (op14 directo). WIP" })
         v2:AddDropdown("GodMode", { Text = "God Mode", Values = { "High", "Jitter" }, Default = "High" })
         v2:AddSlider("GodHeight", { Text = "God Height", Min = 50, Max = 500, Default = 150, Suffix = "studs" })
-        local v3 = VS:AddPanel("Utility", { Column = 3 })
+        local v3 = VS:AddPanel("Utility", { Column = 2 })
         v3:AddLabel("Join Team (op1)", { Header = true })
         v3:AddButton("Police", function() Util.joinTeam("Police") end)
         v3:AddButton("Criminals", function() Util.joinTeam("Criminals") end)

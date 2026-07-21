@@ -55,6 +55,8 @@ return function(require, LIP, Lib)
         end
     end
 
+    local rseed = 0
+    -- absolute = base fija (anchor absoluto capturado 1 vez, en intervalos) en vez de relativo a tu pos.
     function Void.tick(opts)
         local root = myRoot(); local cam = Workspace.CurrentCamera
         if not root then Spoof.stop(cam); return end
@@ -64,10 +66,31 @@ return function(require, LIP, Lib)
         LIP.spoofOn      = true
         LIP.spoofVel     = root.AssemblyLinearVelocity
         LIP.spoofRestore = realCF
+
+        local base = realCF.Position
+        if opts.absolute then
+            -- posición ABSOLUTA por intervalos (combo con target strafe): salta a un anchor fijo
+            local iv = opts.interval or 0.4
+            if not LIP.voidAnchor or (os.clock() - (LIP.voidAnchorT or 0)) > iv then
+                LIP.voidAnchor = patternPos(realCF.Position, opts)   -- nuevo punto absoluto
+                LIP.voidAnchorT = os.clock()
+            end
+            base = LIP.voidAnchor
+            LIP.spoofFakePos = base
+            Spoof.camToLocal(cam, realCF)
+            rseed = rseed + 1
+            local rot = CFrame.Angles(math.noise(rseed,0)*6, math.noise(0,rseed)*6, math.noise(rseed,rseed)*6)
+            pcall(function() root.CFrame = CFrame.new(base) * rot end)
+            return
+        end
+
         Spoof.camToLocal(cam, realCF)
-        local goPos = patternPos(realCF.Position, opts)
+        local goPos = patternPos(base, opts)
         LIP.spoofFakePos = goPos
-        pcall(function() root.CFrame = CFrame.new(goPos) end)
+        -- rotación CFrame XYZ randomizada cada frame (anti-aim posicional)
+        rseed = rseed + 1
+        local rot = CFrame.Angles(math.noise(rseed,0)*6, math.noise(0,rseed)*6, math.noise(rseed,rseed)*6)
+        pcall(function() root.CFrame = CFrame.new(goPos) * rot end)
     end
 
     -- ── VISUALIZADOR ──────────────────────────────────────────────────────────

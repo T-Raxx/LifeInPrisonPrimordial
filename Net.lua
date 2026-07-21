@@ -25,6 +25,15 @@ return function(require, LIP, Lib)
                 if D and self == D.RE and getncm() == "FireServer" then
                     local p = table.pack(...)
                     local op = p[1]
+                    -- OBSERVA FIRERATE REAL (op14 que NO disparó nuestro autofire) → no sobre-disparar
+                    if op == 14 and not D._selfFiring then
+                        local now = os.clock()
+                        if D._lastRealShot then
+                            local dt = now - D._lastRealShot
+                            if dt > 0.02 and dt < 2 then D.observedFirerate = dt end
+                        end
+                        D._lastRealShot = now
+                    end
                     -- SILENT AIM (op14): redirige cada bullet al target cacheado (Head)
                     if op == 14 and D.swapOn and D.cachedHitPart and D.cachedHitPos then
                         local bullets = p[3]

@@ -56,10 +56,12 @@ return function(require, LIP, Lib)
     Weapon.instantReload = Weapon.reload   -- alias UI
 
     -- construye el bullet {origin, muzzle, hitPos, hitPart, hitPart.Position, objspace}
+    -- origin: si estás pos-spoofeado, usar la pos FALSA (server-seen) → origin→hitPos corto y
+    -- consistente con dónde te ve el server (si no, disparar lejos con spoof = rechazado/out-of-range).
     local function buildBullet(hitPart, hitPos)
         local c = char(); local head = c and c:FindFirstChild("Head")
         if not head then return nil end
-        local origin = head.Position
+        local origin = (LIP.spoofOn and LIP.spoofFakePos) and (LIP.spoofFakePos + Vector3.new(0, 1.5, 0)) or head.Position
         local tool = firearm()
         local handle = tool and tool:FindFirstChild("Handle")
         local muzzleAtt = handle and handle:FindFirstChild("Muzzle")
@@ -80,27 +82,24 @@ return function(require, LIP, Lib)
         return { origin, muzzle, cam.CFrame.Position + dir, nil, nil, nil }
     end
 
-    -- dispara 1 bala op14 al hit dado (con GST fresco). Descuenta ammo. Devuelve true si disparó.
+    -- dispara 1 bala op14 al hit dado (con GST fresco). Descuenta ammo. Marca _selfFiring para que
+    -- el observador de firerate en Net NO cuente nuestros disparos.
     local function fireOne(hitPart, hitPos)
         local tool = firearm(); if not tool then return false end
         if ammo == nil then ammo = magSize() end
         if ammo <= 0 then return false end
         local bullet = buildBullet(hitPart, hitPos)
         if not bullet then return false end
+        LIP._selfFiring = true
         LIP.fire(14, tool, { bullet }, GST())
+        LIP._selfFiring = false
         ammo = ammo - 1
         return true
     end
 
-    -- rapid fire manual: ráfaga de N al disparar (respeta el contador; si vacía, no fuerza)
-    function Weapon.rapidBurst()
-        local n = math.floor(O("RapidCount") or 3)
-        for _ = 1, n do
-            if not fireOne(LIP.cachedHitPart, LIP.cachedHitPos) then break end
-        end
-    end
-
-    -- AUTO/RAPID tick (main Heartbeat): fire a rate al target de silent aim, tracking ammo + reload
+    -- AUTO/RAPID tick (main Heartbeat): fire al target de silent aim, tracking ammo + reload.
+    -- NUNCA más rápido que el firerate REAL del arma (observado en Net) → evita el unequip por cadencia
+    -- (armas rápidas: el firerate observado ya es bajo, así que no lo excedemos).
     local lastFire = 0
     function Weapon.tickAuto()
         local autoOn  = T("AutoFire")
@@ -108,8 +107,8 @@ return function(require, LIP, Lib)
         if not (autoOn or rapidOn) then return end
         if reloading then return end
         local now = os.clock()
-        local rate = O("AutoFireRate") or 0.15
-        if now - lastFire < rate then return end
+        local minInt = math.max(O("AutoFireRate") or 0.15, (LIP.observedFirerate or 0.12) * 1.02)
+        if now - lastFire < minInt then return end
         if ammo ~= nil and ammo <= 0 then Weapon.reload(); return end
         if fireOne(LIP.cachedHitPart, LIP.cachedHitPos) then lastFire = now end
     end

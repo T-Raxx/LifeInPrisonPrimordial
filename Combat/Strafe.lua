@@ -72,8 +72,15 @@ return function(require, LIP, Lib)
         end
     end
     local function median(a) local b = table.clone(a); table.sort(b); return b[math.floor(#b/2)+1] end
-    -- método de resolución configurable
-    function Strafe.resolvePos(plr, rawPos, method, samples)
+    -- velocidad instantánea del target (últimas 2 muestras) — para predicción/chase
+    function Strafe.targetVel(plr)
+        local h = hist[plr]; local n = h and #h.s or 0
+        if n < 2 then return Vector3.zero end
+        local dt = math.max(h.t[n] - h.t[n-1], 1/240)
+        return (h.s[n] - h.s[n-1]) / dt
+    end
+    -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
+    function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
         local h = hist[plr]; local n = h and #h.s or 0
         if n < 3 then return rawPos end
         local k = math.clamp(samples or 8, 3, n)
@@ -84,15 +91,14 @@ return function(require, LIP, Lib)
             local w = (i - (n - k))           -- peso lineal: frames recientes pesan más
             wsum = wsum + w; wx = wx + p.X*w; wy = wy + p.Y*w; wz = wz + p.Z*w
         end
+        local base
         if method == "Average" then
-            local s = Vector3.zero; for i = n-k+1, n do s = s + h.s[i] end; return s / k
-        elseif method == "Weighted" then
-            return Vector3.new(wx/wsum, wy/wsum, wz/wsum)
-        elseif method == "Latest" then
-            return h.s[n]                     -- sin suavizar (posición cruda última)
-        else -- "Median" (default, robusto a extremos)
-            return Vector3.new(median(xs), median(ys), median(zs))
-        end
+            local s = Vector3.zero; for i = n-k+1, n do s = s + h.s[i] end; base = s / k
+        elseif method == "Weighted" then base = Vector3.new(wx/wsum, wy/wsum, wz/wsum)
+        elseif method == "Latest" then base = h.s[n]
+        else base = Vector3.new(median(xs), median(ys), median(zs)) end   -- Median (robusto)
+        if predictT and predictT > 0 then base = base + Strafe.targetVel(plr) * predictT end
+        return base
     end
 
     ------------------------------------------------------------------ PRESETS
@@ -116,46 +122,58 @@ return function(require, LIP, Lib)
     end
 
     local seed = 0
-    local function orbitCF(tRoot, opts)
+    local baitFlip = 1
+    -- órbita alrededor de un CENTRO (predicho si chase), mirando al centro. bait = reversas random.
+    local function orbitCF(center, tLook, opts)
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
         local mode = opts.mode or "Normal"
+        if opts.bait and math.noise(seed * 0.7, 3) > 0.55 then baitFlip = -baitFlip end
         if mode == "Behind" then
-            local goPos = tRoot.Position + tRoot.CFrame.LookVector * -R + Vector3.new(0, h, 0)
-            return CFrame.lookAt(goPos, tRoot.Position)
+            local look = tLook or Vector3.new(0, 0, -1)
+            local goPos = center - look * R + Vector3.new(0, h, 0)
+            return CFrame.lookAt(goPos, center)
         elseif mode == "Random" then
-            -- XYZ random cada frame dentro de R + rotación CFrame randomizada XYZ
-            local rx = (math.noise(seed, 0)  ) * R
-            local ry = (math.noise(0, seed)  ) * R
-            local rz = (math.noise(seed, seed)) * R
+            local rx = math.noise(seed, 0) * R
+            local ry = math.noise(0, seed) * R
+            local rz = math.noise(seed, seed) * R
             seed = seed + spd * 0.02 + math.abs(math.sin(os.clock() * 91.7)) * 0.15
-            local goPos = tRoot.Position + Vector3.new(rx, h + ry * 0.4, rz)
+            local goPos = center + Vector3.new(rx, h + ry * 0.4, rz)
             local rot = CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
             return CFrame.new(goPos) * rot
-        else -- Normal: órbita circular
-            seed = seed + spd * 0.05
+        else -- Normal: órbita circular (bait invierte el sentido)
+            seed = seed + spd * 0.05 * baitFlip
             local off = Vector3.new(math.cos(seed) * R, h, math.sin(seed) * R)
-            local goPos = tRoot.Position + off
-            return CFrame.lookAt(goPos, tRoot.Position)
+            return CFrame.lookAt(center + off, center)
         end
     end
 
-    -- llamado por el driver de main cada Heartbeat con el target resuelto
+    -- llamado por el driver cada Heartbeat con el target resuelto
     function Strafe.tick(target, opts)
         local root = myRoot(); local cam = Workspace.CurrentCamera
         local tRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        if not (root and tRoot) then Spoof.stop(cam); return end
+        if not (root and tRoot) then Strafe.stop(); return end
 
-        local realCF = Spoof.trueCF(root)
-        LIP.cachedRoot   = root
-        LIP.spoofRealCF  = realCF          -- el hook lo devuelve a lectores (cuerpo/cámara/AC)
-        LIP.spoofOn      = true
-        LIP.spoofVel     = root.AssemblyLinearVelocity
-        LIP.spoofRestore = realCF          -- RenderStepped restaura tras replicar
+        -- centro dinámico (chase): predice la pos del target por su velocidad
+        local center = tRoot.Position
+        if opts.chase then center = center + Strafe.targetVel(target) * (opts.predict or 0.12) end
+        local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
+        LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
-        Spoof.camToLocal(cam, realCF)      -- cámara queda en la pos real
-        local goCF = orbitCF(tRoot, opts)
-        LIP.spoofFakePos = goCF.Position   -- para el visualizador
-        pcall(function() root.CFrame = goCF end)   -- el server ve la órbita
+        if opts.posSpoof then
+            -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
+            local realCF = Spoof.trueCF(root)
+            LIP.cachedRoot   = root
+            LIP.spoofRealCF  = realCF
+            LIP.spoofOn      = true
+            LIP.spoofVel     = root.AssemblyLinearVelocity
+            LIP.spoofRestore = realCF
+            Spoof.camToLocal(cam, realCF)
+            pcall(function() root.CFrame = goCF end)
+        else
+            -- SIN spoof: mueve el cuerpo real (te teleporta a orbitar; disparás desde ahí)
+            if LIP.spoofOn then Spoof.stop(cam) end
+            pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
+        end
     end
 
     function Strafe.stop() Spoof.stop(Workspace.CurrentCamera) end
