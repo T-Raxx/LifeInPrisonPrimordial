@@ -25,7 +25,9 @@ return function(require, LIP, Lib)
                 if D and self == D.RE and getncm() == "FireServer" then
                     local p = table.pack(...)
                     local op = p[1]
-                    -- OBSERVA FIRERATE REAL (op14 que NO disparó nuestro autofire) → no sobre-disparar
+                    -- OBSERVA FIRERATE REAL (op14 del juego, no nuestro autofire) → no sobre-disparar.
+                    -- (El conteo de balas para el reload vive en Weapon.fireOne, NO acá: este hook
+                    --  persiste entre reloads y no se puede actualizar sin rejoin limpio.)
                     if op == 14 and not D._selfFiring then
                         local now = os.clock()
                         if D._lastRealShot then

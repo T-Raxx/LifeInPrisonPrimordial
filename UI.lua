@@ -41,9 +41,14 @@ return function(require, LIP, Lib)
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs",
             Tooltip = "No dispara si el target está más lejos (fuera de rango = server rechaza)" })
         c2:AddDivider()
-        c2:AddButton("Instant Reload", function() Weapon.instantReload() end)
+        c2:AddButton("Force Reload", function() Weapon.instantReload() end)
         c2:AddKeybind("ReloadKey", { Text = "Reload Key", Mode = "Toggle", Callback = function() Weapon.instantReload() end })
-        c2:AddSlider("ReloadAmmo", { Text = "Reload Ammo", Min = 1, Max = 120, Default = 30 })
+        c2:AddSlider("ReloadAmmo", { Text = "Mag Size", Min = 1, Max = 120, Default = 15,
+            Tooltip = "Balas por cargador de tu arma (fallback; se auto-detecta del reload real del juego)" })
+        c2:AddSlider("ReloadTime", { Text = "Reload Time", Min = 0.3, Max = 3, Default = 1.2, Decimals = 1, Suffix = "s",
+            Tooltip = "Espera antes del op40 (debe ~= duración de la anim de recarga, o el server rechaza)" })
+        c2:AddToggle("ShotgunReload", { Text = "Shotgun Reload", Default = false,
+            Tooltip = "Para escopetas (SPAS): op40 por bala en vez de uno solo (protocolo per-shell). Pistola/rifle = OFF." })
 
         -- Col 3: Target Strafe
         local c3 = RS:AddPanel("Target Strafe", { Column = 3 })

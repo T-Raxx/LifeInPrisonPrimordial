@@ -40,20 +40,40 @@ return function(require, LIP, Lib)
     end
     Weapon.GST = GST
 
-    -- ── contador de balas local (evita over-fire = unequip) ──
-    local ammo = nil               -- nil = desconocido; se inicia al primer fire con Mag Size
-    local reloading = false
-    local function magSize() return math.floor(O("ReloadAmmo") or 30) end
+    -- magSize del slider (el usuario lo pone = cargador de su arma)
+    local function magSize() return math.floor(O("ReloadAmmo") or 15) end
 
-    -- reload SEGURO: usa el callback legítimo del juego (MagDrop+espera+op40, sin unequip)
+    -- RELOAD INTELIGENTE. El cliente cree que el mag está lleno (nuestros op14 no bajan su ammo local),
+    -- así que shared.ReloadCallback NO recarga (chequea `if ammo==magammo then return`). Forzamos el
+    -- reload directo con el flujo legítimo: op42 MagDrop → esperar la duración de la anim (evita el
+    -- unequip por reload-imposible) → op40 OnReload(magSize). El server rellena su cargador.
     function Weapon.reload()
-        reloading = true
-        local ok = pcall(function() if shared and shared.ReloadCallback then shared.ReloadCallback() end end)
-        ammo = magSize()
-        task.delay(0.1, function() reloading = false end)
-        return ok
+        if LIP.reloading then return end
+        local tool = firearm(); if not tool then return end
+        LIP.reloading = true
+        task.spawn(function()
+            local mag = magSize()
+            if T("ShotgunReload") then
+                -- ESCOPETA: op40 por bala (ammo acumulado), sin MagDrop, espaciado (protocolo per-shell)
+                task.wait(0.3)
+                for i = 1, mag do
+                    local t2 = firearm() or tool
+                    pcall(function() LIP.fire(40, t2, i, GST()) end)
+                    task.wait((O("ReloadTime") or 1.2) / mag)
+                end
+            else
+                -- CARGADOR normal: MagDrop → esperar anim → OnReload(magammo) absoluto
+                pcall(function() LIP.fire(42, tool) end)
+                task.wait(O("ReloadTime") or 1.2)                         -- ~duración anim (server valida)
+                local t2 = firearm() or tool
+                pcall(function() LIP.fire(40, t2, mag, GST()) end)
+            end
+            LIP.shotsFired = 0
+            task.wait(0.1)
+            LIP.reloading = false
+        end)
     end
-    Weapon.instantReload = Weapon.reload   -- alias UI
+    Weapon.instantReload = Weapon.reload   -- alias UI (botón "Force Reload" = fuerza el reload)
 
     -- construye el bullet {origin, muzzle, hitPos, hitPart, hitPart.Position, objspace}
     -- origin: si estás pos-spoofeado, usar la pos FALSA (server-seen) → origin→hitPos corto y
@@ -87,14 +107,12 @@ return function(require, LIP, Lib)
     -- el observador de firerate en Net NO cuente nuestros disparos.
     local function fireOne(hitPart, hitPos)
         local tool = firearm(); if not tool then return false end
-        if ammo == nil then ammo = magSize() end
-        if ammo <= 0 then return false end
         local bullet = buildBullet(hitPart, hitPos)
         if not bullet then return false end
         LIP._selfFiring = true
         LIP.fire(14, tool, { bullet }, GST())
         LIP._selfFiring = false
-        ammo = ammo - 1
+        LIP.shotsFired = (LIP.shotsFired or 0) + 1   -- cuenta acá (fireOne, siempre fresco)
         return true
     end
 
@@ -106,11 +124,12 @@ return function(require, LIP, Lib)
         local autoOn  = T("AutoFire")
         local rapidOn = T("RapidFire") and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
         if not (autoOn or rapidOn) then return end
-        if reloading then return end
+        if LIP.reloading then return end
+        -- cargador del SERVER vacío (contamos op14 en Net) → reload inteligente
+        if (LIP.shotsFired or 0) >= magSize() then Weapon.reload(); return end
         local now = os.clock()
         local minInt = math.max(O("AutoFireRate") or 0.15, (LIP.observedFirerate or 0.12) * 1.02)
         if now - lastFire < minInt then return end
-        if ammo ~= nil and ammo <= 0 then Weapon.reload(); return end
         -- guard de RANGO: no firar si el target está fuera de rango (server rechaza = bala perdida)
         if LIP.cachedHitPos then
             local h = char() and char():FindFirstChild("Head")
@@ -120,8 +139,8 @@ return function(require, LIP, Lib)
         if fireOne(LIP.cachedHitPart, LIP.cachedHitPos) then lastFire = now end
     end
 
-    -- respawn: resetea el contador (el arma nueva viene llena)
-    LP.CharacterAdded:Connect(function() ammo = nil; reloading = false end)
+    -- respawn: resetea el contador (el arma nueva viene con el cargador lleno)
+    LP.CharacterAdded:Connect(function() LIP.shotsFired = 0; LIP.reloading = false end)
 
     return Weapon
 end
