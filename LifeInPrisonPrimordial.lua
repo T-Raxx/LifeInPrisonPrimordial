@@ -910,6 +910,8 @@ return function(require, LIP, Lib)
         if not (autoOn or rapidOn) then LIP.fireAccum = 0; lastTick = 0; return end
         local now = os.clock()
         if LIP.reloading then LIP.fireAccum = 0; lastTick = now; return end
+        -- VOID SPAM: pausar disparo mientras estás IN void (solo disparar OUT del void)
+        if LIP.voidSpamOn and LIP.voidShootOut and not LIP.voidShootOk then LIP.fireAccum = 0; lastTick = now; return end
         -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server.
         if autoOn and LIP.cachedHitPos then
             local h = char() and char():FindFirstChild("Head")
@@ -1482,7 +1484,8 @@ return function(require, LIP, Lib)
     local RunService = game:GetService("RunService")
     local Workspace  = game:GetService("Workspace")
     local LP = Players.LocalPlayer
-    local Spoof = require("Combat.Spoof")
+    local Spoof  = require("Combat.Spoof")
+    local Weapon = require("Combat.Weapon")
     local Void = {}
 
     local ORIGIN = Vector3.new(0, 100, 0)   -- origen absoluto (pedido del usuario)
@@ -1556,6 +1559,53 @@ return function(require, LIP, Lib)
             -- SIN spoof: mueve el cuerpo real (teleport crudo, riesgoso)
             if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
+        end
+    end
+
+    -- ── VOID SPAM REAL (shoot / dodge) ─────────────────────────────────────────
+    -- Oscila entre IN VOID (server te ve lejos con el pattern → disparo PAUSADO, reload opcional) y OUT
+    -- VOID (server te ve en tu pos REAL → disparás). El salto constante rompe el resolver de PREDICCIÓN
+    -- de otros cheaters (tu pos aparece/desaparece = no te predicen). Sliders In/Out (0.1-2s). Gate de
+    -- disparo = LIP.voidShootOk (Weapon.tickAuto lo respeta si voidShootOut). Usa el pattern seleccionado.
+    local function spoofTo(root, cam, goCF, connExploit)
+        if connExploit then
+            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
+            Spoof.weldToPos(goCF.Position)
+        else
+            if LIP.connRep then Spoof.unweld() end
+            local realCF = Spoof.trueCF(root)
+            LIP.cachedRoot = root; LIP.spoofRealCF = realCF; LIP.spoofOn = true
+            LIP.spoofVel = root.AssemblyLinearVelocity; LIP.spoofRestore = realCF
+            Spoof.camToLocal(cam, realCF)
+            pcall(function() root.CFrame = goCF end)
+        end
+    end
+    function Void.tickSpam(opts)
+        local root = myRoot(); local cam = Workspace.CurrentCamera
+        if not root then Spoof.stop(cam); LIP.voidShootOk = true; return end
+        local now = os.clock()
+        -- máquina de estados IN ↔ OUT
+        if not LIP.voidPhase or now >= (LIP.voidPhaseUntil or 0) then
+            if LIP.voidPhase == "in" then
+                LIP.voidPhase = "out"; LIP.voidPhaseUntil = now + (opts.outTime or 0.5)
+            else
+                LIP.voidPhase = "in"; LIP.voidPhaseUntil = now + (opts.inTime or 0.5)
+                -- al ENTRAR al void: reload si el cargador está gastado (recargás escondido)
+                if opts.voidReload and not LIP.reloading and (LIP.shotsFired or 0) >= (Weapon.magSize() or 15) then
+                    Weapon.reload()
+                end
+            end
+        end
+        if LIP.voidPhase == "in" then
+            local goCF = patternCF(opts.dist or 1000, opts.pattern)
+            LIP.spoofFakePos = goCF.Position
+            LIP.voidShootOk = false                    -- disparo pausado en el void
+            spoofTo(root, cam, goCF, opts.connExploit)
+        else
+            -- OUT VOID: server te ve en tu pos REAL → disparás desde acá
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
+            LIP.spoofFakePos = nil
+            LIP.voidShootOk = true
         end
     end
 
@@ -1870,7 +1920,15 @@ return function(require, LIP, Lib)
 
         local vd = RS:AddPanel("Void Spam", { Column = 2 })
         vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
-            Tooltip = "Origen absoluto (0,100,0), rotación XYZ random. Nunca toca el vacío. Usa Pos Spoof/Conn Weld." })
+            Tooltip = "Shoot/dodge: oscila IN void (server te ve lejos con el pattern, disparo pausado) ↔ OUT void (pos real, disparás). El salto constante rompe el resolver de PREDICCIÓN de otros cheaters mientras seguís tirando." })
+        vd:AddSlider("VoidInTime", { Text = "In Void", Min = 0.1, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s",
+            Tooltip = "Tiempo escondido en el void (disparo pausado)" })
+        vd:AddSlider("VoidOutTime", { Text = "Out Void", Min = 0.1, Max = 2, Default = 0.3, Decimals = 2, Suffix = "s",
+            Tooltip = "Tiempo en tu pos real (disparás desde acá)" })
+        vd:AddToggle("VoidShootOut", { Text = "Shoot Out Only", Default = true,
+            Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
+        vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
+            Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
         vd:AddList("VoidPattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
         vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
 
@@ -1901,6 +1959,12 @@ return function(require, LIP, Lib)
             Tooltip = "PhysicsRepRootPart weld (solo pos, sin rotación). Cuerpo REAL libre. Override de Pos Spoof." })
         sp:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" })
             :AddColorPicker("VizColor", { Default = Color3.fromRGB(202, 151, 161) })
+
+        local idl = RS:AddPanel("Idle State", { Column = 3 })
+        idl:AddToggle("IdleState", { Text = "Idle State", Default = false,
+            Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando. (Antes se llamaba Void Spam.)" })
+        idl:AddList("IdlePattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
+        idl:AddSlider("IdleDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
 
         --========================= LEGIT =========================--
         local Legit = Window:AddCategory("Legit", "target")
@@ -2133,10 +2197,14 @@ return function(require, LIP, Lib)
         local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
         local cam = Workspace.CurrentCamera
 
-        local strafeOn = T.TargetStrafe and T.TargetStrafe.Value
-        local autoOn   = T.AutoFire and T.AutoFire.Value
-        local godOn    = T.Godmode and T.Godmode.Value
-        local voidOn   = T.VoidSpam and T.VoidSpam.Value
+        local strafeOn   = T.TargetStrafe and T.TargetStrafe.Value
+        local autoOn     = T.AutoFire and T.AutoFire.Value
+        local godOn      = T.Godmode and T.Godmode.Value
+        local voidSpamOn = T.VoidSpam and T.VoidSpam.Value       -- NUEVO: shoot/dodge (rompe resolver)
+        local idleOn     = T.IdleState and T.IdleState.Value     -- viejo void = anti-aim idle continuo
+        LIP.voidSpamOn   = voidSpamOn
+        LIP.voidShootOut = (not T.VoidShootOut) or T.VoidShootOut.Value    -- default on
+        if not voidSpamOn then LIP.voidShootOk = true; LIP.voidPhase = nil end
         local needAim  = LIP.swapOn or strafeOn or autoOn
 
         -- resolver sampling (historial de enemigos)
@@ -2146,12 +2214,17 @@ return function(require, LIP, Lib)
         resolveTarget(filters, needAim)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
-        -- ── POSICIÓN: Godmode > Strafe > Void (EXCLUYENTES). PosSpoof/ConnExploit = master de método. ──
+        -- ── POSICIÓN: Godmode > VoidSpam > Strafe > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
         local connExp  = T.ConnExploit and T.ConnExploit.Value
         if godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
+        elseif voidSpamOn then
+            if LIP.godBase then Godmode.stop() end
+            Void.tickSpam({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(),
+                            inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
+                            voidReload = T.VoidReload and T.VoidReload.Value, connExploit = connExp })
         elseif strafeOn then
             if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
@@ -2164,9 +2237,9 @@ return function(require, LIP, Lib)
                                   resolve = T.Resolver and T.Resolver.Value,
                                   resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value })
             else Strafe.stop() end
-        elseif voidOn then
+        elseif idleOn then
             if LIP.godBase then Godmode.stop() end
-            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value,
+            Void.tick({ dist = O.IdleDist.Value, pattern = O.IdlePattern:GetValue(),
                         posSpoof = posSpoof, connExploit = connExp })
         else
             if LIP.godBase then Godmode.stop() end

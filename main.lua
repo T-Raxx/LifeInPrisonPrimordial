@@ -114,10 +114,14 @@ return function(require, LIP, Lib)
         local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
         local cam = Workspace.CurrentCamera
 
-        local strafeOn = T.TargetStrafe and T.TargetStrafe.Value
-        local autoOn   = T.AutoFire and T.AutoFire.Value
-        local godOn    = T.Godmode and T.Godmode.Value
-        local voidOn   = T.VoidSpam and T.VoidSpam.Value
+        local strafeOn   = T.TargetStrafe and T.TargetStrafe.Value
+        local autoOn     = T.AutoFire and T.AutoFire.Value
+        local godOn      = T.Godmode and T.Godmode.Value
+        local voidSpamOn = T.VoidSpam and T.VoidSpam.Value       -- NUEVO: shoot/dodge (rompe resolver)
+        local idleOn     = T.IdleState and T.IdleState.Value     -- viejo void = anti-aim idle continuo
+        LIP.voidSpamOn   = voidSpamOn
+        LIP.voidShootOut = (not T.VoidShootOut) or T.VoidShootOut.Value    -- default on
+        if not voidSpamOn then LIP.voidShootOk = true; LIP.voidPhase = nil end
         local needAim  = LIP.swapOn or strafeOn or autoOn
 
         -- resolver sampling (historial de enemigos)
@@ -127,12 +131,17 @@ return function(require, LIP, Lib)
         resolveTarget(filters, needAim)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
-        -- ── POSICIÓN: Godmode > Strafe > Void (EXCLUYENTES). PosSpoof/ConnExploit = master de método. ──
+        -- ── POSICIÓN: Godmode > VoidSpam > Strafe > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
         local connExp  = T.ConnExploit and T.ConnExploit.Value
         if godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
+        elseif voidSpamOn then
+            if LIP.godBase then Godmode.stop() end
+            Void.tickSpam({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(),
+                            inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
+                            voidReload = T.VoidReload and T.VoidReload.Value, connExploit = connExp })
         elseif strafeOn then
             if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
@@ -145,9 +154,9 @@ return function(require, LIP, Lib)
                                   resolve = T.Resolver and T.Resolver.Value,
                                   resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value })
             else Strafe.stop() end
-        elseif voidOn then
+        elseif idleOn then
             if LIP.godBase then Godmode.stop() end
-            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value,
+            Void.tick({ dist = O.IdleDist.Value, pattern = O.IdlePattern:GetValue(),
                         posSpoof = posSpoof, connExploit = connExp })
         else
             if LIP.godBase then Godmode.stop() end

@@ -66,7 +66,15 @@ return function(require, LIP, Lib)
 
         local vd = RS:AddPanel("Void Spam", { Column = 2 })
         vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
-            Tooltip = "Origen absoluto (0,100,0), rotación XYZ random. Nunca toca el vacío. Usa Pos Spoof/Conn Weld." })
+            Tooltip = "Shoot/dodge: oscila IN void (server te ve lejos con el pattern, disparo pausado) ↔ OUT void (pos real, disparás). El salto constante rompe el resolver de PREDICCIÓN de otros cheaters mientras seguís tirando." })
+        vd:AddSlider("VoidInTime", { Text = "In Void", Min = 0.1, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s",
+            Tooltip = "Tiempo escondido en el void (disparo pausado)" })
+        vd:AddSlider("VoidOutTime", { Text = "Out Void", Min = 0.1, Max = 2, Default = 0.3, Decimals = 2, Suffix = "s",
+            Tooltip = "Tiempo en tu pos real (disparás desde acá)" })
+        vd:AddToggle("VoidShootOut", { Text = "Shoot Out Only", Default = true,
+            Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
+        vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
+            Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
         vd:AddList("VoidPattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
         vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
 
@@ -97,6 +105,12 @@ return function(require, LIP, Lib)
             Tooltip = "PhysicsRepRootPart weld (solo pos, sin rotación). Cuerpo REAL libre. Override de Pos Spoof." })
         sp:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" })
             :AddColorPicker("VizColor", { Default = Color3.fromRGB(202, 151, 161) })
+
+        local idl = RS:AddPanel("Idle State", { Column = 3 })
+        idl:AddToggle("IdleState", { Text = "Idle State", Default = false,
+            Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando. (Antes se llamaba Void Spam.)" })
+        idl:AddList("IdlePattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
+        idl:AddSlider("IdleDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
 
         --========================= LEGIT =========================--
         local Legit = Window:AddCategory("Legit", "target")

@@ -8,7 +8,8 @@ return function(require, LIP, Lib)
     local RunService = game:GetService("RunService")
     local Workspace  = game:GetService("Workspace")
     local LP = Players.LocalPlayer
-    local Spoof = require("Combat.Spoof")
+    local Spoof  = require("Combat.Spoof")
+    local Weapon = require("Combat.Weapon")
     local Void = {}
 
     local ORIGIN = Vector3.new(0, 100, 0)   -- origen absoluto (pedido del usuario)
@@ -82,6 +83,53 @@ return function(require, LIP, Lib)
             -- SIN spoof: mueve el cuerpo real (teleport crudo, riesgoso)
             if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
+        end
+    end
+
+    -- ── VOID SPAM REAL (shoot / dodge) ─────────────────────────────────────────
+    -- Oscila entre IN VOID (server te ve lejos con el pattern → disparo PAUSADO, reload opcional) y OUT
+    -- VOID (server te ve en tu pos REAL → disparás). El salto constante rompe el resolver de PREDICCIÓN
+    -- de otros cheaters (tu pos aparece/desaparece = no te predicen). Sliders In/Out (0.1-2s). Gate de
+    -- disparo = LIP.voidShootOk (Weapon.tickAuto lo respeta si voidShootOut). Usa el pattern seleccionado.
+    local function spoofTo(root, cam, goCF, connExploit)
+        if connExploit then
+            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
+            Spoof.weldToPos(goCF.Position)
+        else
+            if LIP.connRep then Spoof.unweld() end
+            local realCF = Spoof.trueCF(root)
+            LIP.cachedRoot = root; LIP.spoofRealCF = realCF; LIP.spoofOn = true
+            LIP.spoofVel = root.AssemblyLinearVelocity; LIP.spoofRestore = realCF
+            Spoof.camToLocal(cam, realCF)
+            pcall(function() root.CFrame = goCF end)
+        end
+    end
+    function Void.tickSpam(opts)
+        local root = myRoot(); local cam = Workspace.CurrentCamera
+        if not root then Spoof.stop(cam); LIP.voidShootOk = true; return end
+        local now = os.clock()
+        -- máquina de estados IN ↔ OUT
+        if not LIP.voidPhase or now >= (LIP.voidPhaseUntil or 0) then
+            if LIP.voidPhase == "in" then
+                LIP.voidPhase = "out"; LIP.voidPhaseUntil = now + (opts.outTime or 0.5)
+            else
+                LIP.voidPhase = "in"; LIP.voidPhaseUntil = now + (opts.inTime or 0.5)
+                -- al ENTRAR al void: reload si el cargador está gastado (recargás escondido)
+                if opts.voidReload and not LIP.reloading and (LIP.shotsFired or 0) >= (Weapon.magSize() or 15) then
+                    Weapon.reload()
+                end
+            end
+        end
+        if LIP.voidPhase == "in" then
+            local goCF = patternCF(opts.dist or 1000, opts.pattern)
+            LIP.spoofFakePos = goCF.Position
+            LIP.voidShootOk = false                    -- disparo pausado en el void
+            spoofTo(root, cam, goCF, opts.connExploit)
+        else
+            -- OUT VOID: server te ve en tu pos REAL → disparás desde acá
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
+            LIP.spoofFakePos = nil
+            LIP.voidShootOk = true
         end
     end
 
