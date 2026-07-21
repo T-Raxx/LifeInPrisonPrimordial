@@ -821,39 +821,42 @@ return function(require, LIP, Lib)
     end
     Weapon.magSize = magSize
 
-    -- RELOAD INTELIGENTE. El cliente cree que el mag está lleno (nuestros op14 no bajan su ammo local),
-    -- así que shared.ReloadCallback NO recarga (chequea `if ammo==magammo then return`). Forzamos el
-    -- reload directo con el flujo legítimo: op42 MagDrop → esperar la duración de la anim (evita el
-    -- unequip por reload-imposible) → op40 OnReload(magSize). El server rellena su cargador.
+    -- RELOAD INSTANTÁNEO (GST FORJADO). El server valida la DURACIÓN del reload por el timestamp del GST
+    -- del op40 (OnReload dispara solo cuando la anim terminó Y time()-start > animLen-0.1). Forjamos:
+    -- op42 MagDrop (SIN GST) → op40 OnReload(mag, GST(gstClock + ReloadTime)) → el server ve una recarga
+    -- de duración legal aunque la mandemos AL INSTANTE (cero espera real). Usa el MISMO reloj virtual que
+    -- el disparo (LIP.gstClock) → la línea de tiempo del GST queda coherente (disparos + reload espaciados
+    -- legalmente). El cargador normal es SÍNCRONO (tickAuto lo llama inline y sigue disparando sin corte).
     function Weapon.reload()
-        if LIP.reloading then return end
         local tool = firearm(); if not tool then return end
-        LIP.reloading = true
-        task.spawn(function()
-            local mag = magSize()
-            LIP._selfReload = true   -- Net NO captura magammo de nuestros op40 (solo del reload del juego)
-            if T("ShotgunReload") then
-                -- ESCOPETA: op40 por bala (ammo acumulado), sin MagDrop, espaciado (protocolo per-shell)
-                task.wait(0.3)
+        local mag = magSize()
+        local rt  = O("ReloadTime") or 1.2   -- duración LEGAL que finge el GST (NO se espera de verdad)
+        LIP._selfReload = true               -- Net NO captura magammo de nuestros op40
+        LIP._gstReal = os.clock()            -- marca actividad (evita el resync del reloj virtual)
+        LIP.gstClock = (LIP.gstClock or time())
+        if T("ShotgunReload") then
+            -- ESCOPETA: op40 por bala (async, 1 frame entre shells), GST avanzando rt/mag por shell
+            if LIP.reloading then return end
+            LIP.reloading = true
+            task.spawn(function()
                 for i = 1, mag do
                     local t2 = firearm() or tool
-                    pcall(function() LIP.fire(40, t2, i, GST()) end)
-                    task.wait((O("ReloadTime") or 1.2) / mag)
+                    LIP.gstClock = LIP.gstClock + rt / mag
+                    pcall(function() LIP.fire(40, t2, i, GST(LIP.gstClock)) end)
+                    task.wait()
                 end
-            else
-                -- CARGADOR normal: MagDrop → esperar anim → OnReload(magammo) absoluto
-                pcall(function() LIP.fire(42, tool) end)
-                task.wait(O("ReloadTime") or 1.2)                         -- ~duración anim (server valida)
-                local t2 = firearm() or tool
-                pcall(function() LIP.fire(40, t2, mag, GST()) end)
-            end
-            LIP._selfReload = false
-            LIP.shotsFired = 0
-            task.wait(0.1)
-            LIP.reloading = false
-        end)
+                LIP._selfReload = false; LIP.shotsFired = 0; LIP.reloading = false
+            end)
+        else
+            -- CARGADOR: op42 → op40(mag) con GST a +rt. INSTANTÁNEO y síncrono.
+            pcall(function() LIP.fire(42, tool) end)
+            LIP.gstClock = LIP.gstClock + rt
+            local t2 = firearm() or tool
+            pcall(function() LIP.fire(40, t2, mag, GST(LIP.gstClock)) end)
+            LIP._selfReload = false; LIP.shotsFired = 0
+        end
     end
-    Weapon.instantReload = Weapon.reload   -- alias UI (botón "Force Reload" = fuerza el reload)
+    Weapon.instantReload = Weapon.reload   -- alias UI (botón "Force Reload")
 
     -- construye el bullet {origin, muzzle, hitPos, hitPart, hitPart.Position, objspace}
     -- origin: si estás pos-spoofeado, usar la pos FALSA (server-seen) → origin→hitPos corto y
@@ -916,6 +919,13 @@ return function(require, LIP, Lib)
             if ref and (LIP.cachedHitPos - ref).Magnitude > (O("FireRange") or 200) then
                 LIP.fireAccum = 0; lastTick = now; return
             end
+        end
+        -- CARGADOR del server agotado (contamos nuestros op14) → instant reload forjado y seguir el stream.
+        -- Cargador normal = síncrono (shotsFired vuelve a 0, seguimos disparando sin corte). Escopeta =
+        -- async (reloading=true → esperamos ese tick). magSize = auto-detectado (op40 del reload manual) o slider.
+        if (LIP.shotsFired or 0) >= magSize() then
+            Weapon.reload()
+            if LIP.reloading then LIP.fireAccum = 0; return end
         end
         -- acumulador: rate = disparos/s REALES (desacoplado del framerate)
         local rate = math.clamp(O("AutoFireRate") or 30, 1, 120)
