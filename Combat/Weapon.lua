@@ -44,23 +44,12 @@ return function(require, LIP, Lib)
     end
     Weapon.GST = GST
 
-    -- ── GST FORJADO (reloj virtual) ──
-    -- El server valida el DELTA entre timestamps GST consecutivos ≥ firerate. Mantenemos un reloj
-    -- virtual que avanza por `fakeInt` (firerate legal del arma) en CADA disparo, sin importar cuán
-    -- rápido disparemos de verdad → el server ve espaciado legal siempre. Se re-sincroniza a time()
-    -- cuando arranca un stream nuevo (tras idle) para no mandar timestamps del pasado.
-    local function fakeInterval()
-        -- firerate real observado (de tus disparos manuales) o el slider; nunca menos que el mínimo legal
-        return LIP.observedFirerate or O("FakeFirerate") or 0.11
-    end
-    local function nextGST(now)
-        -- resync al arrancar stream (idle > 0.25s) → el reloj parte de "ahora" real
-        if not LIP.gstClock or (now - (LIP._gstReal or 0)) > 0.25 then LIP.gstClock = time() end
-        local g = GST(LIP.gstClock)
-        LIP.gstClock = LIP.gstClock + fakeInterval()   -- avanza SIEMPRE el intervalo legal
-        LIP._gstReal = now
-        return g
-    end
+    -- ── GST por disparo = TIEMPO REAL (time()) ──
+    -- PROBADO EN VIVO (M60, muzzle correcto): 50 disparos/s con GST REAL = 0 unequip. Forjar el timestamp
+    -- (reloj virtual) lo INVALIDA → el server valida que el GST decodifique a un time() real/reciente y te
+    -- quita el arma si no. NO forjar. El server tampoco rate-limita por tiempo real (50/s pasó limpio) ni
+    -- gatea munición estricto (40 disparos > mag SIN recargar = 0 unequip). Solo hay que mandar GST REAL fresco.
+    local function nextGST() LIP._gstReal = os.clock(); return GST() end
     Weapon.nextGST = nextGST
 
     -- DETECCIÓN DE CARGADOR POR ARMA: el Net hook captura `magammo` del op40 del reload REAL del juego
@@ -74,38 +63,32 @@ return function(require, LIP, Lib)
     end
     Weapon.magSize = magSize
 
-    -- RELOAD INSTANTÁNEO (GST FORJADO). El server valida la DURACIÓN del reload por el timestamp del GST
-    -- del op40 (OnReload dispara solo cuando la anim terminó Y time()-start > animLen-0.1). Forjamos:
-    -- op42 MagDrop (SIN GST) → op40 OnReload(mag, GST(gstClock + ReloadTime)) → el server ve una recarga
-    -- de duración legal aunque la mandemos AL INSTANTE (cero espera real). Usa el MISMO reloj virtual que
-    -- el disparo (LIP.gstClock) → la línea de tiempo del GST queda coherente (disparos + reload espaciados
-    -- legalmente). El cargador normal es SÍNCRONO (tickAuto lo llama inline y sigue disparando sin corte).
+    -- RELOAD INSTANTÁNEO con GST REAL. op42 MagDrop (sin GST) → op40 OnReload(Tool, mag, GST()) con GST del
+    -- tiempo real (mismo criterio que el disparo: el server valida que el GST sea un token real/reciente).
+    -- Cargador = síncrono (tickAuto lo llama inline y sigue disparando sin corte). La munición no se gatea
+    -- estricto (probado), así que esto es un colchón por si algún arma sí la valida.
     function Weapon.reload()
         local tool = firearm(); if not tool then return end
         local mag = magSize()
-        local rt  = O("ReloadTime") or 1.2   -- duración LEGAL que finge el GST (NO se espera de verdad)
         LIP._selfReload = true               -- Net NO captura magammo de nuestros op40
-        LIP._gstReal = os.clock()            -- marca actividad (evita el resync del reloj virtual)
-        LIP.gstClock = (LIP.gstClock or time())
+        LIP._lastReloadReal = os.clock()
         if T("ShotgunReload") then
-            -- ESCOPETA: op40 por bala (async, 1 frame entre shells), GST avanzando rt/mag por shell
+            -- ESCOPETA: op40 por bala (async, 1 frame entre shells)
             if LIP.reloading then return end
             LIP.reloading = true
             task.spawn(function()
                 for i = 1, mag do
                     local t2 = firearm() or tool
-                    LIP.gstClock = LIP.gstClock + rt / mag
-                    pcall(function() LIP.fire(40, t2, i, GST(LIP.gstClock)) end)
+                    pcall(function() LIP.fire(40, t2, i, GST()) end)
                     task.wait()
                 end
                 LIP._selfReload = false; LIP.shotsFired = 0; LIP.reloading = false
             end)
         else
-            -- CARGADOR: op42 → op40(mag) con GST a +rt. INSTANTÁNEO y síncrono.
+            -- CARGADOR: op42 → op40(mag) con GST REAL. Instantáneo y síncrono.
             pcall(function() LIP.fire(42, tool) end)
-            LIP.gstClock = LIP.gstClock + rt
             local t2 = firearm() or tool
-            pcall(function() LIP.fire(40, t2, mag, GST(LIP.gstClock)) end)
+            pcall(function() LIP.fire(40, t2, mag, GST()) end)
             LIP._selfReload = false; LIP.shotsFired = 0
         end
     end
@@ -188,12 +171,32 @@ return function(require, LIP, Lib)
         local budget = 0
         while LIP.fireAccum >= 1 and budget < 8 do   -- cap 8 disparos/frame (anti-lag)
             LIP.fireAccum = LIP.fireAccum - 1; budget = budget + 1
-            fireOne(LIP.cachedHitPart, LIP.cachedHitPos, nextGST(now))   -- GST FORJADO
+            fireOne(LIP.cachedHitPart, LIP.cachedHitPos, nextGST())   -- GST REAL fresco
         end
     end
 
     -- respawn: resetea el contador (el arma nueva viene con el cargador lleno)
     LP.CharacterAdded:Connect(function() LIP.shotsFired = 0; LIP.reloading = false end)
+
+    -- ── DIAGNÓSTICO DE UNEQUIP (solo si WeaponDebug ON) ──────────────────────────
+    -- Loguea el estado cuando el server te quita el arma disparando (shots/mag, dest, reload). Off por
+    -- defecto para no ensuciar consola; encender con getgenv().LIP.weaponDebug = true.
+    local function watchChar(c)
+        if not c then return end
+        c.ChildRemoved:Connect(function(ch)
+            if not (ch:IsA("Tool") and LIP.weaponDebug) then return end
+            local firedRecently = LIP._gstReal and (os.clock() - LIP._gstReal) < 1
+            if not firedRecently then return end
+            task.defer(function()
+                local dest = (ch.Parent and ch.Parent.Name) or "nil/destroyed"
+                warn(string.format("[LIP][UNEQUIP] arma=%s dest=%s shots=%s/%s reloading=%s sinceReload=%.2fs sinceFire=%.3fs",
+                    ch.Name, dest, tostring(LIP.shotsFired), tostring(magSize()), tostring(LIP.reloading),
+                    os.clock() - (LIP._lastReloadReal or 0), os.clock() - (LIP._gstReal or 0)))
+            end)
+        end)
+    end
+    LP.CharacterAdded:Connect(watchChar)
+    watchChar(LP.Character)
 
     return Weapon
 end
