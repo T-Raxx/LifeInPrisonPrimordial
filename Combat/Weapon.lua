@@ -63,34 +63,36 @@ return function(require, LIP, Lib)
     end
     Weapon.magSize = magSize
 
-    -- RELOAD INSTANTÁNEO con GST REAL. op42 MagDrop (sin GST) → op40 OnReload(Tool, mag, GST()) con GST del
-    -- tiempo real (mismo criterio que el disparo: el server valida que el GST sea un token real/reciente).
-    -- Cargador = síncrono (tickAuto lo llama inline y sigue disparando sin corte). La munición no se gatea
-    -- estricto (probado), así que esto es un colchón por si algún arma sí la valida.
+    -- RELOAD con TIMING REAL (manual, botón/keybind). op42 MagDrop → esperar ReloadTime → op40(mag, GST()).
+    -- El server valida la duración del reload por el timestamp del GST del op40 (el juego manda el op40
+    -- SOLO tras animLen); un reload INSTANTÁNEO (op42→op40 mismo frame) = duración 0 = inválido = UNEQUIP.
+    -- Por eso el reload NO es instantáneo. La munición no se gatea estricto (probado), así que el reload es
+    -- opcional; existe por si algún arma sí la valida, o para resincronizar el cargador visual del juego.
     function Weapon.reload()
+        if LIP.reloading then return end
         local tool = firearm(); if not tool then return end
         local mag = magSize()
+        local rt  = O("ReloadTime") or 1.2
+        LIP.reloading = true
         LIP._selfReload = true               -- Net NO captura magammo de nuestros op40
         LIP._lastReloadReal = os.clock()
-        if T("ShotgunReload") then
-            -- ESCOPETA: op40 por bala (async, 1 frame entre shells)
-            if LIP.reloading then return end
-            LIP.reloading = true
-            task.spawn(function()
+        task.spawn(function()
+            if T("ShotgunReload") then
+                -- ESCOPETA: op40 por bala, espaciado rt/mag (protocolo per-shell)
                 for i = 1, mag do
                     local t2 = firearm() or tool
                     pcall(function() LIP.fire(40, t2, i, GST()) end)
-                    task.wait()
+                    task.wait(rt / mag)
                 end
-                LIP._selfReload = false; LIP.shotsFired = 0; LIP.reloading = false
-            end)
-        else
-            -- CARGADOR: op42 → op40(mag) con GST REAL. Instantáneo y síncrono.
-            pcall(function() LIP.fire(42, tool) end)
-            local t2 = firearm() or tool
-            pcall(function() LIP.fire(40, t2, mag, GST()) end)
-            LIP._selfReload = false; LIP.shotsFired = 0
-        end
+            else
+                -- CARGADOR: MagDrop → esperar la duración REAL de la anim → OnReload(mag)
+                pcall(function() LIP.fire(42, tool) end)
+                task.wait(rt)
+                local t2 = firearm() or tool
+                pcall(function() LIP.fire(40, t2, mag, GST()) end)
+            end
+            LIP._selfReload = false; LIP.shotsFired = 0; LIP.reloading = false
+        end)
     end
     Weapon.instantReload = Weapon.reload   -- alias UI (botón "Force Reload")
 
@@ -156,13 +158,9 @@ return function(require, LIP, Lib)
                 LIP.fireAccum = 0; lastTick = now; return
             end
         end
-        -- CARGADOR del server agotado (contamos nuestros op14) → instant reload forjado y seguir el stream.
-        -- Cargador normal = síncrono (shotsFired vuelve a 0, seguimos disparando sin corte). Escopeta =
-        -- async (reloading=true → esperamos ese tick). magSize = auto-detectado (op40 del reload manual) o slider.
-        if (LIP.shotsFired or 0) >= magSize() then
-            Weapon.reload()
-            if LIP.reloading then LIP.fireAccum = 0; return end
-        end
+        -- NO auto-reload: el server NO gatea munición (probado: 40 disparos > mag sin recargar = 0 unequip).
+        -- El reload instantáneo (op42→op40 mismo frame) es lo que causaba el unequip (~disparo 15). Si
+        -- mantenés mouse1, el JUEGO además dispara y recarga su propia munición. Reload = manual (botón/keybind).
         -- acumulador: rate = disparos/s REALES (desacoplado del framerate)
         local rate = math.clamp(O("AutoFireRate") or 30, 1, 120)
         local dt = (lastTick > 0) and math.min(now - lastTick, 0.1) or 0
