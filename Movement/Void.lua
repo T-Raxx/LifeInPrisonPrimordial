@@ -1,8 +1,8 @@
 -- Movement/Void.lua — FACTORY. Void spam (anti-aim posicional) + visualizador.
--- NO toca el vacío (Y baja = muerte). Manda la posición SPOOFEADA (server-seen) a ALTO y a
--- posiciones LEJANAS en patrones (orbita lejana / random / tween / TP spots). Usa el desync de
--- Combat/Spoof: el cuerpo/cámara reales NO se mueven, solo la pos que ve el server.
--- Visualizador: Part neón + BillboardGui icono + tracer Drawing a la pos spoofeada.
+-- Origen ABSOLUTO fijo (0,100,0). Cada frame manda la pos spoofeada a coordenadas + rotación XYZ
+-- random MUY LEJANAS de ese origen → el server te ve teleportando por todos lados = imposible pegarte.
+-- Respeta el MASTER Pos Spoof (LIP.posSpoof): ON = desync (cuerpo/cámara reales quietos), OFF = mueve
+-- el cuerpo real (teleport crudo, riesgoso). Visualizador: Part neón + icono + tracer.
 return function(require, LIP, Lib)
     local Players    = game:GetService("Players")
     local RunService = game:GetService("RunService")
@@ -11,86 +11,49 @@ return function(require, LIP, Lib)
     local Spoof = require("Combat.Spoof")
     local Void = {}
 
+    local ORIGIN = Vector3.new(0, 100, 0)   -- origen absoluto (pedido del usuario)
+
     local function myRoot() local c = LP.Character; return c and c:FindFirstChild("HumanoidRootPart") end
     local function O(f) local o = Lib.Options[f]; return o and o.Value end
     local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
 
-    -- presets: distancia XZ, altura, patrón
-    Void.PRESETS = {
-        High        = { pattern = "High",   height = 300,  dist = 0,    speed = 1 },
-        FarOrbit    = { pattern = "Orbit",  height = 200,  dist = 400,  speed = 8 },
-        RandomFar   = { pattern = "Random", height = 250,  dist = 600,  speed = 30 },
-        TweenPoints = { pattern = "Tween",  height = 180,  dist = 350,  speed = 4 },
-    }
-    function Void.applyPreset(name)
-        local p = Void.PRESETS[name]; if not p then return end
-        local Op = Lib.Options
-        if Op.VoidPattern then Op.VoidPattern:SetValue(p.pattern) end
-        if Op.VoidHeight  then Op.VoidHeight:SetValue(p.height) end
-        if Op.VoidDist    then Op.VoidDist:SetValue(p.dist) end
-        if Op.VoidSpeed   then Op.VoidSpeed:SetValue(p.speed) end
+    -- PRNG LCG (Math.random está bloqueado en el executor) → random real por frame
+    local rngState = 2463534242
+    local function rnd()
+        rngState = (rngState * 1103515245 + 12345) % 2147483648
+        return rngState / 2147483648
+    end
+    local function rndSigned() return rnd() * 2 - 1 end
+
+    -- calcula la pos+rot absoluta random (muy lejos del origen 0,100,0)
+    local function randomFar(dist)
+        local pos = ORIGIN + Vector3.new(rndSigned() * dist, rndSigned() * dist * 0.5, rndSigned() * dist)
+        local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)
+        return CFrame.new(pos) * rot
     end
 
-    local seed = 0
-    local TWEEN = { Vector3.new(1,0,1), Vector3.new(-1,0,1), Vector3.new(-1,0,-1), Vector3.new(1,0,-1) }
-    local function patternPos(realPos, opts)
-        local h, d, spd = opts.height or 250, opts.dist or 400, opts.speed or 8
-        local pat = opts.pattern or "Orbit"
-        if pat == "High" then
-            return realPos + Vector3.new(0, h, 0)
-        elseif pat == "Random" then
-            seed = seed + spd * 0.02
-            local a, b = math.noise(seed, 0) * math.pi * 2, math.noise(0, seed)
-            return realPos + Vector3.new(math.cos(a) * d, h + b * h * 0.3, math.sin(a) * d)
-        elseif pat == "Tween" then
-            seed = seed + spd * 0.01
-            local i = (math.floor(seed) % #TWEEN) + 1
-            local j = (i % #TWEEN) + 1
-            local f = seed - math.floor(seed)
-            local off = TWEEN[i]:Lerp(TWEEN[j], f) * d
-            return realPos + Vector3.new(off.X, h, off.Z)
-        else -- Orbit
-            seed = seed + spd * 0.03
-            return realPos + Vector3.new(math.cos(seed) * d, h, math.sin(seed) * d)
-        end
-    end
-
-    local rseed = 0
-    -- absolute = base fija (anchor absoluto capturado 1 vez, en intervalos) en vez de relativo a tu pos.
     function Void.tick(opts)
         local root = myRoot(); local cam = Workspace.CurrentCamera
         if not root then Spoof.stop(cam); return end
-        local realCF = Spoof.trueCF(root)
-        LIP.cachedRoot   = root
-        LIP.spoofRealCF  = realCF
-        LIP.spoofOn      = true
-        LIP.spoofVel     = root.AssemblyLinearVelocity
-        LIP.spoofRestore = realCF
+        local dist = opts.dist or 1000
+        local goCF = randomFar(dist)
+        LIP.spoofFakePos = goCF.Position
 
-        local base = realCF.Position
-        if opts.absolute then
-            -- posición ABSOLUTA por intervalos (combo con target strafe): salta a un anchor fijo
-            local iv = opts.interval or 0.4
-            if not LIP.voidAnchor or (os.clock() - (LIP.voidAnchorT or 0)) > iv then
-                LIP.voidAnchor = patternPos(realCF.Position, opts)   -- nuevo punto absoluto
-                LIP.voidAnchorT = os.clock()
-            end
-            base = LIP.voidAnchor
-            LIP.spoofFakePos = base
+        if opts.posSpoof then
+            -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
+            local realCF = Spoof.trueCF(root)
+            LIP.cachedRoot   = root
+            LIP.spoofRealCF  = realCF
+            LIP.spoofOn      = true
+            LIP.spoofVel     = root.AssemblyLinearVelocity
+            LIP.spoofRestore = realCF
             Spoof.camToLocal(cam, realCF)
-            rseed = rseed + 1
-            local rot = CFrame.Angles(math.noise(rseed,0)*6, math.noise(0,rseed)*6, math.noise(rseed,rseed)*6)
-            pcall(function() root.CFrame = CFrame.new(base) * rot end)
-            return
+            pcall(function() root.CFrame = goCF end)
+        else
+            -- SIN spoof: mueve el cuerpo real (teleport crudo, riesgoso)
+            if LIP.spoofOn then Spoof.stop(cam) end
+            pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
         end
-
-        Spoof.camToLocal(cam, realCF)
-        local goPos = patternPos(base, opts)
-        LIP.spoofFakePos = goPos
-        -- rotación CFrame XYZ randomizada cada frame (anti-aim posicional)
-        rseed = rseed + 1
-        local rot = CFrame.Angles(math.noise(rseed,0)*6, math.noise(0,rseed)*6, math.noise(rseed,rseed)*6)
-        pcall(function() root.CFrame = CFrame.new(goPos) * rot end)
     end
 
     -- ── VISUALIZADOR ──────────────────────────────────────────────────────────
@@ -100,11 +63,11 @@ return function(require, LIP, Lib)
             vizPart = Instance.new("Part")
             vizPart.Name = "LIP_SpoofViz"; vizPart.Shape = Enum.PartType.Ball
             vizPart.Material = Enum.Material.Neon; vizPart.Color = Color3.fromRGB(202,151,161)
-            vizPart.Size = Vector3.new(2,2,2); vizPart.Anchored = true; vizPart.CanCollide = false
+            vizPart.Size = Vector3.new(3,3,3); vizPart.Anchored = true; vizPart.CanCollide = false
             vizPart.Transparency = 0.3
             pcall(function() vizPart.Parent = Workspace end)
-            local bb = Instance.new("BillboardGui"); bb.Size = UDim2.fromOffset(60,20)
-            bb.AlwaysOnTop = true; bb.StudsOffset = Vector3.new(0,1.5,0); bb.Parent = vizPart
+            local bb = Instance.new("BillboardGui"); bb.Size = UDim2.fromOffset(70,20)
+            bb.AlwaysOnTop = true; bb.StudsOffset = Vector3.new(0,2,0); bb.Parent = vizPart
             local tl = Instance.new("TextLabel"); tl.Size = UDim2.fromScale(1,1); tl.BackgroundTransparency = 1
             tl.Text = "SPOOF"; tl.TextColor3 = Color3.fromRGB(202,151,161); tl.TextStrokeTransparency = 0
             tl.Font = Enum.Font.GothamBold; tl.TextSize = 12; tl.Parent = bb

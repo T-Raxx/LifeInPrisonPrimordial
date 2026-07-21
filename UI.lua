@@ -53,8 +53,8 @@ return function(require, LIP, Lib)
         c3:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 25, Default = 10, Decimals = 1, Suffix = "studs" })
         c3:AddSlider("StrafeSpeed",  { Text = "Speed", Min = 1, Max = 40, Default = 4 })
         c3:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
-        c3:AddToggle("StrafePosSpoof", { Text = "Pos Spoof", Default = true,
-            Tooltip = "ON = desync (cuerpo/cámara reales quietos). OFF = mueve el cuerpo real a orbitar." })
+        c3:AddToggle("PosSpoof", { Text = "Pos Spoof (master)", Default = true,
+            Tooltip = "MASTER de Strafe + Void. ON = desync (cuerpo/cámara reales quietos). OFF = mueve el cuerpo real." })
         c3:AddToggle("StrafeChase", { Text = "Dynamic Chase", Default = true,
             Tooltip = "Predice la pos del target por su velocidad (orbita su posición futura)" })
         c3:AddToggle("StrafeBait", { Text = "Bait", Default = false,
@@ -80,22 +80,13 @@ return function(require, LIP, Lib)
         local r2 = RSR:AddPanel("Notes", { Column = 2 })
         r2:AddLabel("Median = robusto a extremos. Weighted = recientes pesan más. Predict = lead por velocidad.", {})
 
-        -- Sección Void Spam (en Rage)
-        local RSV = Rage:AddSection("Void Spam", "Anti-aim posicional (desync)")
+        -- Sección Void Spam (en Rage) — origen absoluto (0,100,0), random far cada frame
+        local RSV = Rage:AddSection("Void Spam", "Anti-aim · origen absoluto (0,100,0)")
         local vd = RSV:AddPanel("Void Spam", { Column = 1 })
         vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
-            Tooltip = "Manda la pos spoofeada a alto/lejos en patrones (NO al vacío). Rotación CFrame random." })
-        vd:AddDropdown("VoidPreset", { Text = "Preset", Values = { "High", "FarOrbit", "RandomFar", "TweenPoints" }, Default = "FarOrbit",
-            Callback = function(v) Void.applyPreset(v) end })
-        vd:AddDropdown("VoidPattern", { Text = "Pattern", Values = { "High", "Orbit", "Random", "Tween" }, Default = "Orbit" })
-        vd:AddSlider("VoidHeight", { Text = "Height", Min = 50, Max = 1000, Default = 200, Suffix = "studs" })
-        vd:AddSlider("VoidDist", { Text = "Distance", Min = 0, Max = 2000, Default = 400, Suffix = "studs" })
-        vd:AddSlider("VoidSpeed", { Text = "Speed", Min = 1, Max = 60, Default = 8 })
-        local vd2 = RSV:AddPanel("Combo & Viz", { Column = 2 })
-        vd2:AddToggle("VoidAbsolute", { Text = "Absolute (combo strafe)", Default = false,
-            Tooltip = "Con Target Strafe: salta a posiciones ABSOLUTAS por intervalos en vez de relativas" })
-        vd2:AddSlider("VoidInterval", { Text = "Interval", Min = 0.1, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s" })
-        vd2:AddToggle("VoidViz", { Text = "Visualizer", Default = true, Tooltip = "Part + icono + tracer a la pos spoofeada" })
+            Tooltip = "Origen absoluto (0,100,0), coords + rotación XYZ random MUY lejanas cada frame. Usa el master Pos Spoof." })
+        vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
+        vd:AddToggle("VoidViz", { Text = "Visualizer", Default = true, Tooltip = "Part + icono + tracer a la pos spoofeada" })
 
         --========================= LEGIT =========================--
         local Legit = Window:AddCategory("Legit", "target")

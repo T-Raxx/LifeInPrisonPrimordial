@@ -92,31 +92,23 @@ return function(require, LIP, Lib)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
         -- ── POSICIÓN: Godmode > Strafe > Void (excluyentes) ──
-        if godOn then
-            if LIP.spoofOn then Strafe.stop() end
-            Godmode.tick()
-        else
-            if LIP.godBase then Godmode.stop() end
-            if strafeOn and voidOn then
-                -- COMBO strafe+void: void en modo ABSOLUTO por intervalos (posiciones fijas, no relativas)
-                Void.tick({ pattern = O.VoidPattern.Value, height = O.VoidHeight.Value, dist = O.VoidDist.Value,
-                            speed = O.VoidSpeed.Value, absolute = true, interval = O.VoidInterval.Value })
-            elseif strafeOn then
-                local st = LIP.target or Target.nearestEnemy({ range = 200,
-                              teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
-                if st then
-                    Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
-                                      speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
-                                      posSpoof = T.StrafePosSpoof.Value, chase = T.StrafeChase.Value,
-                                      bait = T.StrafeBait.Value, predict = O.ResolverPredict.Value })
-                else Strafe.stop() end
-            elseif voidOn then
-                Void.tick({ pattern = O.VoidPattern.Value, height = O.VoidHeight.Value,
-                            dist = O.VoidDist.Value, speed = O.VoidSpeed.Value,
-                            absolute = T.VoidAbsolute.Value, interval = O.VoidInterval.Value })
-            elseif LIP.spoofOn then
-                Strafe.stop()
-            end
+        if godOn then Godmode.tick() end   -- no-op + aviso (godmode = ban HBE, neutralizado)
+
+        -- MASTER Pos Spoof controla strafe Y void. Prioridad: Strafe > Void.
+        local posSpoof = T.PosSpoof and T.PosSpoof.Value
+        if strafeOn then
+            local st = LIP.target or Target.nearestEnemy({ range = 200,
+                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            if st then
+                Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
+                                  speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
+                                  posSpoof = posSpoof, chase = T.StrafeChase.Value,
+                                  bait = T.StrafeBait.Value, predict = O.ResolverPredict.Value })
+            else Strafe.stop() end
+        elseif voidOn then
+            Void.tick({ dist = O.VoidDist.Value, posSpoof = posSpoof })
+        elseif LIP.spoofOn then
+            Strafe.stop()
         end
 
         -- spectator (override de cámara al target manual)
