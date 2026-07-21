@@ -1,5 +1,4 @@
--- LifeInPrisonPrimordial bundle self-contained (PrimordialUI inline)
--- LifeInPrisonPrimordial — bundle generado por build.lua. No editar a mano.
+-- LifeInPrisonPrimordial bundle self-contained (PrimordialUI inline). No editar a mano.
 local _MODS = {}
 _MODS["Core.State"] = (function()
 -- Core/State.lua — FACTORY. Estado global único getgenv().LIP, tracking de conns/hooks,
@@ -131,6 +130,18 @@ return function(require, LIP, Lib)
                         p[4] = D.meleePart                   -- hitPart
                         p[5] = ZERO                          -- objspace (centro)
                         return orig(self, unpackf(p, 1, p.n))
+                    -- TURRET silent aim (op56, fase 2 = fire): swap el hit-table al target (mismo formato)
+                    elseif op == 56 and p[3] == 2 and D.swapOn and D.cachedHitPart and D.cachedHitPos then
+                        local hits = p[4]
+                        if type(hits) == "table" then
+                            for i = 1, #hits do
+                                local hh = hits[i]
+                                if type(hh) == "table" then
+                                    hh[3] = D.cachedHitPos; hh[4] = D.cachedHitPart; hh[5] = D.cachedHitPos; hh[6] = ZERO
+                                end
+                            end
+                            return orig(self, unpackf(p, 1, p.n))
+                        end
                     end
                 end
                 return orig(self, ...)                        -- passthrough transparente
@@ -359,7 +370,7 @@ return function(require, LIP, Lib)
         end))
     end
 
-    -- ancla de cámara persistente (sobrevive reload)
+    -- anclas persistentes (cam + connection-weld). Sobreviven reload.
     function Spoof.ensureParts()
         if not getgenv().__LIP_CamAnchor or not getgenv().__LIP_CamAnchor.Parent then
             local p = Instance.new("Part")
@@ -368,7 +379,35 @@ return function(require, LIP, Lib)
             pcall(function() p.Parent = Workspace end)
             getgenv().__LIP_CamAnchor = p
         end
+        if not getgenv().__LIP_ConnPart or not getgenv().__LIP_ConnPart.Parent then
+            local p = Instance.new("Part")
+            p.Name = "LIP_Conn"; p.Anchored = true; p.CanCollide = false
+            p.Transparency = 1; p.Size = Vector3.new(2, 2, 1)
+            pcall(function() p.Parent = Workspace end)
+            getgenv().__LIP_ConnPart = p
+        end
         LIP.camAnchor = getgenv().__LIP_CamAnchor
+        LIP.connPart  = getgenv().__LIP_ConnPart
+    end
+
+    -- CONNECTION WELD EXPLOIT: el server replica la pos del root desde PhysicsRepRootPart. Apuntándolo
+    -- a connPart, el server te ve en connPart.CFrame mientras tu CUERPO REAL queda LIBRE (sin escribir
+    -- root.CFrame, sin pelea de física, sin restore). Camina/dispara normal; el server te ve en el weld.
+    local sethidden = sethiddenproperty
+    function Spoof.weldTo(goCF)
+        local r = myRoot()
+        if r and sethidden and LIP.connPart then
+            pcall(function()
+                LIP.connPart.CFrame = goCF
+                sethidden(r, "PhysicsRepRootPart", LIP.connPart)
+            end)
+            LIP.connRep = true
+        end
+    end
+    function Spoof.unweld()
+        local r = myRoot()
+        if r and sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", r) end) end
+        LIP.connRep = false
     end
 
     function Spoof.install()
@@ -402,13 +441,15 @@ return function(require, LIP, Lib)
         if hum then pcall(function() cam.CameraSubject = hum end) end
     end
 
-    -- corta el spoof y restaura cámara + cuerpo a la pos real
+    -- corta cualquier spoof/weld y restaura cámara + cuerpo a la pos real
     function Spoof.stop(cam)
         if LIP.spoofOn then
             local r = myRoot()
             if r and LIP.spoofRealCF then pcall(function() r.CFrame = LIP.spoofRealCF end) end
         end
+        if LIP.connRep then Spoof.unweld() end
         LIP.spoofOn = false; LIP.spoofRealCF = nil; LIP.spoofRestore = nil; LIP.spoofVel = nil
+        LIP.spoofFakePos = nil
         if cam then Spoof.camToChar(cam) end
     end
 
@@ -578,7 +619,12 @@ return function(require, LIP, Lib)
         local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
-        if opts.posSpoof then
+        if opts.connExploit then
+            -- CONNECTION WELD: server te ve orbitando (connPart); CUERPO REAL libre. Caminás/disparás normal.
+            if LIP.spoofOn then Spoof.stop(cam) end   -- salir del CFrame-desync si estaba
+            Spoof.weldTo(goCF)
+        elseif opts.posSpoof then
+            if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
@@ -591,7 +637,7 @@ return function(require, LIP, Lib)
         else
             -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear Y angular cada frame para que
             -- el motor no ACUMULE velocidad (si no, los teleports quedan "duros" y arrastran momentum).
-            if LIP.spoofOn then Spoof.stop(cam) end
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function()
                 root.CFrame = goCF
                 root.AssemblyLinearVelocity = Vector3.zero
@@ -767,31 +813,137 @@ end
 
 end)()
 _MODS["Combat.Godmode"] = (function()
--- Combat/Godmode.lua — NEUTRALIZADO.
--- El godmode por desplazamiento de partes (mover Head/Torso/HRP) = detectado como HBE
--- (Hitbox Expander) por el anticheat SERVER-SIDE → BAN (confirmado en vivo 2026-07-20).
--- NO hay anti-hit seguro por este método: el reverse mostró que el ragdoll SOLO no da inmunidad,
--- y la única forma de anti-hit era mover el hitbox — que es exactamente lo que HBE detecta.
--- → Godmode queda como NO-OP (no mueve nada) + aviso. No re-implementar mover partes.
+-- Combat/Godmode.lua — anti-hit vía self-ragdoll + mover el assembly (RESTAURADO).
+-- El HBE NO era esto (era el hitPos offset del disparo, ya fixeado). Reverse: IsRagdoll = campo Lua,
+-- gate de disparo solo-cliente → op14 directo dispara ragdolleado (AutoFire lo hace). El anti-hit =
+-- mover el HITBOX (Head/Torso/HRP) lejos. Movemos el assembly ENTERO junto (mismo delta, velocidad 0
+-- → no estira constraints, no borra partes). Equipar arma ANTES de ragdollear.
 return function(require, LIP, Lib)
+    local Players = game:GetService("Players")
+    local LP = Players.LocalPlayer
+    local Ragdoll = require("Combat.Ragdoll")
     local God = {}
-    local warned = false
 
-    function God.tick()
-        if not warned then
-            warned = true
-            pcall(function()
-                if LIP.Library and LIP.Library.Notify then
-                    LIP.Library:Notify({ Title = "Godmode desactivado",
-                        Description = "Mover el hitbox = ban por HBE. Sin anti-hit seguro por este método.", Time = 7 })
-                end
-            end)
+    local function char() return LP.Character end
+    local function hrp() local c = char(); return c and c:FindFirstChild("HumanoidRootPart") end
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+
+    -- presets EXTREMOS (height en studs)
+    God.PRESETS = {
+        High        = { mode = "High",   height = 150 },
+        ExtremeHigh = { mode = "High",   height = 800 },
+        Jitter      = { mode = "Jitter", height = 250 },
+        FarJitter   = { mode = "Jitter", height = 600 },
+    }
+    function God.applyPreset(name)
+        local p = God.PRESETS[name]; if not p then return end
+        local Op = Lib.Options
+        if Op.GodMode   then Op.GodMode:SetValue(p.mode) end
+        if Op.GodHeight then Op.GodHeight:SetValue(p.height) end
+    end
+
+    local seed = 0
+    -- mueve el assembly ENTERO (mismo delta) + velocidades 0 → no estira constraints, no borra partes
+    local function moveAssembly(targetPos)
+        local c = char(); local root = hrp(); if not (c and root) then return end
+        local delta = targetPos - root.Position
+        for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") then
+                pcall(function()
+                    p.CFrame = p.CFrame + delta
+                    p.AssemblyLinearVelocity = Vector3.zero
+                    p.AssemblyAngularVelocity = Vector3.zero
+                end)
+            end
         end
     end
 
-    function God.stop() warned = false; LIP.godBase = nil end
+    function God.tick()
+        if not Ragdoll.isRagdolled() then LIP.fire(23); return end   -- asegura ragdoll on (1 frame)
+        local root = hrp(); if not root then return end
+        if not LIP.godBase then LIP.godBase = root.Position end
+        local mode = O("GodMode") or "High"
+        local h = O("GodHeight") or 150
+        local base = LIP.godBase
+        local pos
+        if mode == "Jitter" then
+            seed = seed + 1
+            pos = base + Vector3.new(math.noise(seed,0) * 80, h + math.noise(0,seed) * 50, math.noise(seed,seed) * 80)
+        else -- High: te sube; enemigos apuntan al piso, vos arriba
+            pos = base + Vector3.new(0, h, 0)
+        end
+        moveAssembly(pos)
+    end
+
+    function God.stop()
+        LIP.godBase = nil
+        if Ragdoll.isRagdolled() then LIP.fire(23) end   -- des-ragdoll
+    end
 
     return God
+end
+
+end)()
+_MODS["Combat.Niche"] = (function()
+-- Combat/Niche.lua — FACTORY. Exploits niche (payloads del reverse, docs/exploits-2026-07.md).
+--  · Throw spam  op43  OnThrow(tool,1)=arm  →  OnThrow(tool,2,aimMode,targetPos,power)=throw
+--  · C4 detonate op44  ItemC4Detonate(tool)  (detona sin delay)
+--  · Arrest/cuffs op57 Handcuffs(cuffsTool, targetPlayer)  (validación 8-studs/LOS es client-side → a distancia)
+return function(require, LIP, Lib)
+    local Players = game:GetService("Players")
+    local LP = Players.LocalPlayer
+    local Target = require("Combat.Target")
+    local Niche = {}
+
+    local function char() return LP.Character end
+    local function myHRP() local c = char(); return c and c:FindFirstChild("HumanoidRootPart") end
+    local function equipped() local c = char(); return c and c:FindFirstChildOfClass("Tool") end
+    local function findTool(namePart)
+        namePart = namePart:lower()
+        for _, src in ipairs({ char(), LP:FindFirstChild("Backpack") }) do
+            for _, x in ipairs(src and src:GetChildren() or {}) do
+                if x:IsA("Tool") and x.Name:lower():find(namePart) then return x end
+            end
+        end
+    end
+
+    -- THROW (op43) al enemigo más cercano
+    local lastThrow = 0
+    function Niche.throwAt(opts)
+        local now = os.clock()
+        if now - lastThrow < (opts.rate or 1.0) then return end
+        local t = equipped(); local hrp = myHRP(); if not (t and hrp) then return end
+        local tgt = Target.nearestEnemy({ range = opts.range or 250, teamCheck = opts.teamCheck, friendCheck = opts.friendCheck })
+        local ch = tgt and tgt.Character
+        local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
+        if not part then return end
+        lastThrow = now
+        local dist = (part.Position - hrp.Position).Magnitude
+        local power = math.clamp(dist * 0.5, 1, 25)
+        LIP.fire(43, t, 1)                                -- arm
+        LIP.fire(43, t, 2, 0, part.Position, power)       -- throw (aimMode 0 = raycast)
+    end
+
+    -- C4 (op44) — detona el C4 (busca el tool por nombre)
+    function Niche.detonateC4()
+        local c4 = findTool("c4")
+        if c4 then LIP.fire(44, c4) end
+    end
+
+    -- ARREST (op57) — esposa al enemigo más cercano (necesita Handcuffs; ideal Police)
+    local lastArrest = 0
+    function Niche.arrest(opts)
+        local now = os.clock()
+        if now - lastArrest < (opts.rate or 1.0) then return end
+        local cuffs = findTool("cuff") or findTool("handcuff")
+        if not cuffs then return end
+        local tgt = Target.nearestEnemy({ range = opts.range or 30, teamCheck = opts.teamCheck, friendCheck = opts.friendCheck })
+        if not tgt then return end
+        lastArrest = now
+        LIP.fire(57, cuffs, tgt)
+    end
+
+    return Niche
 end
 
 end)()
@@ -1111,7 +1263,12 @@ return function(require, LIP, Lib)
         local goCF = patternCF(dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
-        if opts.posSpoof then
+        if opts.connExploit then
+            -- CONNECTION WELD: server te ve lejos/alto (connPart); cuerpo REAL libre.
+            if LIP.spoofOn then Spoof.stop(cam) end
+            Spoof.weldTo(goCF)
+        elseif opts.posSpoof then
+            if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
@@ -1123,7 +1280,7 @@ return function(require, LIP, Lib)
             pcall(function() root.CFrame = goCF end)
         else
             -- SIN spoof: mueve el cuerpo real (teleport crudo, riesgoso)
-            if LIP.spoofOn then Spoof.stop(cam) end
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
         end
     end
@@ -1368,6 +1525,8 @@ return function(require, LIP, Lib)
         local Ragdoll = require("Combat.Ragdoll")
         local Weapon  = require("Combat.Weapon")
         local Strafe  = require("Combat.Strafe")
+        local Godmode = require("Combat.Godmode")
+        local Niche   = require("Combat.Niche")
         local Vehicle = require("Movement.Vehicle")
         local Void    = require("Movement.Void")
         local Util    = require("Combat.Utility")
@@ -1425,6 +1584,8 @@ return function(require, LIP, Lib)
         c3:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
         c3:AddToggle("PosSpoof", { Text = "Pos Spoof (master)", Default = true,
             Tooltip = "MASTER de Strafe + Void. ON = desync (cuerpo/cámara reales quietos). OFF = mueve el cuerpo real." })
+        c3:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
+            Tooltip = "sethiddenproperty PhysicsRepRootPart → server te ve en el weld, CUERPO REAL LIBRE (caminás/disparás normal). Override de Pos Spoof." })
         c3:AddToggle("StrafeChase", { Text = "Dynamic Chase", Default = true,
             Tooltip = "Predice la pos del target por su velocidad (orbita su posición futura)" })
         c3:AddToggle("StrafeBait", { Text = "Bait", Default = false,
@@ -1502,9 +1663,11 @@ return function(require, LIP, Lib)
         v2:AddKeybind("RagdollKey", { Text = "Ragdoll Key", Mode = "Toggle", Callback = function() Ragdoll.toggle() end })
         v2:AddToggle("RagdollLock", { Text = "Permanent Ragdoll", Default = false })
         v2:AddToggle("Godmode", { Text = "Godmode (ragdoll)", Default = false,
-            Tooltip = "Self-ragdoll + mueve el assembly lejos (hitbox real fuera). Dispara con AutoFire (op14 directo). WIP" })
-        v2:AddDropdown("GodMode", { Text = "God Mode", Values = { "High", "Jitter" }, Default = "High" })
-        v2:AddSlider("GodHeight", { Text = "God Height", Min = 50, Max = 500, Default = 150, Suffix = "studs" })
+            Tooltip = "Self-ragdoll + mueve el assembly lejos (hitbox real fuera). Dispará con AutoFire (op14 directo bypasea el gate de ragdoll). Equipá el arma ANTES." })
+        v2:AddDropdown("GodPreset", { Text = "Preset", Values = { "High", "ExtremeHigh", "Jitter", "FarJitter" }, Default = "High",
+            Callback = function(v) Godmode.applyPreset(v) end })
+        v2:AddDropdown("GodMode", { Text = "Mode", Values = { "High", "Jitter" }, Default = "High" })
+        v2:AddSlider("GodHeight", { Text = "God Height", Min = 50, Max = 1500, Default = 150, Suffix = "studs" })
         local v3 = VS:AddPanel("Utility", { Column = 2 })
         v3:AddLabel("Join Team (op1)", { Header = true })
         v3:AddButton("Police", function() Util.joinTeam("Police") end)
@@ -1513,6 +1676,13 @@ return function(require, LIP, Lib)
         v3:AddButton("Neutral", function() Util.joinTeam("Neutral") end)
         v3:AddButton("Grab Tool (op12)", function() Util.grabNearest() end)
         v3:AddButton("Heal (op28)", function() Util.healSpam() end)
+        v3:AddDivider()
+        v3:AddLabel("Niche", { Header = true })
+        v3:AddToggle("AutoThrow", { Text = "Auto Throw (op43)", Default = false,
+            Tooltip = "Lanza el throwable equipado (granada/cuchillo) al enemigo cercano" })
+        v3:AddToggle("AutoArrest", { Text = "Auto Arrest (op57)", Default = false,
+            Tooltip = "Esposa al enemigo cercano (necesita Handcuffs; Police). Validación 8-studs es client-side" })
+        v3:AddButton("Detonate C4 (op44)", function() Niche.detonateC4() end)
 
         --========================= VISUALS =========================--
         local Vis  = Window:AddCategory("Visuals", "eye")
@@ -1554,6 +1724,7 @@ return function(require, LIP, Lib)
     local Strafe  = require("Combat.Strafe")
     local Weapon  = require("Combat.Weapon")
     local Godmode = require("Combat.Godmode")
+    local Niche   = require("Combat.Niche")
     local Net     = require("Net")
     local Move    = require("Movement.Movement")
     local Vehicle = require("Movement.Vehicle")
@@ -1666,24 +1837,29 @@ return function(require, LIP, Lib)
         resolveTarget(filters, needAim)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
-        -- ── POSICIÓN: Godmode > Strafe > Void (excluyentes) ──
-        if godOn then Godmode.tick() end   -- no-op + aviso (godmode = ban HBE, neutralizado)
-
-        -- MASTER Pos Spoof controla strafe Y void. Prioridad: Strafe > Void.
+        -- ── POSICIÓN: Godmode > Strafe > Void (EXCLUYENTES). PosSpoof/ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
-        if strafeOn then
+        local connExp  = T.ConnExploit and T.ConnExploit.Value
+        if godOn then
+            if LIP.spoofOn or LIP.connRep then Strafe.stop() end
+            Godmode.tick()
+        elseif strafeOn then
+            if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
                           teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
             if st then
                 Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
                                   speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
-                                  posSpoof = posSpoof, chase = T.StrafeChase.Value,
+                                  posSpoof = posSpoof, connExploit = connExp, chase = T.StrafeChase.Value,
                                   bait = T.StrafeBait.Value, predict = O.ResolverPredict.Value })
             else Strafe.stop() end
         elseif voidOn then
-            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value, posSpoof = posSpoof })
-        elseif LIP.spoofOn then
-            Strafe.stop()
+            if LIP.godBase then Godmode.stop() end
+            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value,
+                        posSpoof = posSpoof, connExploit = connExp })
+        else
+            if LIP.godBase then Godmode.stop() end
+            if LIP.spoofOn or LIP.connRep then Strafe.stop() end
         end
 
         -- spectator (override de cámara al target manual)
@@ -1698,6 +1874,14 @@ return function(require, LIP, Lib)
         else LIP.meleePart = nil end
         if T.AutoPunch and T.AutoPunch.Value then
             Melee.autoPunch({ range = O.PunchRange.Value, rate = 0.5, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+        end
+
+        -- niche autos (throw / arrest)
+        if T.AutoThrow and T.AutoThrow.Value then
+            Niche.throwAt({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+        end
+        if T.AutoArrest and T.AutoArrest.Value then
+            Niche.arrest({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
         end
 
         -- permanent ragdoll (si no está godmode, que ya maneja el ragdoll)

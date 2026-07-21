@@ -69,6 +69,18 @@ return function(require, LIP, Lib)
                         p[4] = D.meleePart                   -- hitPart
                         p[5] = ZERO                          -- objspace (centro)
                         return orig(self, unpackf(p, 1, p.n))
+                    -- TURRET silent aim (op56, fase 2 = fire): swap el hit-table al target (mismo formato)
+                    elseif op == 56 and p[3] == 2 and D.swapOn and D.cachedHitPart and D.cachedHitPos then
+                        local hits = p[4]
+                        if type(hits) == "table" then
+                            for i = 1, #hits do
+                                local hh = hits[i]
+                                if type(hh) == "table" then
+                                    hh[3] = D.cachedHitPos; hh[4] = D.cachedHitPart; hh[5] = D.cachedHitPos; hh[6] = ZERO
+                                end
+                            end
+                            return orig(self, unpackf(p, 1, p.n))
+                        end
                     end
                 end
                 return orig(self, ...)                        -- passthrough transparente

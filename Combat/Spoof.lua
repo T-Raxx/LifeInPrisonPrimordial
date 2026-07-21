@@ -32,7 +32,7 @@ return function(require, LIP, Lib)
         end))
     end
 
-    -- ancla de cámara persistente (sobrevive reload)
+    -- anclas persistentes (cam + connection-weld). Sobreviven reload.
     function Spoof.ensureParts()
         if not getgenv().__LIP_CamAnchor or not getgenv().__LIP_CamAnchor.Parent then
             local p = Instance.new("Part")
@@ -41,7 +41,35 @@ return function(require, LIP, Lib)
             pcall(function() p.Parent = Workspace end)
             getgenv().__LIP_CamAnchor = p
         end
+        if not getgenv().__LIP_ConnPart or not getgenv().__LIP_ConnPart.Parent then
+            local p = Instance.new("Part")
+            p.Name = "LIP_Conn"; p.Anchored = true; p.CanCollide = false
+            p.Transparency = 1; p.Size = Vector3.new(2, 2, 1)
+            pcall(function() p.Parent = Workspace end)
+            getgenv().__LIP_ConnPart = p
+        end
         LIP.camAnchor = getgenv().__LIP_CamAnchor
+        LIP.connPart  = getgenv().__LIP_ConnPart
+    end
+
+    -- CONNECTION WELD EXPLOIT: el server replica la pos del root desde PhysicsRepRootPart. Apuntándolo
+    -- a connPart, el server te ve en connPart.CFrame mientras tu CUERPO REAL queda LIBRE (sin escribir
+    -- root.CFrame, sin pelea de física, sin restore). Camina/dispara normal; el server te ve en el weld.
+    local sethidden = sethiddenproperty
+    function Spoof.weldTo(goCF)
+        local r = myRoot()
+        if r and sethidden and LIP.connPart then
+            pcall(function()
+                LIP.connPart.CFrame = goCF
+                sethidden(r, "PhysicsRepRootPart", LIP.connPart)
+            end)
+            LIP.connRep = true
+        end
+    end
+    function Spoof.unweld()
+        local r = myRoot()
+        if r and sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", r) end) end
+        LIP.connRep = false
     end
 
     function Spoof.install()
@@ -75,13 +103,15 @@ return function(require, LIP, Lib)
         if hum then pcall(function() cam.CameraSubject = hum end) end
     end
 
-    -- corta el spoof y restaura cámara + cuerpo a la pos real
+    -- corta cualquier spoof/weld y restaura cámara + cuerpo a la pos real
     function Spoof.stop(cam)
         if LIP.spoofOn then
             local r = myRoot()
             if r and LIP.spoofRealCF then pcall(function() r.CFrame = LIP.spoofRealCF end) end
         end
+        if LIP.connRep then Spoof.unweld() end
         LIP.spoofOn = false; LIP.spoofRealCF = nil; LIP.spoofRestore = nil; LIP.spoofVel = nil
+        LIP.spoofFakePos = nil
         if cam then Spoof.camToChar(cam) end
     end
 

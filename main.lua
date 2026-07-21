@@ -12,6 +12,7 @@ return function(require, LIP, Lib)
     local Strafe  = require("Combat.Strafe")
     local Weapon  = require("Combat.Weapon")
     local Godmode = require("Combat.Godmode")
+    local Niche   = require("Combat.Niche")
     local Net     = require("Net")
     local Move    = require("Movement.Movement")
     local Vehicle = require("Movement.Vehicle")
@@ -124,24 +125,29 @@ return function(require, LIP, Lib)
         resolveTarget(filters, needAim)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
-        -- ── POSICIÓN: Godmode > Strafe > Void (excluyentes) ──
-        if godOn then Godmode.tick() end   -- no-op + aviso (godmode = ban HBE, neutralizado)
-
-        -- MASTER Pos Spoof controla strafe Y void. Prioridad: Strafe > Void.
+        -- ── POSICIÓN: Godmode > Strafe > Void (EXCLUYENTES). PosSpoof/ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
-        if strafeOn then
+        local connExp  = T.ConnExploit and T.ConnExploit.Value
+        if godOn then
+            if LIP.spoofOn or LIP.connRep then Strafe.stop() end
+            Godmode.tick()
+        elseif strafeOn then
+            if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
                           teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
             if st then
                 Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
                                   speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
-                                  posSpoof = posSpoof, chase = T.StrafeChase.Value,
+                                  posSpoof = posSpoof, connExploit = connExp, chase = T.StrafeChase.Value,
                                   bait = T.StrafeBait.Value, predict = O.ResolverPredict.Value })
             else Strafe.stop() end
         elseif voidOn then
-            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value, posSpoof = posSpoof })
-        elseif LIP.spoofOn then
-            Strafe.stop()
+            if LIP.godBase then Godmode.stop() end
+            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value,
+                        posSpoof = posSpoof, connExploit = connExp })
+        else
+            if LIP.godBase then Godmode.stop() end
+            if LIP.spoofOn or LIP.connRep then Strafe.stop() end
         end
 
         -- spectator (override de cámara al target manual)
@@ -156,6 +162,14 @@ return function(require, LIP, Lib)
         else LIP.meleePart = nil end
         if T.AutoPunch and T.AutoPunch.Value then
             Melee.autoPunch({ range = O.PunchRange.Value, rate = 0.5, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+        end
+
+        -- niche autos (throw / arrest)
+        if T.AutoThrow and T.AutoThrow.Value then
+            Niche.throwAt({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+        end
+        if T.AutoArrest and T.AutoArrest.Value then
+            Niche.arrest({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
         end
 
         -- permanent ragdoll (si no está godmode, que ya maneja el ragdoll)

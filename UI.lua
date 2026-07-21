@@ -7,6 +7,8 @@ return function(require, LIP, Lib)
         local Ragdoll = require("Combat.Ragdoll")
         local Weapon  = require("Combat.Weapon")
         local Strafe  = require("Combat.Strafe")
+        local Godmode = require("Combat.Godmode")
+        local Niche   = require("Combat.Niche")
         local Vehicle = require("Movement.Vehicle")
         local Void    = require("Movement.Void")
         local Util    = require("Combat.Utility")
@@ -64,6 +66,8 @@ return function(require, LIP, Lib)
         c3:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
         c3:AddToggle("PosSpoof", { Text = "Pos Spoof (master)", Default = true,
             Tooltip = "MASTER de Strafe + Void. ON = desync (cuerpo/cámara reales quietos). OFF = mueve el cuerpo real." })
+        c3:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
+            Tooltip = "sethiddenproperty PhysicsRepRootPart → server te ve en el weld, CUERPO REAL LIBRE (caminás/disparás normal). Override de Pos Spoof." })
         c3:AddToggle("StrafeChase", { Text = "Dynamic Chase", Default = true,
             Tooltip = "Predice la pos del target por su velocidad (orbita su posición futura)" })
         c3:AddToggle("StrafeBait", { Text = "Bait", Default = false,
@@ -141,9 +145,11 @@ return function(require, LIP, Lib)
         v2:AddKeybind("RagdollKey", { Text = "Ragdoll Key", Mode = "Toggle", Callback = function() Ragdoll.toggle() end })
         v2:AddToggle("RagdollLock", { Text = "Permanent Ragdoll", Default = false })
         v2:AddToggle("Godmode", { Text = "Godmode (ragdoll)", Default = false,
-            Tooltip = "Self-ragdoll + mueve el assembly lejos (hitbox real fuera). Dispara con AutoFire (op14 directo). WIP" })
-        v2:AddDropdown("GodMode", { Text = "God Mode", Values = { "High", "Jitter" }, Default = "High" })
-        v2:AddSlider("GodHeight", { Text = "God Height", Min = 50, Max = 500, Default = 150, Suffix = "studs" })
+            Tooltip = "Self-ragdoll + mueve el assembly lejos (hitbox real fuera). Dispará con AutoFire (op14 directo bypasea el gate de ragdoll). Equipá el arma ANTES." })
+        v2:AddDropdown("GodPreset", { Text = "Preset", Values = { "High", "ExtremeHigh", "Jitter", "FarJitter" }, Default = "High",
+            Callback = function(v) Godmode.applyPreset(v) end })
+        v2:AddDropdown("GodMode", { Text = "Mode", Values = { "High", "Jitter" }, Default = "High" })
+        v2:AddSlider("GodHeight", { Text = "God Height", Min = 50, Max = 1500, Default = 150, Suffix = "studs" })
         local v3 = VS:AddPanel("Utility", { Column = 2 })
         v3:AddLabel("Join Team (op1)", { Header = true })
         v3:AddButton("Police", function() Util.joinTeam("Police") end)
@@ -152,6 +158,13 @@ return function(require, LIP, Lib)
         v3:AddButton("Neutral", function() Util.joinTeam("Neutral") end)
         v3:AddButton("Grab Tool (op12)", function() Util.grabNearest() end)
         v3:AddButton("Heal (op28)", function() Util.healSpam() end)
+        v3:AddDivider()
+        v3:AddLabel("Niche", { Header = true })
+        v3:AddToggle("AutoThrow", { Text = "Auto Throw (op43)", Default = false,
+            Tooltip = "Lanza el throwable equipado (granada/cuchillo) al enemigo cercano" })
+        v3:AddToggle("AutoArrest", { Text = "Auto Arrest (op57)", Default = false,
+            Tooltip = "Esposa al enemigo cercano (necesita Handcuffs; Police). Validación 8-studs es client-side" })
+        v3:AddButton("Detonate C4 (op44)", function() Niche.detonateC4() end)
 
         --========================= VISUALS =========================--
         local Vis  = Window:AddCategory("Visuals", "eye")

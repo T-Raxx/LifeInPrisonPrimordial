@@ -159,7 +159,12 @@ return function(require, LIP, Lib)
         local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
-        if opts.posSpoof then
+        if opts.connExploit then
+            -- CONNECTION WELD: server te ve orbitando (connPart); CUERPO REAL libre. Caminás/disparás normal.
+            if LIP.spoofOn then Spoof.stop(cam) end   -- salir del CFrame-desync si estaba
+            Spoof.weldTo(goCF)
+        elseif opts.posSpoof then
+            if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
@@ -172,7 +177,7 @@ return function(require, LIP, Lib)
         else
             -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear Y angular cada frame para que
             -- el motor no ACUMULE velocidad (si no, los teleports quedan "duros" y arrastran momentum).
-            if LIP.spoofOn then Spoof.stop(cam) end
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function()
                 root.CFrame = goCF
                 root.AssemblyLinearVelocity = Vector3.zero
