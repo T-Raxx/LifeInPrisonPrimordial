@@ -36,7 +36,7 @@ return function(require, LIP, Lib)
             Tooltip = "Ráfaga extra de op14 al disparar (gate firerate es client-only)" })
         c2:AddSlider("RapidCount", { Text = "Burst Count", Min = 1, Max = 12, Default = 3 })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
-            Tooltip = "Dispara op14 al target automáticamente (interno, sin mouse1click)" })
+            Tooltip = "Dispara op14 al target auto (sin mouse1click). SOLO activo mientras Target Strafe esté ON." })
         c2:AddSlider("AutoFireRate", { Text = "Auto Rate", Min = 0.05, Max = 1, Default = 0.15, Decimals = 2, Suffix = "s" })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs",
             Tooltip = "No dispara si el target está más lejos (fuera de rango = server rechaza)" })

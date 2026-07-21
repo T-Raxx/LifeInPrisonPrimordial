@@ -36,6 +36,14 @@ return function(require, LIP, Lib)
                         end
                         D._lastRealShot = now
                     end
+                    -- DETECCIÓN de cargador: capturamos magammo del op40 del reload REAL del juego (no el nuestro)
+                    if op == 40 and not D._selfReload then
+                        local mag, wtool = p[3], p[2]
+                        if type(mag) == "number" and mag >= 2 and mag <= 200 and typeof(wtool) == "Instance" then
+                            D.magByWeapon = D.magByWeapon or {}
+                            D.magByWeapon[wtool.Name] = mag
+                        end
+                    end
                     -- SILENT AIM (op14): redirige cada bullet al target cacheado (Head)
                     if op == 14 and D.swapOn and D.cachedHitPart and D.cachedHitPos then
                         local bullets = p[3]

@@ -170,9 +170,14 @@ return function(require, LIP, Lib)
             Spoof.camToLocal(cam, realCF)
             pcall(function() root.CFrame = goCF end)
         else
-            -- SIN spoof: mueve el cuerpo real (te teleporta a orbitar; disparás desde ahí)
+            -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear Y angular cada frame para que
+            -- el motor no ACUMULE velocidad (si no, los teleports quedan "duros" y arrastran momentum).
             if LIP.spoofOn then Spoof.stop(cam) end
-            pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
+            pcall(function()
+                root.CFrame = goCF
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+            end)
         end
     end
 

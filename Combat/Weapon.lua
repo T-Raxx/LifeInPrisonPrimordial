@@ -40,8 +40,16 @@ return function(require, LIP, Lib)
     end
     Weapon.GST = GST
 
-    -- magSize del slider (el usuario lo pone = cargador de su arma)
-    local function magSize() return math.floor(O("ReloadAmmo") or 15) end
+    -- DETECCIÓN DE CARGADOR POR ARMA: el Net hook captura `magammo` del op40 del reload REAL del juego
+    -- (arg2), keyed por nombre de arma → LIP.magByWeapon[name]. Se aprende al recargar 1 vez (R o auto
+    -- del juego). Fallback = slider Mag Size mientras no se detecte.
+    local function magSize()
+        local tool = firearm()
+        local name = tool and tool.Name
+        if name and LIP.magByWeapon and LIP.magByWeapon[name] then return LIP.magByWeapon[name] end
+        return math.floor(O("ReloadAmmo") or 15)
+    end
+    Weapon.magSize = magSize
 
     -- RELOAD INTELIGENTE. El cliente cree que el mag está lleno (nuestros op14 no bajan su ammo local),
     -- así que shared.ReloadCallback NO recarga (chequea `if ammo==magammo then return`). Forzamos el
@@ -53,6 +61,7 @@ return function(require, LIP, Lib)
         LIP.reloading = true
         task.spawn(function()
             local mag = magSize()
+            LIP._selfReload = true   -- Net NO captura magammo de nuestros op40 (solo del reload del juego)
             if T("ShotgunReload") then
                 -- ESCOPETA: op40 por bala (ammo acumulado), sin MagDrop, espaciado (protocolo per-shell)
                 task.wait(0.3)
@@ -68,6 +77,7 @@ return function(require, LIP, Lib)
                 local t2 = firearm() or tool
                 pcall(function() LIP.fire(40, t2, mag, GST()) end)
             end
+            LIP._selfReload = false
             LIP.shotsFired = 0
             task.wait(0.1)
             LIP.reloading = false
@@ -121,7 +131,7 @@ return function(require, LIP, Lib)
     -- (armas rápidas: el firerate observado ya es bajo, así que no lo excedemos).
     local lastFire = 0
     function Weapon.tickAuto()
-        local autoOn  = T("AutoFire")
+        local autoOn  = T("AutoFire") and T("TargetStrafe")   -- autofire SOLO con target strafe activo
         local rapidOn = T("RapidFire") and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
         if not (autoOn or rapidOn) then return end
         if LIP.reloading then return end
