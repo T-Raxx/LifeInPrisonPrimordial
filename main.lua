@@ -50,11 +50,11 @@ return function(require, LIP, Lib)
         local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
         LIP.cachedHitPart = part
         if part then
+            -- HBE-SAFE: hitPos = CENTRO EXACTO del hitPart (objspace ZERO). El server aplica daño al
+            -- hitPart real igual → NO predecir/offsetear el hit (predict/antiInvis lo sacan del hitbox
+            -- = detección Hitbox Expander → ban). El resolver/predict se usa solo para el strafe orbit.
             local base = part.Position
-            if T.Resolver and T.Resolver.Value then
-                base = Strafe.resolvePos(t, base, O.ResolverMethod.Value, O.ResolverSamples.Value, O.ResolverPredict.Value)
-            end
-            LIP.cachedHitPos = LIP.antiInvis and (base + Vector3.new(0, -1.4, 0)) or base
+            LIP.cachedHitPos = base
             -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
             if T.Wallbang and T.Wallbang.Value then
                 local myHead = LP.Character and LP.Character:FindFirstChild("Head")

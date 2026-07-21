@@ -97,8 +97,9 @@ return function(require, LIP, Lib)
         local handle = tool and tool:FindFirstChild("Handle")
         local muzzleAtt = handle and handle:FindFirstChild("Muzzle")
         local muzzle = (muzzleAtt and muzzleAtt.WorldPosition) or origin
-        if hitPart and hitPos then
-            return { origin, muzzle, hitPos, hitPart, hitPart.Position, hitPart.CFrame:PointToObjectSpace(hitPos) }
+        if hitPart then
+            local center = hitPart.Position   -- CENTRO exacto + objspace ZERO = HBE-safe (dentro del hitbox)
+            return { origin, muzzle, center, hitPart, center, Vector3.zero }
         end
         local cam = Workspace.CurrentCamera
         local dir = cam.CFrame.LookVector * 300
