@@ -97,12 +97,15 @@ return function(require, LIP, Lib)
     Weapon.instantReload = Weapon.reload   -- alias UI (botón "Force Reload")
 
     -- construye el bullet {origin, muzzle, hitPos, hitPart, hitPart.Position, objspace}
-    -- origin: si estás pos-spoofeado, usar la pos FALSA (server-seen) → origin→hitPos corto y
-    -- consistente con dónde te ve el server (si no, disparar lejos con spoof = rechazado/out-of-range).
+    -- origin: si el server te ve en otra pos (desync spoofOn O connection weld connRep), el origin debe ser
+    -- esa pos FALSA (spoofFakePos) → origin→hitPos consistente con dónde te ve el server. Si no, disparar
+    -- desde la pos real mientras el server te ve en el weld = mismatch = rechazado/unequip. (rival = weld
+    -- bajo el target + fire: el origin va del weld). Sin spoof/weld → head real.
     local function buildBullet(hitPart, hitPos)
         local c = char(); local head = c and c:FindFirstChild("Head")
         if not head then return nil end
-        local origin = (LIP.spoofOn and LIP.spoofFakePos) and (LIP.spoofFakePos + Vector3.new(0, 1.5, 0)) or head.Position
+        local origin = ((LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos)
+                       and (LIP.spoofFakePos + Vector3.new(0, 1.5, 0)) or head.Position
         if LIP.wallbang and LIP.cachedOrigin then origin = LIP.cachedOrigin end   -- wallbang: origin con LOS
         local tool = firearm()
         local handle = tool and tool:FindFirstChild("Handle")
