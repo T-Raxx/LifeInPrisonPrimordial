@@ -19,9 +19,25 @@ Módulos factory `return function(require, LIP, Lib)`. `build.lua` bundlea a
 
 Ver `docs/remote-map-2026-07.md` (reverse) y `docs/ops.md` (entorno/sync/testing).
 
-## Uso
+## Loadstring (ejecutable)
+Bundle self-contained (PrimordialUI inline) hosteado en gist secreto:
+```lua
+loadstring(game:HttpGet("https://gist.githubusercontent.com/T-Raxx/1552e7e4cb41aee0d826f644689838e2/raw/LifeInPrisonPrimordial.lua"))()
 ```
-loadstring(readfile("LifeInPrisonPrimordial/build.lua"))()          -- build
-loadstring(readfile("LifeInPrisonPrimordial/dist/LifeInPrisonPrimordial.lua"))()  -- load
+
+Repo privado: `github.com/T-Raxx/LifeInPrisonPrimordial`. Alternativa con PAT (sin gist):
+```lua
+local r = request({
+  Url = "https://api.github.com/repos/T-Raxx/LifeInPrisonPrimordial/contents/LifeInPrisonPrimordial.lua",
+  Headers = { Authorization = "token <TU_PAT_READONLY>", Accept = "application/vnd.github.raw" },
+})
+loadstring(r.Body)()
 ```
-Requiere `PrimordialUI/dist/PrimordialUI.lua` en el workspace del executor.
+
+## Dev / actualizar el bundle
+```lua
+loadstring(readfile("LifeInPrisonPrimordial/build.lua"))()   -- build dist (modular)
+loadstring(readfile("LifeInPrisonPrimordial/bundle.lua"))()  -- genera LifeInPrisonPrimordial.lua self-contained
+```
+Luego: `git add -A && git commit && git push` + `gh gist edit 1552e7e4cb41aee0d826f644689838e2 LifeInPrisonPrimordial.lua`.
+Dev local (sin bundle) requiere `PrimordialUI/dist/PrimordialUI.lua` en el workspace. Ver `docs/ops.md`.
