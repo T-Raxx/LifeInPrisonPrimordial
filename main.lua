@@ -43,8 +43,28 @@ return function(require, LIP, Lib)
                 base = Strafe.resolvePos(t, base, O.ResolverMethod.Value, O.ResolverSamples.Value, O.ResolverPredict.Value)
             end
             LIP.cachedHitPos = LIP.antiInvis and (base + Vector3.new(0, -1.4, 0)) or base
+            -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
+            if T.Wallbang and T.Wallbang.Value then
+                local myHead = LP.Character and LP.Character:FindFirstChild("Head")
+                local hitPos = LIP.cachedHitPos
+                if myHead then
+                    local to = myHead.Position
+                    local rp = RaycastParams.new()
+                    rp.FilterType = Enum.RaycastFilterType.Exclude
+                    rp.FilterDescendantsInstances = { LP.Character, ch }
+                    rp.IgnoreWater = true
+                    local res = Workspace:Raycast(hitPos, (to - hitPos), rp)
+                    if res then
+                        LIP.cachedOrigin = res.Position + (hitPos - to).Unit * 2   -- 2 studs del lado del target
+                    else
+                        LIP.cachedOrigin = to                                       -- LOS clara → origin real
+                    end
+                else LIP.cachedOrigin = hitPos end
+            else
+                LIP.cachedOrigin = nil
+            end
         else
-            LIP.cachedHitPos = nil
+            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil
         end
     end
 
@@ -75,6 +95,7 @@ return function(require, LIP, Lib)
         LIP.antiInvis = T.AntiInvis and T.AntiInvis.Value or false
         LIP.swapOn    = T.SilentAim and T.SilentAim.Value or false
         LIP.meleeOn   = T.MeleeAura and T.MeleeAura.Value or false
+        LIP.wallbang  = T.Wallbang and T.Wallbang.Value or false
         local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
         local cam = Workspace.CurrentCamera
 
@@ -106,7 +127,7 @@ return function(require, LIP, Lib)
                                   bait = T.StrafeBait.Value, predict = O.ResolverPredict.Value })
             else Strafe.stop() end
         elseif voidOn then
-            Void.tick({ dist = O.VoidDist.Value, posSpoof = posSpoof })
+            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value, posSpoof = posSpoof })
         elseif LIP.spoofOn then
             Strafe.stop()
         end

@@ -22,7 +22,9 @@ return function(require, LIP, Lib)
         c1:AddDropdown("SelMode", { Text = "Selection", Values = { "Crosshair", "Distance", "Health" }, Default = "Crosshair" })
         c1:AddSlider("FOV", { Text = "FOV", Min = 0, Max = 500, Default = 150 })
         c1:AddToggle("Wallcheck", { Text = "Wallcheck", Default = false,
-            Tooltip = "OFF = WALLBANG (server confía en hitPart, no hace LOS)" })
+            Tooltip = "ON = solo con línea de vista" })
+        c1:AddToggle("Wallbang", { Text = "Wallbang", Default = false,
+            Tooltip = "Raycast target→vos, pone el origin del lado del target de la pared = LOS garantizada (atraviesa paredes)" })
         c1:AddToggle("AntiInvis", { Text = "Anti Invisible", Default = false })
         c1:AddDivider()
         c1:AddToggle("TeamCheck", { Text = "Team Check", Default = true })
@@ -36,6 +38,8 @@ return function(require, LIP, Lib)
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
             Tooltip = "Dispara op14 al target automáticamente (interno, sin mouse1click)" })
         c2:AddSlider("AutoFireRate", { Text = "Auto Rate", Min = 0.05, Max = 1, Default = 0.15, Decimals = 2, Suffix = "s" })
+        c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs",
+            Tooltip = "No dispara si el target está más lejos (fuera de rango = server rechaza)" })
         c2:AddDivider()
         c2:AddButton("Instant Reload", function() Weapon.instantReload() end)
         c2:AddKeybind("ReloadKey", { Text = "Reload Key", Mode = "Toggle", Callback = function() Weapon.instantReload() end })
@@ -84,7 +88,8 @@ return function(require, LIP, Lib)
         local RSV = Rage:AddSection("Void Spam", "Anti-aim · origen absoluto (0,100,0)")
         local vd = RSV:AddPanel("Void Spam", { Column = 1 })
         vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
-            Tooltip = "Origen absoluto (0,100,0), coords + rotación XYZ random MUY lejanas cada frame. Usa el master Pos Spoof." })
+            Tooltip = "Origen absoluto (0,100,0), rotación XYZ random. Nunca toca el vacío (clamp Y). Usa el master Pos Spoof." })
+        vd:AddDropdown("VoidPattern", { Text = "Pattern", Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
         vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
         vd:AddToggle("VoidViz", { Text = "Visualizer", Default = true, Tooltip = "Part + icono + tracer a la pos spoofeada" })
 

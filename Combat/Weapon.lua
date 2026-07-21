@@ -62,6 +62,7 @@ return function(require, LIP, Lib)
         local c = char(); local head = c and c:FindFirstChild("Head")
         if not head then return nil end
         local origin = (LIP.spoofOn and LIP.spoofFakePos) and (LIP.spoofFakePos + Vector3.new(0, 1.5, 0)) or head.Position
+        if LIP.wallbang and LIP.cachedOrigin then origin = LIP.cachedOrigin end   -- wallbang: origin con LOS
         local tool = firearm()
         local handle = tool and tool:FindFirstChild("Handle")
         local muzzleAtt = handle and handle:FindFirstChild("Muzzle")
@@ -110,6 +111,12 @@ return function(require, LIP, Lib)
         local minInt = math.max(O("AutoFireRate") or 0.15, (LIP.observedFirerate or 0.12) * 1.02)
         if now - lastFire < minInt then return end
         if ammo ~= nil and ammo <= 0 then Weapon.reload(); return end
+        -- guard de RANGO: no firar si el target está fuera de rango (server rechaza = bala perdida)
+        if LIP.cachedHitPos then
+            local h = char() and char():FindFirstChild("Head")
+            local ref = (LIP.wallbang and LIP.cachedOrigin) or (h and h.Position)
+            if ref and (LIP.cachedHitPos - ref).Magnitude > (O("FireRange") or 200) then return end
+        end
         if fireOne(LIP.cachedHitPart, LIP.cachedHitPos) then lastFire = now end
     end
 

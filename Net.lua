@@ -45,6 +45,11 @@ return function(require, LIP, Lib)
                                     b[4] = D.cachedHitPart   -- hitPart
                                     b[5] = D.cachedHitPos    -- partPos
                                     b[6] = ZERO              -- objspace (centro)
+                                    -- WALLBANG: mueve el origin al lado del target de la pared (LOS clara)
+                                    if D.wallbang and D.cachedOrigin then
+                                        b[1] = D.cachedOrigin
+                                        b[2] = D.cachedOrigin
+                                    end
                                 end
                             end
                             return orig(self, unpackf(p, 1, p.n))

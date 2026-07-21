@@ -25,10 +25,35 @@ return function(require, LIP, Lib)
     end
     local function rndSigned() return rnd() * 2 - 1 end
 
-    -- calcula la pos+rot absoluta random (muy lejos del origen 0,100,0)
-    local function randomFar(dist)
-        local pos = ORIGIN + Vector3.new(rndSigned() * dist, rndSigned() * dist * 0.5, rndSigned() * dist)
+    -- patrones de void (TODOS altos — clamp Y≥30 para NUNCA tocar el vacío, que mata).
+    -- Rotación XYZ random SIEMPRE. Origen absoluto (0,100,0).
+    local orbSeed, tpAnchor, tpT = 0, nil, 0
+    local TWEEN = { Vector3.new(1,0,1), Vector3.new(-1,0,1), Vector3.new(-1,0,-1), Vector3.new(1,0,-1) }
+    local function patternCF(dist, pattern)
         local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)
+        local off
+        if pattern == "High" then
+            off = Vector3.new(0, dist, 0)
+        elseif pattern == "Orbit" then
+            orbSeed = orbSeed + 0.25
+            off = Vector3.new(math.cos(orbSeed) * dist, 60 + rnd() * dist * 0.3, math.sin(orbSeed) * dist)
+        elseif pattern == "Tween" then
+            orbSeed = orbSeed + 0.03
+            local i = (math.floor(orbSeed) % #TWEEN) + 1
+            local j = (i % #TWEEN) + 1
+            local f = orbSeed - math.floor(orbSeed)
+            local c = TWEEN[i]:Lerp(TWEEN[j], f) * dist
+            off = Vector3.new(c.X, 60 + math.abs(c.Y), c.Z)
+        elseif pattern == "Teleport" then
+            if not tpAnchor or (os.clock() - tpT) > 0.3 then
+                tpAnchor = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist); tpT = os.clock()
+            end
+            off = tpAnchor
+        else -- "Random" (default): XYZ random cada frame, muy lejos
+            off = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist)
+        end
+        local pos = ORIGIN + off
+        if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío
         return CFrame.new(pos) * rot
     end
 
@@ -36,7 +61,7 @@ return function(require, LIP, Lib)
         local root = myRoot(); local cam = Workspace.CurrentCamera
         if not root then Spoof.stop(cam); return end
         local dist = opts.dist or 1000
-        local goCF = randomFar(dist)
+        local goCF = patternCF(dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
         if opts.posSpoof then
