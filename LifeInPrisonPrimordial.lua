@@ -1,0 +1,4151 @@
+-- LifeInPrisonPrimordial bundle self-contained (PrimordialUI inline)
+-- LifeInPrisonPrimordial — bundle generado por build.lua. No editar a mano.
+local _MODS = {}
+_MODS["Core.State"] = (function()
+-- Core/State.lua — FACTORY. Estado global único getgenv().LIP, tracking de conns/hooks,
+-- Unload, guard doble-carga, helper fire(op,...) del RemoteEvent multiplexado (netevgen).
+-- (el param LIP se ignora aquí: State ES quien crea LIP y lo pone en getgenv)
+return function(require, _unused, Lib)
+    -- neutralizar build viejo ANTES de nada (hooks stale deben pasar transparentes)
+    if getgenv().LIP then
+        local old = getgenv().LIP
+        old.enabled = false
+        old.swapOn  = false          -- __namecall silent-aim viejo pasa transparente
+        if old.Unload then pcall(old.Unload) end
+    end
+
+    local RS = game:GetService("ReplicatedStorage")
+
+    local LIP = {
+        enabled   = false,           -- master del engine
+        swapOn    = false,           -- silent aim arg-swap activo
+        target    = nil,             -- Player resuelto
+        conns     = {},              -- RBXScriptConnections trackeadas
+        cleanups  = {},              -- funciones de limpieza (destruir instancias en Unload)
+        -- refs cacheadas del framework netevgen (1 RemoteEvent multiplexado, opcode=arg1)
+        Events    = RS:FindFirstChild("Events"),
+    }
+    LIP.RE = LIP.Events and LIP.Events:FindFirstChild("RemoteEvent")
+    getgenv().LIP = LIP
+
+    -- dispara el RemoteEvent multiplexado con opcode + payload (client→server). Único punto de salida.
+    function LIP.fire(op, ...)
+        if LIP.RE then LIP.RE:FireServer(op, ...) end
+    end
+
+    -- dispara el OnClientEvent LOCAL (el dispatcher del juego rutea por opcode=arg1). Se usa para
+    -- entrar por caminos "sancionados" del cliente (ej. buffs op47 → ruta graceada, sin flag AC).
+    local firesig = firesignal or replicatesignal
+    function LIP.fireLocal(op, ...)
+        if LIP.RE and firesig then pcall(firesig, LIP.RE.OnClientEvent, op, ...) end
+    end
+    LIP.hasFireLocal = firesig ~= nil
+
+    function LIP.track(c) LIP.conns[#LIP.conns + 1] = c ; return c end
+    function LIP.onCleanup(fn) LIP.cleanups[#LIP.cleanups + 1] = fn ; return fn end
+
+    function LIP.Unload()
+        LIP.enabled, LIP.swapOn = false, false
+        for _, fn in ipairs(LIP.cleanups) do pcall(fn) end   -- destruir instancias (fly BV, etc.)
+        LIP.cleanups = {}
+        for _, c in ipairs(LIP.conns) do pcall(function() c:Disconnect() end) end
+        LIP.conns = {}
+        -- los hooks (__namecall) NO se desinstalan (hookmetamethod); pasan transparentes
+        -- porque leen getgenv().LIP dinámico y queda swapOn=false.
+        if LIP.Library then pcall(function() LIP.Library:Unload() end) end
+    end
+
+    return LIP
+end
+
+end)()
+_MODS["Net"] = (function()
+-- Net.lua — FACTORY. UN solo __namecall hook unificado (regla LiP: 1 hook, no apilar).
+-- Passive, PRECACHE model: el driver (main) computa afuera del hook los targets; el hook
+-- SOLO escribe arrays (cero reentrancy → no rompe la secuencia síncrona del disparo).
+--
+-- Firmas (v48, RemoteEvent multiplexado netevgen, opcode=arg1):
+--   op14 FirearmBullets: FireServer(14, Tool, bullets, GST)   bullets[i]={org,muz,hitPos,hitPart,partPos,objspace}
+--   op16 OnMeleeRemote : FireServer(16, Tool, GST, hitPart, objspace)
+-- GST() lo genera el cliente (stub/token) → lo dejamos intacto, solo redirigimos el HIT.
+-- Reload-safe: hook instalado UNA vez (flag getgenv), lee getgenv().LIP dinámico.
+return function(require, LIP, Lib)
+    local Net = {}
+    local getncm  = getnamecallmethod
+    local newcc   = newcclosure or function(f) return f end
+    local hookmm  = hookmetamethod
+    local unpackf = table.unpack or unpack
+    local ZERO    = Vector3.zero
+
+    function Net.install()
+        LIP.RE = LIP.RE or (LIP.Events and LIP.Events:FindFirstChild("RemoteEvent"))
+        if getgenv().__LIP_HOOK then return end
+        local orig
+        local ok = pcall(function()
+            orig = hookmm(game, "__namecall", newcc(function(self, ...)
+                local D = getgenv().LIP
+                if D and self == D.RE and getncm() == "FireServer" then
+                    local p = table.pack(...)
+                    local op = p[1]
+                    -- OBSERVA FIRERATE REAL (op14 del juego, no nuestro autofire) → no sobre-disparar.
+                    -- (El conteo de balas para el reload vive en Weapon.fireOne, NO acá: este hook
+                    --  persiste entre reloads y no se puede actualizar sin rejoin limpio.)
+                    if op == 14 and not D._selfFiring then
+                        local now = os.clock()
+                        if D._lastRealShot then
+                            local dt = now - D._lastRealShot
+                            if dt > 0.02 and dt < 2 then D.observedFirerate = dt end
+                        end
+                        D._lastRealShot = now
+                    end
+                    -- DETECCIÓN de cargador: capturamos magammo del op40 del reload REAL del juego (no el nuestro)
+                    if op == 40 and not D._selfReload then
+                        local mag, wtool = p[3], p[2]
+                        if type(mag) == "number" and mag >= 2 and mag <= 200 and typeof(wtool) == "Instance" then
+                            D.magByWeapon = D.magByWeapon or {}
+                            D.magByWeapon[wtool.Name] = mag
+                        end
+                    end
+                    -- SILENT AIM (op14): redirige cada bullet al target cacheado (Head)
+                    if op == 14 and D.swapOn and D.cachedHitPart and D.cachedHitPos then
+                        local bullets = p[3]
+                        if type(bullets) == "table" then
+                            for i = 1, #bullets do
+                                local b = bullets[i]
+                                if type(b) == "table" then
+                                    b[3] = D.cachedHitPos    -- hitPos
+                                    b[4] = D.cachedHitPart   -- hitPart
+                                    b[5] = D.cachedHitPos    -- partPos
+                                    b[6] = ZERO              -- objspace (centro)
+                                    -- WALLBANG: mueve el origin al lado del target de la pared (LOS clara)
+                                    if D.wallbang and D.cachedOrigin then
+                                        b[1] = D.cachedOrigin
+                                        b[2] = D.cachedOrigin
+                                    end
+                                end
+                            end
+                            return orig(self, unpackf(p, 1, p.n))
+                        end
+                    -- MELEE AURA (op16): redirige el hitPart al target de melee cacheado
+                    elseif op == 16 and D.meleeOn and D.meleePart then
+                        p[4] = D.meleePart                   -- hitPart
+                        p[5] = ZERO                          -- objspace (centro)
+                        return orig(self, unpackf(p, 1, p.n))
+                    end
+                end
+                return orig(self, ...)                        -- passthrough transparente
+            end))
+        end)
+        if ok then
+            getgenv().__LIP_HOOK = true
+            getgenv().__LIP_ORIG_NAMECALL = orig
+        end
+    end
+
+    return Net
+end
+
+end)()
+_MODS["Combat.Target"] = (function()
+-- Combat/Target.lua — FACTORY. Selección de target (silent aim + melee/punch).
+-- Teams LiP: Police / Prisoners / Criminals. Enemigo = team distinto (teamCheck).
+-- Target.pick(opts)      -> silent aim (Crosshair/Distance/Health, FOV, wallcheck) -> LIP.target
+-- Target.nearestEnemy(opts) -> melee/punch (más cercano en rango mundo)
+return function(require, LIP, Lib)
+    local Players   = game:GetService("Players")
+    local Workspace = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+    local Target = {}
+
+    local function alive(char)
+        local h = char and char:FindFirstChildOfClass("Humanoid")
+        return (h and h.Health > 0) or false, h
+    end
+    local function visible(part, char)
+        local cam = Workspace.CurrentCamera
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        rp.FilterDescendantsInstances = { LP.Character, char }
+        rp.IgnoreWater = true
+        local o = cam.CFrame.Position
+        return Workspace:Raycast(o, (part.Position - o), rp) == nil
+    end
+    local function isFriend(plr)
+        local s, r = pcall(function() return LP:IsFriendsWith(plr.UserId) end)
+        return s and r
+    end
+    local function isEnemy(plr, opts)
+        if plr == LP then return false end
+        if opts.teamCheck and LP.Team and plr.Team == LP.Team then return false end
+        if opts.friendCheck and isFriend(plr) then return false end
+        return true
+    end
+
+    -- silent aim: elige el mejor target según modo. Setea LIP.target.
+    function Target.pick(opts)
+        local cam = Workspace.CurrentCamera
+        local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        local mode = opts.mode or "Crosshair"
+        local best, bestScore = nil, math.huge
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local char = plr.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp and select(1, alive(char)) and isEnemy(plr, opts) then
+                if not (opts.wallcheck and not visible(hrp, char)) then
+                    local score
+                    if mode == "Crosshair" then
+                        local sp, on = cam:WorldToViewportPoint(hrp.Position)
+                        if on and sp.Z > 0 then
+                            local d = (Vector2.new(sp.X, sp.Y) - Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)).Magnitude
+                            if d <= (opts.fov or 1e9) then score = d end
+                        end
+                    elseif mode == "Health" then
+                        local _, hum = alive(char); score = hum and hum.Health or nil
+                    else -- "Distance"
+                        score = myHRP and (hrp.Position - myHRP.Position).Magnitude or nil
+                    end
+                    if score and score < bestScore then best, bestScore = plr, score end
+                end
+            end
+        end
+        LIP.target = best
+        return best
+    end
+
+    -- melee/punch: enemigo vivo más cercano dentro de rango (mundo).
+    function Target.nearestEnemy(opts)
+        local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if not myHRP then return nil end
+        local best, bestD = nil, (opts.range or 12)
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local char = plr.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp and select(1, alive(char)) and isEnemy(plr, opts) then
+                local d = (hrp.Position - myHRP.Position).Magnitude
+                if d <= bestD and (not opts.wallcheck or visible(hrp, char)) then
+                    best, bestD = plr, d
+                end
+            end
+        end
+        return best
+    end
+
+    return Target
+end
+
+end)()
+_MODS["Combat.Ragdoll"] = (function()
+-- Combat/Ragdoll.lua — FACTORY. Self-ragdoll vía opcode 23 (Ragdoll, sin args).
+-- Confirmado en vivo (place 72659788689464 v48): Events.RemoteEvent:FireServer(23) TOGGLEA
+-- el ragdoll server-side (Running <-> Physics), health intacta. El bind R original está gateado
+-- tras IsStudio/IsDevGame en el cliente (debug de dev) → nosotros lo firamos manual.
+return function(require, LIP, Lib)
+    local Ragdoll = {}
+    local Players     = game:GetService("Players")
+    local RunService  = game:GetService("RunService")
+    local LP = Players.LocalPlayer
+    local OP = 23
+
+    local lastFire = 0
+
+    local function humState()
+        local ch  = LP.Character
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        return hum and hum:GetState()
+    end
+    -- Physics = ragdolleado
+    local function isRagdolled()
+        local st = humState()
+        return st ~= nil and tostring(st):find("Physics") ~= nil
+    end
+    Ragdoll.isRagdolled = isRagdolled
+
+    -- toggle manual (botón / keybind): el server flipea en cada fire
+    function Ragdoll.toggle()
+        LIP.fire(OP)
+        lastFire = os.clock()
+    end
+
+    -- lock permanente: re-ragdolla cuando el estado sale de Physics.
+    -- Event-driven (no spam): solo re-fira si NO está ragdolleado, con intervalo mínimo.
+    function Ragdoll.tickLock()
+        if isRagdolled() then return end
+        local now = os.clock()
+        if now - lastFire < 0.6 then return end   -- anti-spam del remote
+        lastFire = now
+        LIP.fire(OP)
+    end
+
+    return Ragdoll
+end
+
+end)()
+_MODS["Combat.Melee"] = (function()
+-- Combat/Melee.lua — FACTORY. Melee/puños.
+--  · AUTO-PUNCH (op33 OnPunchRemote): FireServer(33, enemyBasePart). NO usa GST → fire activo.
+--    (el cliente legit lo dispara en el .Touched del puño; nosotros lo firamos directo al enemigo.)
+--  · MELEE AURA (op16): precache del target; el redirect real lo hace el hook en Net.lua.
+return function(require, LIP, Lib)
+    local Players = game:GetService("Players")
+    local LP = Players.LocalPlayer
+    local Target = require("Combat.Target")
+    local Melee = {}
+
+    local lastPunch = 0
+
+    local function bodyPart(char)
+        return char and (char:FindFirstChild("HumanoidRootPart")
+            or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+            or char:FindFirstChild("Head"))
+    end
+
+    -- precache del target de melee-aura (corre en el driver, afuera del hook)
+    function Melee.cacheMelee(opts)
+        if not LIP.meleeOn then LIP.meleePart = nil; return end
+        local t = Target.nearestEnemy(opts)
+        LIP.meleePart = t and bodyPart(t.Character) or nil
+    end
+
+    -- AUTO-PUNCH activo (op33). Enemigo dentro de rango → fire su parte, con rate limit.
+    function Melee.autoPunch(opts)
+        local now = os.clock()
+        if now - lastPunch < (opts.rate or 0.5) then return end
+        local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if not myHRP then return end
+        local t = Target.nearestEnemy({ range = opts.range or 8, teamCheck = opts.teamCheck,
+                                        friendCheck = opts.friendCheck, wallcheck = false })
+        local part = t and bodyPart(t.Character)
+        if not part then return end
+        lastPunch = now
+        LIP.fire(33, part)   -- OnPunchRemote(part) — sin GST
+    end
+
+    return Melee
+end
+
+end)()
+_MODS["Combat.Spoof"] = (function()
+-- Combat/Spoof.lua — FACTORY. Desync / pos-spoof por HOOK (cuerpo y cámara reales NO se mueven).
+-- __index hook: al leer CFrame/Position del root local mientras spoofOn, devuelve la CF REAL → el
+-- juego/AC/cámara ven la posición real y CONSISTENTE (Position==CFrame.Position, no dispara
+-- CFrameReadHook). El driver escribe una CF FALSA al root (Roblox la replica al server por network
+-- ownership) y la restaura el frame siguiente. Cámara anclada a un Part en la pos real. RELOAD-SAFE.
+return function(require, LIP, Lib)
+    local Players    = game:GetService("Players")
+    local Workspace  = game:GetService("Workspace")
+    local RunService = game:GetService("RunService")
+    local LP = Players.LocalPlayer
+    local hookmm    = hookmetamethod
+    local newcc     = newcclosure or function(f) return f end
+    local Spoof = {}
+
+    local function myRoot() local c = LP.Character; return c and c:FindFirstChild("HumanoidRootPart") end
+
+    -- driver único de restore: tras la replicación, devolver el cuerpo real (compartido Strafe/Void)
+    function Spoof.init()
+        Spoof.install()
+        if getgenv().__LIP_RESTORE then return end
+        getgenv().__LIP_RESTORE = true
+        LIP.track(RunService.RenderStepped:Connect(function()
+            local D = getgenv().LIP
+            local root = D and D.cachedRoot
+            if root and root.Parent and D.spoofRestore then
+                pcall(function()
+                    root.CFrame = D.spoofRestore
+                    if D.spoofVel then root.AssemblyLinearVelocity = D.spoofVel end
+                end)
+                D.spoofRestore = nil
+            end
+        end))
+    end
+
+    -- ancla de cámara persistente (sobrevive reload)
+    function Spoof.ensureParts()
+        if not getgenv().__LIP_CamAnchor or not getgenv().__LIP_CamAnchor.Parent then
+            local p = Instance.new("Part")
+            p.Name = "LIP_CamAnchor"; p.Anchored = true; p.CanCollide = false
+            p.Transparency = 1; p.Size = Vector3.new(2, 2, 1)
+            pcall(function() p.Parent = Workspace end)
+            getgenv().__LIP_CamAnchor = p
+        end
+        LIP.camAnchor = getgenv().__LIP_CamAnchor
+    end
+
+    function Spoof.install()
+        Spoof.ensureParts()
+        if getgenv().__LIP_IDX then return end
+        local orig
+        local ok = pcall(function()
+            orig = hookmm(game, "__index", newcc(function(self, key)
+                local D = getgenv().LIP
+                if D and D.spoofOn and self == D.cachedRoot and D.spoofRealCF then
+                    if key == "CFrame" then return D.spoofRealCF end
+                    if key == "Position" then return D.spoofRealCF.Position end
+                end
+                return orig(self, key)
+            end))
+        end)
+        if ok then getgenv().__LIP_IDX = true; getgenv().__LIP_ORIG_INDEX = orig end
+    end
+
+    -- lee la CF VERDADERA saltándose el hook
+    function Spoof.trueCF(root)
+        local o = getgenv().__LIP_ORIG_INDEX
+        return (o and o(root, "CFrame")) or root.CFrame
+    end
+
+    function Spoof.camToLocal(cam, realCF)
+        if LIP.camAnchor then pcall(function() LIP.camAnchor.CFrame = realCF; cam.CameraSubject = LIP.camAnchor end) end
+    end
+    function Spoof.camToChar(cam)
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then pcall(function() cam.CameraSubject = hum end) end
+    end
+
+    -- corta el spoof y restaura cámara + cuerpo a la pos real
+    function Spoof.stop(cam)
+        if LIP.spoofOn then
+            local r = myRoot()
+            if r and LIP.spoofRealCF then pcall(function() r.CFrame = LIP.spoofRealCF end) end
+        end
+        LIP.spoofOn = false; LIP.spoofRealCF = nil; LIP.spoofRestore = nil; LIP.spoofVel = nil
+        if cam then Spoof.camToChar(cam) end
+    end
+
+    return Spoof
+end
+
+end)()
+_MODS["Combat.Strafe"] = (function()
+-- Combat/Strafe.lua — FACTORY. Target Strafe (desync HvH) + manual target/spectator + spam resolver.
+-- Usa Combat/Spoof (desync por __index hook): el server te ve orbitando, tu cuerpo/cámara NO se mueven.
+-- Target manual persiste por UserId (sobrevive muerte/rejoin de ambos; se limpia solo manualmente).
+return function(require, LIP, Lib)
+    local Players    = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local Workspace  = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+    local Spoof = require("Combat.Spoof")
+    local Strafe = {}
+
+    local function myRoot() local c = LP.Character; return c and c:FindFirstChild("HumanoidRootPart") end
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+
+    ------------------------------------------------------------------ MANUAL TARGET / SPECTATOR
+    -- LIP.manualUID = UserId elegido a mano (persiste). nil = auto (silent aim / cercano).
+    function Strafe.setManual(plr) LIP.manualUID = plr and plr.UserId or nil end
+    function Strafe.clearManual() LIP.manualUID = nil end
+    -- elige como target manual al enemigo más cercano a la MIRA (bind "Set Target")
+    function Strafe.pickCrosshair()
+        local cam = Workspace.CurrentCamera
+        local best, bestD = nil, 1e9
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LP then
+                local c = plr.Character
+                local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                local hum = c and c:FindFirstChildOfClass("Humanoid")
+                if hrp and hum and hum.Health > 0 then
+                    local sp, on = cam:WorldToViewportPoint(hrp.Position)
+                    if on and sp.Z > 0 then
+                        local d = (Vector2.new(sp.X, sp.Y) - Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)).Magnitude
+                        if d < bestD then best, bestD = plr, d end
+                    end
+                end
+            end
+        end
+        if best then LIP.manualUID = best.UserId; if LIP.Library and LIP.Library.Notify then LIP.Library:Notify({ Title = "Target", Description = "Locked: " .. best.Name, Time = 3 }) end end
+    end
+    function Strafe.manualPlayer()
+        if not LIP.manualUID then return nil end
+        for _, p in ipairs(Players:GetPlayers()) do if p.UserId == LIP.manualUID then return p end end
+        return nil   -- aún no reapareció; se re-resuelve cuando vuelva
+    end
+    function Strafe.spectate(cam)
+        local t = Strafe.manualPlayer()
+        local hum = t and t.Character and t.Character:FindFirstChildOfClass("Humanoid")
+        if hum then pcall(function() cam.CameraSubject = hum end) end
+    end
+
+    ------------------------------------------------------------------ SPAM RESOLVER (métodos + pesos)
+    local hist = {}   -- [player] = { s = {V3...}, t = {clock...} }
+    local MAX = 16
+    local function sample(plr, pos, now, rejectVel)
+        local h = hist[plr]; if not h then h = { s = {}, t = {} }; hist[plr] = h end
+        local n = #h.s
+        if n > 0 then
+            local dt = now - h.t[n]
+            if dt > 0 and (pos - h.s[n]).Magnitude / dt > (rejectVel or 300) then return end  -- fling/tp spoof
+        end
+        h.s[#h.s + 1] = pos; h.t[#h.t + 1] = now
+        if #h.s > MAX then table.remove(h.s, 1); table.remove(h.t, 1) end
+    end
+    function Strafe.sampleAll(now, rejectVel)
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LP then
+                local c = plr.Character
+                local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                local hum = c and c:FindFirstChildOfClass("Humanoid")
+                if hrp and hum and hum.Health > 0 then sample(plr, hrp.Position, now, rejectVel) end
+            end
+        end
+    end
+    local function median(a) local b = table.clone(a); table.sort(b); return b[math.floor(#b/2)+1] end
+    -- velocidad instantánea del target (últimas 2 muestras) — para predicción/chase
+    function Strafe.targetVel(plr)
+        local h = hist[plr]; local n = h and #h.s or 0
+        if n < 2 then return Vector3.zero end
+        local dt = math.max(h.t[n] - h.t[n-1], 1/240)
+        return (h.s[n] - h.s[n-1]) / dt
+    end
+    -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
+    function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
+        local h = hist[plr]; local n = h and #h.s or 0
+        if n < 3 then return rawPos end
+        local k = math.clamp(samples or 8, 3, n)
+        local xs, ys, zs, wsum, wx, wy, wz = {}, {}, {}, 0, 0, 0, 0
+        for i = n - k + 1, n do
+            local p = h.s[i]
+            xs[#xs+1] = p.X; ys[#ys+1] = p.Y; zs[#zs+1] = p.Z
+            local w = (i - (n - k))           -- peso lineal: frames recientes pesan más
+            wsum = wsum + w; wx = wx + p.X*w; wy = wy + p.Y*w; wz = wz + p.Z*w
+        end
+        local base
+        if method == "Average" then
+            local s = Vector3.zero; for i = n-k+1, n do s = s + h.s[i] end; base = s / k
+        elseif method == "Weighted" then base = Vector3.new(wx/wsum, wy/wsum, wz/wsum)
+        elseif method == "Latest" then base = h.s[n]
+        else base = Vector3.new(median(xs), median(ys), median(zs)) end   -- Median (robusto)
+        if predictT and predictT > 0 then base = base + Strafe.targetVel(plr) * predictT end
+        return base
+    end
+
+    ------------------------------------------------------------------ PRESETS
+    Strafe.PRESETS = {
+        Normal = { mode = "Normal", radius = 10,   speed = 4,  height = 0 },
+        Random = { mode = "Random", radius = 10.5, speed = 20, height = 0 },
+        Behind = { mode = "Behind", radius = 8,    speed = 8,  height = 0 },
+    }
+    function Strafe.applyPreset(name)
+        local p = Strafe.PRESETS[name]; if not p then return end
+        local O2 = Lib.Options
+        if O2.StrafeMode   then O2.StrafeMode:SetValue(p.mode) end
+        if O2.StrafeRadius then O2.StrafeRadius:SetValue(p.radius) end
+        if O2.StrafeSpeed  then O2.StrafeSpeed:SetValue(p.speed) end
+        if O2.StrafeHeight then O2.StrafeHeight:SetValue(p.height) end
+    end
+
+    ------------------------------------------------------------------ DRIVER (desync)
+    function Strafe.init()
+        Spoof.init()   -- hook __index + restore RenderStepped (compartido con Void)
+    end
+
+    local seed = 0
+    local baitFlip = 1
+    -- órbita alrededor de un CENTRO (predicho si chase), mirando al centro. bait = reversas random.
+    local function orbitCF(center, tLook, opts)
+        local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
+        local mode = opts.mode or "Normal"
+        if opts.bait and math.noise(seed * 0.7, 3) > 0.55 then baitFlip = -baitFlip end
+        if mode == "Behind" then
+            local look = tLook or Vector3.new(0, 0, -1)
+            local goPos = center - look * R + Vector3.new(0, h, 0)
+            return CFrame.lookAt(goPos, center)
+        elseif mode == "Random" then
+            local rx = math.noise(seed, 0) * R
+            local ry = math.noise(0, seed) * R
+            local rz = math.noise(seed, seed) * R
+            seed = seed + spd * 0.02 + math.abs(math.sin(os.clock() * 91.7)) * 0.15
+            local goPos = center + Vector3.new(rx, h + ry * 0.4, rz)
+            local rot = CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
+            return CFrame.new(goPos) * rot
+        else -- Normal: órbita circular (bait invierte el sentido)
+            seed = seed + spd * 0.05 * baitFlip
+            local off = Vector3.new(math.cos(seed) * R, h, math.sin(seed) * R)
+            return CFrame.lookAt(center + off, center)
+        end
+    end
+
+    -- llamado por el driver cada Heartbeat con el target resuelto
+    function Strafe.tick(target, opts)
+        local root = myRoot(); local cam = Workspace.CurrentCamera
+        local tRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if not (root and tRoot) then Strafe.stop(); return end
+
+        -- centro dinámico (chase): predice la pos del target por su velocidad
+        local center = tRoot.Position
+        if opts.chase then center = center + Strafe.targetVel(target) * (opts.predict or 0.12) end
+        local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
+        LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
+
+        if opts.posSpoof then
+            -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
+            local realCF = Spoof.trueCF(root)
+            LIP.cachedRoot   = root
+            LIP.spoofRealCF  = realCF
+            LIP.spoofOn      = true
+            LIP.spoofVel     = root.AssemblyLinearVelocity
+            LIP.spoofRestore = realCF
+            Spoof.camToLocal(cam, realCF)
+            pcall(function() root.CFrame = goCF end)
+        else
+            -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear Y angular cada frame para que
+            -- el motor no ACUMULE velocidad (si no, los teleports quedan "duros" y arrastran momentum).
+            if LIP.spoofOn then Spoof.stop(cam) end
+            pcall(function()
+                root.CFrame = goCF
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+    end
+
+    function Strafe.stop() Spoof.stop(Workspace.CurrentCamera) end
+
+    return Strafe
+end
+
+end)()
+_MODS["Combat.Weapon"] = (function()
+-- Combat/Weapon.lua — FACTORY. Auto/Rapid fire (op14) + reload seguro.
+-- CAUSA del unequip (reverse): el server trackea el cargador y valida cadencia via el token GST.
+--   · Mandar más op14 que balas del cargador → disparos sin munición → UNEQUIP.
+--   · op40 instantáneo (reload sin esperar la animación / sin MagDrop) → recarga imposible → UNEQUIP.
+--   · Firar bajo firerate → el token GST(time()) delata el spacing → UNEQUIP.
+-- FIX: contador de balas local (Mag Size) + fire a rate configurable ≥ firerate del arma; reload
+-- via `shared.ReloadCallback()` (el reload legítimo del juego, expuesto L247297, SIN riesgo de unequip).
+return function(require, LIP, Lib)
+    local Players    = game:GetService("Players")
+    local Workspace  = game:GetService("Workspace")
+    local UIS        = game:GetService("UserInputService")
+    local LP = Players.LocalPlayer
+    local Weapon = {}
+
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+    local function char() return LP.Character end
+    local function firearm() local c = char(); return c and c:FindFirstChildOfClass("Tool") end  -- equipado (== u3379.Tool)
+
+    -- ── GST(): token {int,int,int} de time() (reimpl exacta de u4162) ──
+    local bnot, band, bor = bit32.bnot, bit32.band, bit32.bor
+    local lsh, rsh = bit32.lshift, bit32.rshift
+    local function GST(t)
+        t = t or time()
+        local b = buffer.create(8); buffer.writef64(b, 0, t)
+        local r = buffer.readu8
+        local b0, b1, b2, b3 = r(b, 0), r(b, 1), r(b, 2), r(b, 3)
+        local b4, b5, b6, b7 = r(b, 4), r(b, 5), r(b, 6), r(b, 7)
+        local x2  = bor(lsh(band(b2, 51), 2),  rsh(band(b2, 204), 2))
+        local x3  = bor(rsh(band(b3, 240), 4), lsh(band(b3, 15), 4))
+        local x4  = bor(rsh(band(b4, 240), 4), lsh(band(b4, 15), 4))
+        local x4b = bor(rsh(band(x4, 204), 2), lsh(band(x4, 51), 2))
+        local x4c = bor(rsh(band(x4b, 170), 1), lsh(band(x4b, 85), 1))
+        local y7  = bor(rsh(band(b7, 240), 4), lsh(band(b7, 15), 4))
+        local y7b = bor(rsh(band(y7, 204), 2), lsh(band(y7, 51), 2))
+        local y7c = bor(rsh(band(y7b, 170), 1), lsh(band(y7b, 85), 1))
+        local w1 = bor(band(255, bnot(b1)), lsh(band(255, bnot(b6)), 8), lsh(band(255, bnot(b0)), 16), lsh(x3, 24))
+        local w2 = bor(y7c, lsh(band(255, bnot(b5)), 8), lsh(x2, 16), lsh(x4c, 24))
+        return { w1, w2, bnot(bor(lsh(w1, 8), rsh(w2, 16))) }
+    end
+    Weapon.GST = GST
+
+    -- DETECCIÓN DE CARGADOR POR ARMA: el Net hook captura `magammo` del op40 del reload REAL del juego
+    -- (arg2), keyed por nombre de arma → LIP.magByWeapon[name]. Se aprende al recargar 1 vez (R o auto
+    -- del juego). Fallback = slider Mag Size mientras no se detecte.
+    local function magSize()
+        local tool = firearm()
+        local name = tool and tool.Name
+        if name and LIP.magByWeapon and LIP.magByWeapon[name] then return LIP.magByWeapon[name] end
+        return math.floor(O("ReloadAmmo") or 15)
+    end
+    Weapon.magSize = magSize
+
+    -- RELOAD INTELIGENTE. El cliente cree que el mag está lleno (nuestros op14 no bajan su ammo local),
+    -- así que shared.ReloadCallback NO recarga (chequea `if ammo==magammo then return`). Forzamos el
+    -- reload directo con el flujo legítimo: op42 MagDrop → esperar la duración de la anim (evita el
+    -- unequip por reload-imposible) → op40 OnReload(magSize). El server rellena su cargador.
+    function Weapon.reload()
+        if LIP.reloading then return end
+        local tool = firearm(); if not tool then return end
+        LIP.reloading = true
+        task.spawn(function()
+            local mag = magSize()
+            LIP._selfReload = true   -- Net NO captura magammo de nuestros op40 (solo del reload del juego)
+            if T("ShotgunReload") then
+                -- ESCOPETA: op40 por bala (ammo acumulado), sin MagDrop, espaciado (protocolo per-shell)
+                task.wait(0.3)
+                for i = 1, mag do
+                    local t2 = firearm() or tool
+                    pcall(function() LIP.fire(40, t2, i, GST()) end)
+                    task.wait((O("ReloadTime") or 1.2) / mag)
+                end
+            else
+                -- CARGADOR normal: MagDrop → esperar anim → OnReload(magammo) absoluto
+                pcall(function() LIP.fire(42, tool) end)
+                task.wait(O("ReloadTime") or 1.2)                         -- ~duración anim (server valida)
+                local t2 = firearm() or tool
+                pcall(function() LIP.fire(40, t2, mag, GST()) end)
+            end
+            LIP._selfReload = false
+            LIP.shotsFired = 0
+            task.wait(0.1)
+            LIP.reloading = false
+        end)
+    end
+    Weapon.instantReload = Weapon.reload   -- alias UI (botón "Force Reload" = fuerza el reload)
+
+    -- construye el bullet {origin, muzzle, hitPos, hitPart, hitPart.Position, objspace}
+    -- origin: si estás pos-spoofeado, usar la pos FALSA (server-seen) → origin→hitPos corto y
+    -- consistente con dónde te ve el server (si no, disparar lejos con spoof = rechazado/out-of-range).
+    local function buildBullet(hitPart, hitPos)
+        local c = char(); local head = c and c:FindFirstChild("Head")
+        if not head then return nil end
+        local origin = (LIP.spoofOn and LIP.spoofFakePos) and (LIP.spoofFakePos + Vector3.new(0, 1.5, 0)) or head.Position
+        if LIP.wallbang and LIP.cachedOrigin then origin = LIP.cachedOrigin end   -- wallbang: origin con LOS
+        local tool = firearm()
+        local handle = tool and tool:FindFirstChild("Handle")
+        local muzzleAtt = handle and handle:FindFirstChild("Muzzle")
+        local muzzle = (muzzleAtt and muzzleAtt.WorldPosition) or origin
+        if hitPart then
+            local center = hitPart.Position   -- CENTRO exacto + objspace ZERO = HBE-safe (dentro del hitbox)
+            return { origin, muzzle, center, hitPart, center, Vector3.zero }
+        end
+        local cam = Workspace.CurrentCamera
+        local dir = cam.CFrame.LookVector * 300
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        rp.FilterDescendantsInstances = { c }
+        local res = Workspace:Raycast(cam.CFrame.Position, dir, rp)
+        if res then
+            local inst = res.Instance
+            return { origin, muzzle, res.Position, inst, inst.Position, inst.CFrame:PointToObjectSpace(res.Position) }
+        end
+        return { origin, muzzle, cam.CFrame.Position + dir, nil, nil, nil }
+    end
+
+    -- dispara 1 bala op14 al hit dado (con GST fresco). Descuenta ammo. Marca _selfFiring para que
+    -- el observador de firerate en Net NO cuente nuestros disparos.
+    local function fireOne(hitPart, hitPos)
+        local tool = firearm(); if not tool then return false end
+        local bullet = buildBullet(hitPart, hitPos)
+        if not bullet then return false end
+        LIP._selfFiring = true
+        LIP.fire(14, tool, { bullet }, GST())
+        LIP._selfFiring = false
+        LIP.shotsFired = (LIP.shotsFired or 0) + 1   -- cuenta acá (fireOne, siempre fresco)
+        return true
+    end
+
+    -- AUTO/RAPID tick (main Heartbeat): fire al target de silent aim, tracking ammo + reload.
+    -- NUNCA más rápido que el firerate REAL del arma (observado en Net) → evita el unequip por cadencia
+    -- (armas rápidas: el firerate observado ya es bajo, así que no lo excedemos).
+    local lastFire = 0
+    function Weapon.tickAuto()
+        local autoOn  = T("AutoFire") and T("TargetStrafe")   -- autofire SOLO con target strafe activo
+        local rapidOn = T("RapidFire") and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+        if not (autoOn or rapidOn) then return end
+        if LIP.reloading then return end
+        -- cargador del SERVER vacío (contamos op14 en Net) → reload inteligente
+        if (LIP.shotsFired or 0) >= magSize() then Weapon.reload(); return end
+        local now = os.clock()
+        local minInt = math.max(O("AutoFireRate") or 0.15, (LIP.observedFirerate or 0.12) * 1.02)
+        if now - lastFire < minInt then return end
+        -- guard de RANGO: no firar si el target está fuera de rango (server rechaza = bala perdida)
+        if LIP.cachedHitPos then
+            local h = char() and char():FindFirstChild("Head")
+            local ref = (LIP.wallbang and LIP.cachedOrigin) or (h and h.Position)
+            if ref and (LIP.cachedHitPos - ref).Magnitude > (O("FireRange") or 200) then return end
+        end
+        if fireOne(LIP.cachedHitPart, LIP.cachedHitPos) then lastFire = now end
+    end
+
+    -- respawn: resetea el contador (el arma nueva viene con el cargador lleno)
+    LP.CharacterAdded:Connect(function() LIP.shotsFired = 0; LIP.reloading = false end)
+
+    return Weapon
+end
+
+end)()
+_MODS["Combat.Godmode"] = (function()
+-- Combat/Godmode.lua — NEUTRALIZADO.
+-- El godmode por desplazamiento de partes (mover Head/Torso/HRP) = detectado como HBE
+-- (Hitbox Expander) por el anticheat SERVER-SIDE → BAN (confirmado en vivo 2026-07-20).
+-- NO hay anti-hit seguro por este método: el reverse mostró que el ragdoll SOLO no da inmunidad,
+-- y la única forma de anti-hit era mover el hitbox — que es exactamente lo que HBE detecta.
+-- → Godmode queda como NO-OP (no mueve nada) + aviso. No re-implementar mover partes.
+return function(require, LIP, Lib)
+    local God = {}
+    local warned = false
+
+    function God.tick()
+        if not warned then
+            warned = true
+            pcall(function()
+                if LIP.Library and LIP.Library.Notify then
+                    LIP.Library:Notify({ Title = "Godmode desactivado",
+                        Description = "Mover el hitbox = ban por HBE. Sin anti-hit seguro por este método.", Time = 7 })
+                end
+            end)
+        end
+    end
+
+    function God.stop() warned = false; LIP.godBase = nil end
+
+    return God
+end
+
+end)()
+_MODS["Combat.Utility"] = (function()
+-- Combat/Utility.lua — FACTORY. Exploits sueltos de remote (fire directo, args del reverse).
+--  · Team swap  op1  JoinTeam(TeamInstance)         — sin gate client-side
+--  · Heal spam  op28 Consume(Tool, nil)             — cura server-side, spam si no hay cooldown
+--  · Grab tool  op12 ReceiveTool(Tool)              — recoge arma caída a distancia (~60 studs)
+return function(require, LIP, Lib)
+    local Teams     = game:GetService("Teams")
+    local Players   = game:GetService("Players")
+    local Workspace = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+    local Util = {}
+
+    function Util.joinTeam(name)
+        local t = Teams:FindFirstChild(name)
+        if t then LIP.fire(1, t) end
+    end
+
+    -- heal spam: usa el consumible equipado (medkit/comida). op28 con nil = tick de cura.
+    function Util.healSpam()
+        local c = LP.Character; local tool = c and c:FindFirstChildOfClass("Tool")
+        if tool then LIP.fire(28, tool, nil) end
+    end
+
+    -- grab: recoge el Tool caído más cercano (op12). El server resuelve por instancia.
+    function Util.grabNearest()
+        local c = LP.Character; local hrp = c and c:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local best, bestD = nil, 60
+        for _, t in ipairs(Workspace:GetChildren()) do
+            if t:IsA("Tool") then
+                local h = t:FindFirstChild("Handle")
+                local d = h and (h.Position - hrp.Position).Magnitude
+                if d and d <= bestD then best, bestD = t, d end
+            end
+        end
+        if best then LIP.fire(12, best) end
+    end
+
+    return Util
+end
+
+end)()
+_MODS["Movement.Movement"] = (function()
+-- Movement/Movement.lua — FACTORY. Fly / Noclip / WalkSpeed / Jump / Infinite Jump.
+-- El usuario trata el juego como SIN anticheat de movimiento → blatant OK.
+-- Self-contained: se conecta solo (RenderStepped/Heartbeat/JumpRequest), lee Lib.Toggles/Options.
+-- Limpieza vía LIP.onCleanup (destruye el BodyVelocity/Gyro del fly en Unload).
+return function(require, LIP, Lib)
+    local Players    = game:GetService("Players")
+    local UIS        = game:GetService("UserInputService")
+    local RunService = game:GetService("RunService")
+    local Workspace  = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+    local Move = {}
+
+    local function char() return LP.Character end
+    local function hrp()  local c = char(); return c and c:FindFirstChild("HumanoidRootPart") end
+    local function hum()  local c = char(); return c and c:FindFirstChildOfClass("Humanoid") end
+    local function T(f)   local t = Lib.Toggles[f]; return t and t.Value end
+    local function O(f)   local o = Lib.Options[f];  return o and o.Value end
+
+    ------------------------------------------------------------------ FLY
+    local flyBV, flyBG, flying = nil, nil, false
+    local function stopFly()
+        flying = false
+        if flyBV then pcall(function() flyBV:Destroy() end); flyBV = nil end
+        if flyBG then pcall(function() flyBG:Destroy() end); flyBG = nil end
+        local h = hum(); if h then pcall(function() h.PlatformStand = false end) end
+    end
+    local function startFly()
+        local root = hrp(); if not root then return end
+        stopFly()
+        flying = true
+        local h = hum(); if h then h.PlatformStand = true end
+        flyBV = Instance.new("BodyVelocity")
+        flyBV.MaxForce = Vector3.new(1, 1, 1) * 9e9
+        flyBV.P = 1.25e4
+        flyBV.Velocity = Vector3.zero
+        flyBV.Parent = root
+        flyBG = Instance.new("BodyGyro")
+        flyBG.MaxTorque = Vector3.new(1, 1, 1) * 9e9
+        flyBG.P = 1e4
+        flyBG.CFrame = root.CFrame
+        flyBG.Parent = root
+    end
+    local function updateFly()
+        local root, cam = hrp(), Workspace.CurrentCamera
+        if not (root and cam) then return end
+        if not flyBV or flyBV.Parent ~= root then startFly(); return end
+        flyBG.CFrame = cam.CFrame
+        local dir = Vector3.zero
+        if not UIS:GetFocusedTextBox() then
+            if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.Space)     then dir = dir + Vector3.new(0, 1, 0) end
+            if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.new(0, 1, 0) end
+        end
+        local speed = O("FlySpeed") or 60
+        flyBV.Velocity = (dir.Magnitude > 0) and (dir.Unit * speed) or Vector3.zero
+    end
+
+    ------------------------------------------------------------------ NOCLIP
+    local function updateNoclip()
+        local c = char(); if not c then return end
+        for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+        end
+    end
+
+    ------------------------------------------------------------------ SPEED / JUMP  (AC-SAFE)
+    -- Escribir Humanoid.WalkSpeed/JumpHeight CRUDO dispara el AC (WalkSpeedUnexpected/JumpHeightUnexpected)
+    -- → auto-kill a los 0.5s. La vía sancionada = el sistema de buffs op47 (CharacterDeOrBuff local),
+    -- que entra por el setter graceado del juego (u2686). Verificado en vivo: WalkSpeed sube, sin kill.
+    -- El buff SUMA en una lista → firamos solo el DELTA cuando cambia (no per-frame), y lo revertimos.
+    local WS_BASE, JH_BASE = 16, 7.2
+    local wsApplied, jhApplied = 0, 0
+    local function applyBuff(effect, want, appliedRef)
+        local applied = appliedRef()
+        if want == applied then return applied end
+        local c = char(); if not c then return applied end
+        -- op47: (Model, Effects[WalkSpeed=1|JumpHeight=2], deltaValue, Type.Duration=1, bigTime, Interp.None=1)
+        LIP.fireLocal(47, c, effect, want - applied, 1, 1e9, 1)
+        return want
+    end
+    local function updateSpeed()
+        local wantWS = (T("WalkSpeedOn") and ((O("WalkSpeed") or WS_BASE) - WS_BASE)) or 0
+        wsApplied = applyBuff(1, wantWS, function() return wsApplied end)
+        local wantJH = (T("JumpOn") and ((O("JumpHeight") or JH_BASE) - JH_BASE)) or 0
+        jhApplied = applyBuff(2, wantJH, function() return jhApplied end)
+    end
+
+    ------------------------------------------------------------------ INIT
+    function Move.init()
+        LIP.onCleanup(stopFly)
+
+        LIP.track(RunService.RenderStepped:Connect(function()
+            if T("Fly") then
+                if not flying then startFly() end
+                updateFly()
+            elseif flying then
+                stopFly()
+            end
+            if T("Noclip") then updateNoclip() end
+        end))
+
+        LIP.track(RunService.Heartbeat:Connect(function()
+            updateSpeed()
+        end))
+
+        LIP.track(UIS.JumpRequest:Connect(function()
+            if T("InfJump") then
+                local h = hum(); if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+            end
+        end))
+
+        -- respawn: soltar el fly viejo + resetear buffs aplicados (el char nuevo no tiene ninguno)
+        LIP.track(LP.CharacterAdded:Connect(function()
+            stopFly(); wsApplied, jhApplied = 0, 0
+        end))
+    end
+
+    return Move
+end
+
+end)()
+_MODS["Movement.Vehicle"] = (function()
+-- Movement/Vehicle.lua — FACTORY. Exploits de vehículo.
+-- Los vehículos son FÍSICA 100% client-side: el ocupante del VehicleSeat es network owner del
+-- assembly (Roblox). NO hay autoridad server sobre el movimiento → basta con sentarse y escribir
+-- la física / los attributes que el loop de manejo del cliente ya lee cada frame (Car4W/Motorcycle
+-- leen FastSpeed/FastTorque/SlowSpeed/SlowTorque/MaxSpeed/Torque del Model como attributes).
+return function(require, LIP, Lib)
+    local Players    = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local Workspace  = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+    local Veh = {}
+
+    local function hum()  local c = LP.Character; return c and c:FindFirstChildOfClass("Humanoid") end
+    local function seat() local h = hum(); return h and h.SeatPart end
+    local function vehicleModel()
+        local s = seat(); if not s then return nil, nil end
+        return s:FindFirstAncestorWhichIsA("Model"), s
+    end
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+    local function O(f) local o = Lib.Options[f];  return o and o.Value end
+
+    local SPEED_ATTRS = { "FastSpeed", "FastTorque", "SlowSpeed", "SlowTorque", "MaxSpeed", "Torque" }
+    local saved = {}   -- [model] = { attr = origValue }  (para restaurar, evita compounding)
+
+    local function applySpeed()
+        local m = vehicleModel(); if not m then return end
+        local mult = O("VehSpeed") or 5
+        local s = saved[m]
+        if not s then
+            s = {}; saved[m] = s
+            for _, a in ipairs(SPEED_ATTRS) do
+                local v = m:GetAttribute(a)
+                if type(v) == "number" then s[a] = v end
+            end
+        end
+        for a, orig in pairs(s) do m:SetAttribute(a, orig * mult) end
+    end
+    local function restoreSpeed()
+        for m, s in pairs(saved) do
+            if m and m.Parent then
+                for a, orig in pairs(s) do pcall(function() m:SetAttribute(a, orig) end) end
+            end
+        end
+        saved = {}
+    end
+
+    -- FLING: velocidad enorme al assembly del vehículo en dirección de la cámara
+    function Veh.fling()
+        local m, s = vehicleModel()
+        local root = (m and m.PrimaryPart) or (s and s.AssemblyRootPart) or s
+        if not root then return end
+        local dir = Workspace.CurrentCamera.CFrame.LookVector
+        pcall(function() root.AssemblyLinearVelocity = dir * (O("VehFlingPower") or 500) end)
+    end
+
+    -- auto-sit del VehicleSeat vacío más cercano (clientsit abuse: seat:Sit lo hace el juego mismo)
+    function Veh.sitNearest()
+        local h = hum(); local myHRP = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if not (h and myHRP) then return end
+        local best, bestD = nil, O("SitRange") or 40
+        for _, s in ipairs(Workspace:GetDescendants()) do
+            if s:IsA("VehicleSeat") and not s.Occupant then
+                local d = (s.Position - myHRP.Position).Magnitude
+                if d <= bestD then best, bestD = s, d end
+            end
+        end
+        if best then pcall(function() best:Sit(h) end) end
+    end
+
+    function Veh.init()
+        LIP.onCleanup(restoreSpeed)
+        LIP.track(RunService.Heartbeat:Connect(function()
+            if T("VehSpeedOn") then applySpeed()
+            elseif next(saved) then restoreSpeed() end
+        end))
+    end
+
+    return Veh
+end
+
+end)()
+_MODS["Movement.Void"] = (function()
+-- Movement/Void.lua — FACTORY. Void spam (anti-aim posicional) + visualizador.
+-- Origen ABSOLUTO fijo (0,100,0). Cada frame manda la pos spoofeada a coordenadas + rotación XYZ
+-- random MUY LEJANAS de ese origen → el server te ve teleportando por todos lados = imposible pegarte.
+-- Respeta el MASTER Pos Spoof (LIP.posSpoof): ON = desync (cuerpo/cámara reales quietos), OFF = mueve
+-- el cuerpo real (teleport crudo, riesgoso). Visualizador: Part neón + icono + tracer.
+return function(require, LIP, Lib)
+    local Players    = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local Workspace  = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+    local Spoof = require("Combat.Spoof")
+    local Void = {}
+
+    local ORIGIN = Vector3.new(0, 100, 0)   -- origen absoluto (pedido del usuario)
+
+    local function myRoot() local c = LP.Character; return c and c:FindFirstChild("HumanoidRootPart") end
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+
+    -- PRNG LCG (Math.random está bloqueado en el executor) → random real por frame
+    local rngState = 2463534242
+    local function rnd()
+        rngState = (rngState * 1103515245 + 12345) % 2147483648
+        return rngState / 2147483648
+    end
+    local function rndSigned() return rnd() * 2 - 1 end
+
+    -- patrones de void (TODOS altos — clamp Y≥30 para NUNCA tocar el vacío, que mata).
+    -- Rotación XYZ random SIEMPRE. Origen absoluto (0,100,0).
+    local orbSeed, tpAnchor, tpT = 0, nil, 0
+    local TWEEN = { Vector3.new(1,0,1), Vector3.new(-1,0,1), Vector3.new(-1,0,-1), Vector3.new(1,0,-1) }
+    local function patternCF(dist, pattern)
+        local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)
+        local off
+        if pattern == "High" then
+            off = Vector3.new(0, dist, 0)
+        elseif pattern == "Orbit" then
+            orbSeed = orbSeed + 0.25
+            off = Vector3.new(math.cos(orbSeed) * dist, 60 + rnd() * dist * 0.3, math.sin(orbSeed) * dist)
+        elseif pattern == "Tween" then
+            orbSeed = orbSeed + 0.03
+            local i = (math.floor(orbSeed) % #TWEEN) + 1
+            local j = (i % #TWEEN) + 1
+            local f = orbSeed - math.floor(orbSeed)
+            local c = TWEEN[i]:Lerp(TWEEN[j], f) * dist
+            off = Vector3.new(c.X, 60 + math.abs(c.Y), c.Z)
+        elseif pattern == "Teleport" then
+            if not tpAnchor or (os.clock() - tpT) > 0.3 then
+                tpAnchor = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist); tpT = os.clock()
+            end
+            off = tpAnchor
+        else -- "Random" (default): XYZ random cada frame, muy lejos
+            off = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist)
+        end
+        local pos = ORIGIN + off
+        if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío
+        return CFrame.new(pos) * rot
+    end
+
+    function Void.tick(opts)
+        local root = myRoot(); local cam = Workspace.CurrentCamera
+        if not root then Spoof.stop(cam); return end
+        local dist = opts.dist or 1000
+        local goCF = patternCF(dist, opts.pattern)
+        LIP.spoofFakePos = goCF.Position
+
+        if opts.posSpoof then
+            -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
+            local realCF = Spoof.trueCF(root)
+            LIP.cachedRoot   = root
+            LIP.spoofRealCF  = realCF
+            LIP.spoofOn      = true
+            LIP.spoofVel     = root.AssemblyLinearVelocity
+            LIP.spoofRestore = realCF
+            Spoof.camToLocal(cam, realCF)
+            pcall(function() root.CFrame = goCF end)
+        else
+            -- SIN spoof: mueve el cuerpo real (teleport crudo, riesgoso)
+            if LIP.spoofOn then Spoof.stop(cam) end
+            pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
+        end
+    end
+
+    -- ── VISUALIZADOR ──────────────────────────────────────────────────────────
+    local vizPart, vizBillboard, tracer, dot
+    local function ensureViz()
+        if not vizPart or not vizPart.Parent then
+            vizPart = Instance.new("Part")
+            vizPart.Name = "LIP_SpoofViz"; vizPart.Shape = Enum.PartType.Ball
+            vizPart.Material = Enum.Material.Neon; vizPart.Color = Color3.fromRGB(202,151,161)
+            vizPart.Size = Vector3.new(3,3,3); vizPart.Anchored = true; vizPart.CanCollide = false
+            vizPart.Transparency = 0.3
+            pcall(function() vizPart.Parent = Workspace end)
+            local bb = Instance.new("BillboardGui"); bb.Size = UDim2.fromOffset(70,20)
+            bb.AlwaysOnTop = true; bb.StudsOffset = Vector3.new(0,2,0); bb.Parent = vizPart
+            local tl = Instance.new("TextLabel"); tl.Size = UDim2.fromScale(1,1); tl.BackgroundTransparency = 1
+            tl.Text = "SPOOF"; tl.TextColor3 = Color3.fromRGB(202,151,161); tl.TextStrokeTransparency = 0
+            tl.Font = Enum.Font.GothamBold; tl.TextSize = 12; tl.Parent = bb
+            vizBillboard = bb
+        end
+        if not tracer then tracer = Drawing.new("Line"); tracer.Thickness = 1; tracer.Color = Color3.fromRGB(202,151,161) end
+        if not dot then dot = Drawing.new("Circle"); dot.Radius = 5; dot.Thickness = 2; dot.Color = Color3.fromRGB(202,151,161) end
+    end
+    local function hideViz()
+        if vizPart then vizPart.Transparency = 1; if vizBillboard then vizBillboard.Enabled = false end end
+        if tracer then tracer.Visible = false end
+        if dot then dot.Visible = false end
+    end
+    local function updateViz()
+        if not (T("VoidViz") and LIP.spoofOn and LIP.spoofFakePos) then return hideViz() end
+        ensureViz()
+        local pos = LIP.spoofFakePos
+        vizPart.Transparency = 0.3; vizPart.Position = pos; vizBillboard.Enabled = true
+        local cam = Workspace.CurrentCamera
+        local sp, on = cam:WorldToViewportPoint(pos)
+        if on then
+            local vp = cam.ViewportSize
+            tracer.From = Vector2.new(vp.X/2, vp.Y); tracer.To = Vector2.new(sp.X, sp.Y); tracer.Visible = true
+            dot.Position = Vector2.new(sp.X, sp.Y); dot.Visible = true
+        else tracer.Visible = false; dot.Visible = false end
+    end
+
+    function Void.init()
+        Spoof.init()
+        LIP.onCleanup(function()
+            if vizPart then pcall(function() vizPart:Destroy() end) end
+            if tracer then pcall(function() tracer:Remove() end) end
+            if dot then pcall(function() dot:Remove() end) end
+        end)
+        LIP.track(RunService.RenderStepped:Connect(function() pcall(updateViz) end))
+    end
+
+    return Void
+end
+
+end)()
+_MODS["Visuals.ESP"] = (function()
+-- Visuals/ESP.lua — FACTORY. ESP Drawing API + Highlight (chams). Client-side puro = cero ban risk.
+-- LiF usa R6 (Head/Torso/Left Arm/Right Arm/Left Leg/Right Leg + HumanoidRootPart).
+-- Un solo RenderStepped; drawings pooled por jugador. Lee flags de Lib.Toggles/Options.
+return function(require, LIP, Lib)
+    local Players    = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local Workspace  = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+    local ESP = {}
+
+    local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+    local BONES = {                       -- R6
+        { "Head", "Torso" },
+        { "Torso", "Left Arm" }, { "Torso", "Right Arm" },
+        { "Torso", "Left Leg" }, { "Torso", "Right Leg" },
+    }
+
+    local pool = {}
+
+    local function mk(t, props)
+        local d = Drawing.new(t)
+        for k, v in pairs(props) do d[k] = v end
+        return d
+    end
+
+    local function createSet(plr)
+        if pool[plr] then return end
+        local s = { all = {}, bones = {} }
+        s.boxO   = mk("Square", { Thickness = 3, Filled = false, Color = BLACK, Visible = false, ZIndex = 1 })
+        s.box    = mk("Square", { Thickness = 1, Filled = false, Color = WHITE, Visible = false, ZIndex = 2 })
+        s.name   = mk("Text",   { Size = 13, Center = true, Outline = true, Color = WHITE, Visible = false })
+        s.dist   = mk("Text",   { Size = 12, Center = true, Outline = true, Color = WHITE, Visible = false })
+        s.hpBg   = mk("Line",   { Thickness = 3, Color = BLACK, Visible = false })
+        s.hp     = mk("Line",   { Thickness = 1, Color = Color3.fromRGB(0, 255, 0), Visible = false })
+        s.tracer = mk("Line",   { Thickness = 1, Color = WHITE, Visible = false })
+        for i = 1, #BONES do s.bones[i] = mk("Line", { Thickness = 1, Color = WHITE, Visible = false }) end
+        for _, d in pairs({ s.boxO, s.box, s.name, s.dist, s.hpBg, s.hp, s.tracer }) do s.all[#s.all + 1] = d end
+        for _, b in ipairs(s.bones) do s.all[#s.all + 1] = b end
+        pool[plr] = s
+    end
+
+    local function hideSet(s)
+        for _, d in ipairs(s.all) do d.Visible = false end
+        if s.highlight then s.highlight.Enabled = false end
+    end
+    local function destroySet(plr)
+        local s = pool[plr]; if not s then return end
+        for _, d in ipairs(s.all) do pcall(function() d:Remove() end) end
+        if s.highlight then pcall(function() s.highlight:Destroy() end) end
+        pool[plr] = nil
+    end
+
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+    local function col(f, fallback) local o = Lib.Options[f]; return (o and o.Value) or fallback end
+
+    local function isFriend(plr)
+        local ok, r = pcall(function() return LP:IsFriendsWith(plr.UserId) end); return ok and r
+    end
+    local function visibleTo(cam, part, char)
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        rp.FilterDescendantsInstances = { LP.Character, char }
+        rp.IgnoreWater = true
+        local o = cam.CFrame.Position
+        return Workspace:Raycast(o, (part.Position - o), rp) == nil
+    end
+
+    local function ensureHighlight(s, char)
+        if not s.highlight or s.highlight.Parent ~= char then
+            if s.highlight then pcall(function() s.highlight:Destroy() end) end
+            local h = Instance.new("Highlight")
+            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            h.FillTransparency = 0.5; h.OutlineTransparency = 0
+            h.Adornee = char; h.Parent = char
+            s.highlight = h
+        end
+    end
+
+    local function update(plr, cam, myPos)
+        local s = pool[plr]; if not s then return end
+        local char = plr.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        local head = char and char:FindFirstChild("Head")
+        if not (char and hum and hrp and hum.Health > 0) then return hideSet(s) end
+        if T("ESPTeamCheck") and LP.Team and plr.Team == LP.Team then return hideSet(s) end
+        if T("ESPFriendCheck") and isFriend(plr) then return hideSet(s) end
+
+        local dist = (hrp.Position - myPos).Magnitude
+        if dist > (O("ESPMaxDist") or 1000) then return hideSet(s) end
+
+        local topV, onTop = cam:WorldToViewportPoint((hrp.CFrame * CFrame.new(0, 3, 0)).Position)
+        local botV = cam:WorldToViewportPoint((hrp.CFrame * CFrame.new(0, -3.2, 0)).Position)
+        if not onTop then return hideSet(s) end
+
+        local h = math.abs(topV.Y - botV.Y)
+        local w = h * 0.5
+        local x = topV.X - w / 2
+        local y = topV.Y
+        local color = (visibleTo(cam, head or hrp, char) and col("ESPVisibleColor", Color3.fromRGB(80, 255, 120)))
+                       or col("ESPHiddenColor", Color3.fromRGB(255, 80, 80))
+
+        if T("ESPBox") then
+            s.boxO.Size = Vector2.new(w, h); s.boxO.Position = Vector2.new(x, y); s.boxO.Visible = true
+            s.box.Size  = Vector2.new(w, h); s.box.Position  = Vector2.new(x, y); s.box.Color = color; s.box.Visible = true
+        else s.boxO.Visible = false; s.box.Visible = false end
+
+        if T("ESPName") then
+            s.name.Text = plr.Name; s.name.Position = Vector2.new(x + w / 2, y - 15); s.name.Color = color; s.name.Visible = true
+        else s.name.Visible = false end
+
+        if T("ESPDistance") then
+            s.dist.Text = math.floor(dist) .. "m"; s.dist.Position = Vector2.new(x + w / 2, y + h + 2); s.dist.Visible = true
+        else s.dist.Visible = false end
+
+        if T("ESPHealth") then
+            local pct = math.clamp(hum.Health / (hum.MaxHealth > 0 and hum.MaxHealth or 100), 0, 1)
+            local bx = x - 5
+            s.hpBg.From = Vector2.new(bx, y); s.hpBg.To = Vector2.new(bx, y + h); s.hpBg.Visible = true
+            s.hp.From = Vector2.new(bx, y + h * (1 - pct)); s.hp.To = Vector2.new(bx, y + h)
+            s.hp.Color = Color3.fromRGB(math.floor(255 * (1 - pct)), math.floor(255 * pct), 60); s.hp.Visible = true
+        else s.hpBg.Visible = false; s.hp.Visible = false end
+
+        if T("ESPTracer") then
+            local vp = cam.ViewportSize
+            local originMode = O("TracerOrigin") or "Bottom"
+            local from = (originMode == "Center" and Vector2.new(vp.X / 2, vp.Y / 2))
+                       or (originMode == "Top" and Vector2.new(vp.X / 2, 0))
+                       or Vector2.new(vp.X / 2, vp.Y)
+            s.tracer.From = from; s.tracer.To = Vector2.new(topV.X, y + h); s.tracer.Color = color; s.tracer.Visible = true
+        else s.tracer.Visible = false end
+
+        if T("ESPSkeleton") then
+            for i, pair in ipairs(BONES) do
+                local a = char:FindFirstChild(pair[1]); local b = char:FindFirstChild(pair[2])
+                local bl = s.bones[i]
+                if a and b then
+                    local av, aon = cam:WorldToViewportPoint(a.Position)
+                    local bv, bon = cam:WorldToViewportPoint(b.Position)
+                    if aon and bon then
+                        bl.From = Vector2.new(av.X, av.Y); bl.To = Vector2.new(bv.X, bv.Y); bl.Color = color; bl.Visible = true
+                    else bl.Visible = false end
+                else bl.Visible = false end
+            end
+        else for _, b in ipairs(s.bones) do b.Visible = false end end
+
+        if T("ESPChams") then
+            ensureHighlight(s, char)
+            s.highlight.FillColor = color; s.highlight.OutlineColor = WHITE; s.highlight.Enabled = true
+        elseif s.highlight then s.highlight.Enabled = false end
+    end
+
+    function ESP.init()
+        for _, plr in ipairs(Players:GetPlayers()) do if plr ~= LP then createSet(plr) end end
+        LIP.track(Players.PlayerAdded:Connect(function(plr) createSet(plr) end))
+        LIP.track(Players.PlayerRemoving:Connect(function(plr) destroySet(plr) end))
+        LIP.track(RunService.RenderStepped:Connect(function()
+            local cam = Workspace.CurrentCamera
+            local myChar = LP.Character
+            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            local on = T("ESP")
+            for plr, s in pairs(pool) do
+                if not on or not myHrp then hideSet(s)
+                else
+                    local ok = pcall(update, plr, cam, myHrp.Position)
+                    if not ok then hideSet(s) end
+                end
+            end
+        end))
+    end
+
+    return ESP
+end
+
+end)()
+_MODS["UI"] = (function()
+-- UI.lua — FACTORY. Categorías Rage / Legit / Misc / Visuals. Paneles separados por función.
+-- Flags en Lib.Toggles / Lib.Options.
+return function(require, LIP, Lib)
+    local UI = {}
+
+    function UI.build(Window)
+        local Ragdoll = require("Combat.Ragdoll")
+        local Weapon  = require("Combat.Weapon")
+        local Strafe  = require("Combat.Strafe")
+        local Vehicle = require("Movement.Vehicle")
+        local Void    = require("Movement.Void")
+        local Util    = require("Combat.Utility")
+
+        --========================= RAGE =========================--
+        local Rage = Window:AddCategory("Rage", "crosshair")
+        local RS = Rage:AddSection("Ragebot", "Silent aim · Rapid fire · Target strafe", { Columns = 3 })
+
+        -- Col 1: Silent Aim
+        local c1 = RS:AddPanel("Silent Aim", { Column = 1 })
+        c1:AddToggle("SilentAim", { Text = "Silent Aim", Default = false,
+            Tooltip = "op14 passive arg-swap al target. Cámara no se toca, GST intacto." })
+        c1:AddDropdown("SelMode", { Text = "Selection", Values = { "Crosshair", "Distance", "Health" }, Default = "Crosshair" })
+        c1:AddSlider("FOV", { Text = "FOV", Min = 0, Max = 500, Default = 150 })
+        c1:AddToggle("Wallcheck", { Text = "Wallcheck", Default = false,
+            Tooltip = "ON = solo con línea de vista" })
+        c1:AddToggle("Wallbang", { Text = "Wallbang", Default = false,
+            Tooltip = "Raycast target→vos, pone el origin del lado del target de la pared = LOS garantizada (atraviesa paredes)" })
+        c1:AddToggle("AntiInvis", { Text = "Anti Invisible", Default = false })
+        c1:AddDivider()
+        c1:AddToggle("TeamCheck", { Text = "Team Check", Default = true })
+        c1:AddToggle("FriendCheck", { Text = "Friend Check", Default = true })
+
+        -- Col 2: Rapid Fire / Instant Reload / Auto Fire
+        local c2 = RS:AddPanel("Firepower", { Column = 2 })
+        c2:AddToggle("RapidFire", { Text = "Rapid Fire", Default = false,
+            Tooltip = "Ráfaga extra de op14 al disparar (gate firerate es client-only)" })
+        c2:AddSlider("RapidCount", { Text = "Burst Count", Min = 1, Max = 12, Default = 3 })
+        c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
+            Tooltip = "Dispara op14 al target auto (sin mouse1click). SOLO activo mientras Target Strafe esté ON." })
+        c2:AddSlider("AutoFireRate", { Text = "Auto Rate", Min = 0.05, Max = 1, Default = 0.15, Decimals = 2, Suffix = "s" })
+        c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs",
+            Tooltip = "No dispara si el target está más lejos (fuera de rango = server rechaza)" })
+        c2:AddDivider()
+        c2:AddButton("Force Reload", function() Weapon.instantReload() end)
+        c2:AddKeybind("ReloadKey", { Text = "Reload Key", Mode = "Toggle", Callback = function() Weapon.instantReload() end })
+        c2:AddSlider("ReloadAmmo", { Text = "Mag Size", Min = 1, Max = 120, Default = 15,
+            Tooltip = "Balas por cargador de tu arma (fallback; se auto-detecta del reload real del juego)" })
+        c2:AddSlider("ReloadTime", { Text = "Reload Time", Min = 0.3, Max = 3, Default = 1.2, Decimals = 1, Suffix = "s",
+            Tooltip = "Espera antes del op40 (debe ~= duración de la anim de recarga, o el server rechaza)" })
+        c2:AddToggle("ShotgunReload", { Text = "Shotgun Reload", Default = false,
+            Tooltip = "Para escopetas (SPAS): op40 por bala en vez de uno solo (protocolo per-shell). Pistola/rifle = OFF." })
+
+        -- Col 3: Target Strafe
+        local c3 = RS:AddPanel("Target Strafe", { Column = 3 })
+        c3:AddToggle("TargetStrafe", { Text = "Target Strafe", Default = false,
+            Tooltip = "Desync: server te ve orbitando, cuerpo/cámara reales quietos (CFrame spoof)" })
+        c3:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.TargetStrafe; if t then t:SetValue(a) end end })
+        c3:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind" }, Default = "Normal",
+            Callback = function(v) Strafe.applyPreset(v) end })
+        c3:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind" }, Default = "Normal" })
+        c3:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 25, Default = 10, Decimals = 1, Suffix = "studs" })
+        c3:AddSlider("StrafeSpeed",  { Text = "Speed", Min = 1, Max = 40, Default = 4 })
+        c3:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
+        c3:AddToggle("PosSpoof", { Text = "Pos Spoof (master)", Default = true,
+            Tooltip = "MASTER de Strafe + Void. ON = desync (cuerpo/cámara reales quietos). OFF = mueve el cuerpo real." })
+        c3:AddToggle("StrafeChase", { Text = "Dynamic Chase", Default = true,
+            Tooltip = "Predice la pos del target por su velocidad (orbita su posición futura)" })
+        c3:AddToggle("StrafeBait", { Text = "Bait", Default = false,
+            Tooltip = "Invierte el sentido del strafe al azar (baitea el aim enemigo)" })
+        c3:AddDivider()
+        c3:AddKeybind("SetTargetKey", { Text = "Set Target (crosshair)", Mode = "Toggle",
+            Callback = function() Strafe.pickCrosshair() end })
+        c3:AddButton("Clear Target", function() Strafe.clearManual() end)
+        c3:AddToggle("Spectate", { Text = "Spectate Target", Default = false,
+            Tooltip = "Cámara al target manual; persiste en muerte/rejoin hasta cambiarlo" })
+
+        -- Section propia: Resolver
+        local RSR = Rage:AddSection("Resolver", "Spam resolver (anti cheaters)")
+        local r1 = RSR:AddPanel("Resolver", { Column = 1 })
+        r1:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
+            Tooltip = "Resuelve el centro real del target vs strafe/fling enemigo" })
+        r1:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Median", "Weighted", "Average", "Latest" }, Default = "Median" })
+        r1:AddSlider("ResolverSamples", { Text = "Samples", Min = 3, Max = 16, Default = 8 })
+        r1:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
+            Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
+        r1:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead por velocidad del target (compensa ping/movimiento). 0 = off" })
+        local r2 = RSR:AddPanel("Notes", { Column = 2 })
+        r2:AddLabel("Median = robusto a extremos. Weighted = recientes pesan más. Predict = lead por velocidad.", {})
+
+        -- Sección Void Spam (en Rage) — origen absoluto (0,100,0), random far cada frame
+        local RSV = Rage:AddSection("Void Spam", "Anti-aim · origen absoluto (0,100,0)")
+        local vd = RSV:AddPanel("Void Spam", { Column = 1 })
+        vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
+            Tooltip = "Origen absoluto (0,100,0), rotación XYZ random. Nunca toca el vacío (clamp Y). Usa el master Pos Spoof." })
+        vd:AddDropdown("VoidPattern", { Text = "Pattern", Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
+        vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
+        vd:AddToggle("VoidViz", { Text = "Visualizer", Default = true, Tooltip = "Part + icono + tracer a la pos spoofeada" })
+
+        --========================= LEGIT =========================--
+        local Legit = Window:AddCategory("Legit", "target")
+        local LS = Legit:AddSection("Legit", "Melee · Fists", { Columns = 2 })
+        local l1 = LS:AddPanel("Melee", { Column = 1 })
+        l1:AddToggle("MeleeAura", { Text = "Melee Aura", Default = false,
+            Tooltip = "op16 passive: al golpear con arma melee, redirige el hit al enemigo cercano" })
+        l1:AddSlider("MeleeRange", { Text = "Melee Range", Min = 4, Max = 30, Default = 12, Suffix = "studs" })
+        local l2 = LS:AddPanel("Fists", { Column = 2 })
+        l2:AddToggle("AutoPunch", { Text = "Auto Punch", Default = false,
+            Tooltip = "op33 activo (puños, sin GST): golpea al enemigo cercano en rango" })
+        l2:AddSlider("PunchRange", { Text = "Punch Range", Min = 4, Max = 30, Default = 8, Suffix = "studs" })
+
+        --========================= MISC =========================--
+        local Misc = Window:AddCategory("Misc", "wrench")
+        local MS = Misc:AddSection("Movement", "Fly · Noclip · Speed · Vehicle", { Columns = 3 })
+        local m1 = MS:AddPanel("Fly / Noclip", { Column = 1 })
+        m1:AddToggle("Fly", { Text = "Fly", Default = false, Tooltip = "WASD + Space/Shift" })
+        m1:AddKeybind("FlyKey", { Text = "Fly Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Fly; if t then t:SetValue(a) end end })
+        m1:AddSlider("FlySpeed", { Text = "Fly Speed", Min = 10, Max = 300, Default = 60 })
+        m1:AddToggle("Noclip", { Text = "Noclip", Default = false })
+        m1:AddKeybind("NoclipKey", { Text = "Noclip Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Noclip; if t then t:SetValue(a) end end })
+        local m2 = MS:AddPanel("Speed / Jump", { Column = 2 })
+        m2:AddToggle("WalkSpeedOn", { Text = "WalkSpeed", Default = false, Tooltip = "Via buff op47 (AC-safe)" })
+        m2:AddSlider("WalkSpeed", { Text = "Speed", Min = 16, Max = 200, Default = 40 })
+        m2:AddToggle("JumpOn", { Text = "JumpHeight", Default = false, Tooltip = "Via buff op47 (base 7.2)" })
+        m2:AddSlider("JumpHeight", { Text = "Jump", Min = 7, Max = 100, Default = 25 })
+        m2:AddToggle("InfJump", { Text = "Infinite Jump", Default = false })
+        local m3 = MS:AddPanel("Vehicle", { Column = 3 })
+        m3:AddToggle("VehSpeedOn", { Text = "Vehicle Speed", Default = false })
+        m3:AddSlider("VehSpeed", { Text = "Multiplier", Min = 1, Max = 20, Default = 5, Suffix = "x" })
+        m3:AddButton("Vehicle Fling", function() Vehicle.fling() end)
+        m3:AddSlider("VehFlingPower", { Text = "Fling Power", Min = 100, Max = 5000, Default = 800 })
+        m3:AddButton("Sit Nearest", function() Vehicle.sitNearest() end)
+        m3:AddSlider("SitRange", { Text = "Sit Range", Min = 10, Max = 150, Default = 40 })
+
+        local VS = Misc:AddSection("Body & Utility", "Ragdoll · Godmode · Utility", { Columns = 2 })
+        local v2 = VS:AddPanel("Self", { Column = 1 })
+        v2:AddButton("Self Ragdoll", function() Ragdoll.toggle() end)
+        v2:AddKeybind("RagdollKey", { Text = "Ragdoll Key", Mode = "Toggle", Callback = function() Ragdoll.toggle() end })
+        v2:AddToggle("RagdollLock", { Text = "Permanent Ragdoll", Default = false })
+        v2:AddToggle("Godmode", { Text = "Godmode (ragdoll)", Default = false,
+            Tooltip = "Self-ragdoll + mueve el assembly lejos (hitbox real fuera). Dispara con AutoFire (op14 directo). WIP" })
+        v2:AddDropdown("GodMode", { Text = "God Mode", Values = { "High", "Jitter" }, Default = "High" })
+        v2:AddSlider("GodHeight", { Text = "God Height", Min = 50, Max = 500, Default = 150, Suffix = "studs" })
+        local v3 = VS:AddPanel("Utility", { Column = 2 })
+        v3:AddLabel("Join Team (op1)", { Header = true })
+        v3:AddButton("Police", function() Util.joinTeam("Police") end)
+        v3:AddButton("Criminals", function() Util.joinTeam("Criminals") end)
+        v3:AddButton("Prisoners", function() Util.joinTeam("Prisoners") end)
+        v3:AddButton("Neutral", function() Util.joinTeam("Neutral") end)
+        v3:AddButton("Grab Tool (op12)", function() Util.grabNearest() end)
+        v3:AddButton("Heal (op28)", function() Util.healSpam() end)
+
+        --========================= VISUALS =========================--
+        local Vis  = Window:AddCategory("Visuals", "eye")
+        local VSec = Vis:AddSection("ESP", "Player ESP (R6, client-side)")
+        local vp = VSec:AddPanel("ESP", { Column = 1 })
+        vp:AddToggle("ESP", { Text = "Enabled", Default = false })
+            :AddColorPicker("ESPVisibleColor", { Default = Color3.fromRGB(80, 255, 120) })
+            :AddColorPicker("ESPHiddenColor",  { Default = Color3.fromRGB(255, 80, 80) })
+        vp:AddToggle("ESPBox",      { Text = "Box" })
+        vp:AddToggle("ESPName",     { Text = "Name" })
+        vp:AddToggle("ESPHealth",   { Text = "Health bar" })
+        vp:AddToggle("ESPDistance", { Text = "Distance" })
+        vp:AddToggle("ESPTracer",   { Text = "Tracer" })
+        vp:AddToggle("ESPSkeleton", { Text = "Skeleton" })
+        vp:AddToggle("ESPChams",    { Text = "Chams (through walls)" })
+        local vp2 = VSec:AddPanel("Filters", { Column = 2 })
+        vp2:AddDropdown("TracerOrigin", { Text = "Tracer origin", Values = { "Bottom", "Center", "Top" }, Default = "Bottom" })
+        vp2:AddSlider("ESPMaxDist",     { Text = "Max distance", Min = 50, Max = 2000, Default = 1000, Suffix = "m" })
+        vp2:AddToggle("ESPTeamCheck",   { Text = "Team Check", Default = true })
+        vp2:AddToggle("ESPFriendCheck", { Text = "Friend Check", Default = false })
+    end
+
+    return UI
+end
+
+end)()
+_MODS["main"] = (function()
+-- main.lua — FACTORY. Driver: Window PrimordialUI + loop de estado (Heartbeat).
+-- Posición: Godmode > Target Strafe > Void Spam (mutuamente excluyentes, todos por desync/física).
+return function(require, LIP, Lib)
+    local RunService = game:GetService("RunService")
+    local Players    = game:GetService("Players")
+    local Workspace  = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+
+    local Ragdoll = require("Combat.Ragdoll")
+    local Target  = require("Combat.Target")
+    local Melee   = require("Combat.Melee")
+    local Strafe  = require("Combat.Strafe")
+    local Weapon  = require("Combat.Weapon")
+    local Godmode = require("Combat.Godmode")
+    local Net     = require("Net")
+    local Move    = require("Movement.Movement")
+    local Vehicle = require("Movement.Vehicle")
+    local Void    = require("Movement.Void")
+    local ESP     = require("Visuals.ESP")
+    local UI      = require("UI")
+
+    local Window = Lib:CreateWindow({ Title = "life in prison", Size = Vector2.new(834, 586) })
+    LIP.Library = Lib
+    UI.build(Window)
+    Net.install()    -- __namecall silent aim op14 + melee aura op16
+    Move.init()      -- fly/noclip/speed/jump
+    Vehicle.init()   -- vehicle speed
+    Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
+    Void.init()      -- void spam + visualizador (Spoof.init idempotente)
+    ESP.init()       -- Visuals
+
+    -- ANTI-SLEEP: Roblox pausa la replicación de posición si el assembly está QUIETO (rompe el
+    -- desync/spoof). Mantenemos una velocity pasiva mínima (0.003 studs/s hacia arriba) cuando estás
+    -- quieto → el assembly no "duerme" → la posición sigue replicando. Persiste en muerte (lee el
+    -- Character cada frame). Solo aplica cuando estás casi quieto (no pisa caminar/saltar/caer).
+    LIP.track(RunService.Heartbeat:Connect(function()
+        local c = LP.Character
+        local root = c and c:FindFirstChild("HumanoidRootPart")
+        if root and root.AssemblyLinearVelocity.Magnitude < 0.05 then
+            root.AssemblyLinearVelocity = Vector3.new(0, 0.003, 0)
+        end
+    end))
+
+    local T, O = Lib.Toggles, Lib.Options
+
+    -- precache del hit de silent aim / autofire (Head del target, resolver opcional)
+    local function cacheHit()
+        local t = LIP.target
+        local ch = t and t.Character
+        local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
+        LIP.cachedHitPart = part
+        if part then
+            -- HBE-SAFE: hitPos = CENTRO EXACTO del hitPart (objspace ZERO). El server aplica daño al
+            -- hitPart real igual → NO predecir/offsetear el hit (predict/antiInvis lo sacan del hitbox
+            -- = detección Hitbox Expander → ban). El resolver/predict se usa solo para el strafe orbit.
+            local base = part.Position
+            LIP.cachedHitPos = base
+            -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
+            if T.Wallbang and T.Wallbang.Value then
+                local myHead = LP.Character and LP.Character:FindFirstChild("Head")
+                local hitPos = LIP.cachedHitPos
+                if myHead then
+                    local to = myHead.Position
+                    local rp = RaycastParams.new()
+                    rp.FilterType = Enum.RaycastFilterType.Exclude
+                    rp.FilterDescendantsInstances = { LP.Character, ch }
+                    rp.IgnoreWater = true
+                    local res = Workspace:Raycast(hitPos, (to - hitPos), rp)
+                    if res then
+                        LIP.cachedOrigin = res.Position + (hitPos - to).Unit * 2   -- 2 studs del lado del target
+                    else
+                        LIP.cachedOrigin = to                                       -- LOS clara → origin real
+                    end
+                else LIP.cachedOrigin = hitPos end
+            else
+                LIP.cachedOrigin = nil
+            end
+        else
+            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil
+        end
+    end
+
+    local function stillValid(plr, filters)
+        if not (plr and plr.Parent) then return false end
+        local c = plr.Character
+        local hum = c and c:FindFirstChildOfClass("Humanoid")
+        local hrp = c and c:FindFirstChild("HumanoidRootPart")
+        if not (hum and hrp and hum.Health > 0) then return false end
+        if filters.teamCheck and LP.Team and plr.Team == LP.Team then return false end
+        return true
+    end
+
+    -- target: manual (persiste muerte/rejoin) > STICKY (mantiene el actual si sigue válido) > pick
+    local function resolveTarget(filters, needAim)
+        local manual = Strafe.manualPlayer()
+        if manual then LIP.target = manual; return end
+        if needAim then
+            if LIP.target and stillValid(LIP.target, filters) then return end   -- lock: no saltar a otro
+            Target.pick({ mode = O.SelMode.Value, fov = O.FOV.Value, wallcheck = T.Wallcheck.Value,
+                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+        else
+            LIP.target = nil
+        end
+    end
+
+    LIP.track(RunService.Heartbeat:Connect(function()
+        LIP.antiInvis = T.AntiInvis and T.AntiInvis.Value or false
+        LIP.swapOn    = T.SilentAim and T.SilentAim.Value or false
+        LIP.meleeOn   = T.MeleeAura and T.MeleeAura.Value or false
+        LIP.wallbang  = T.Wallbang and T.Wallbang.Value or false
+        local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
+        local cam = Workspace.CurrentCamera
+
+        local strafeOn = T.TargetStrafe and T.TargetStrafe.Value
+        local autoOn   = T.AutoFire and T.AutoFire.Value
+        local godOn    = T.Godmode and T.Godmode.Value
+        local voidOn   = T.VoidSpam and T.VoidSpam.Value
+        local needAim  = LIP.swapOn or strafeOn or autoOn
+
+        -- resolver sampling (historial de enemigos)
+        if needAim or (T.Resolver and T.Resolver.Value) then Strafe.sampleAll(os.clock(), O.ResolverReject.Value) end
+
+        -- target + precache (para silent aim swap Y autofire)
+        resolveTarget(filters, needAim)
+        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
+
+        -- ── POSICIÓN: Godmode > Strafe > Void (excluyentes) ──
+        if godOn then Godmode.tick() end   -- no-op + aviso (godmode = ban HBE, neutralizado)
+
+        -- MASTER Pos Spoof controla strafe Y void. Prioridad: Strafe > Void.
+        local posSpoof = T.PosSpoof and T.PosSpoof.Value
+        if strafeOn then
+            local st = LIP.target or Target.nearestEnemy({ range = 200,
+                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            if st then
+                Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
+                                  speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
+                                  posSpoof = posSpoof, chase = T.StrafeChase.Value,
+                                  bait = T.StrafeBait.Value, predict = O.ResolverPredict.Value })
+            else Strafe.stop() end
+        elseif voidOn then
+            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value, posSpoof = posSpoof })
+        elseif LIP.spoofOn then
+            Strafe.stop()
+        end
+
+        -- spectator (override de cámara al target manual)
+        if T.Spectate and T.Spectate.Value then Strafe.spectate(cam) end
+
+        -- auto/rapid fire (op14 directo con ammo tracking; funciona ragdolleado)
+        Weapon.tickAuto()
+
+        -- melee aura / auto punch
+        if LIP.meleeOn then
+            Melee.cacheMelee({ range = O.MeleeRange.Value, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+        else LIP.meleePart = nil end
+        if T.AutoPunch and T.AutoPunch.Value then
+            Melee.autoPunch({ range = O.PunchRange.Value, rate = 0.5, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+        end
+
+        -- permanent ragdoll (si no está godmode, que ya maneja el ragdoll)
+        if not godOn and T.RagdollLock and T.RagdollLock.Value then Ragdoll.tickLock() end
+    end))
+
+    pcall(function() if Window.AddSettingsTab then Window:AddSettingsTab() end end)
+    pcall(function()
+        if Lib.SetWatermark then Lib:SetWatermark("life in prison \226\128\162 primordial") end
+        if Lib.SetWatermarkVisibility then Lib:SetWatermarkVisibility(true) end
+    end)
+    pcall(function() if Lib.LoadAutoloadConfig then Lib:LoadAutoloadConfig() end end)
+    Lib:Notify({ Title = "LifeInPrisonPrimordial", Description = "Rage/Legit/Misc cargado.", Time = 5 })
+end
+
+end)()
+local _cache = {}
+local Lib = (function()
+-- PrimordialUI bundle (auto-generado por build.lua) --
+local P = {}
+-- ==== Core/Signal ====
+do local __m = (function()
+return function(P)
+    local Signal = {}
+    Signal.__index = Signal
+    function Signal.new()
+        return setmetatable({ _cbs = {} }, Signal)
+    end
+    function Signal:Connect(fn)
+        local conn = { fn = fn, _sig = self }
+        function conn:Disconnect()
+            for i, c in ipairs(self._sig._cbs) do
+                if c == self then table.remove(self._sig._cbs, i) break end
+            end
+        end
+        table.insert(self._cbs, conn)
+        return conn
+    end
+    function Signal:Fire(...)
+        for _, c in ipairs({ table.unpack(self._cbs) }) do
+            task.spawn(c.fn, ...)
+        end
+    end
+    function Signal:DisconnectAll() self._cbs = {} end
+    P.Signal = Signal
+end
+
+end)(); __m(P) end
+-- ==== Core/Theme ====
+do local __m = (function()
+return function(P)
+    P.Theme = {
+        Accent    = Color3.fromRGB(202, 151, 161),  -- rosa mauve exacto (swatch primordial)
+        AccentDim = Color3.fromRGB(138, 102, 110),
+        Bg        = Color3.fromRGB(29, 29, 32),      -- fondo window (no negro)
+        Surface   = Color3.fromRGB(34, 34, 37),      -- panels
+        Bar       = Color3.fromRGB(40, 40, 44),      -- header + barra de categorias (mas claro que bg/panels)
+        Sidebar   = Color3.fromRGB(32, 32, 35),      -- sidebar (un pelin mas oscuro)
+        Surface2  = Color3.fromRGB(23, 23, 26),      -- controls (toggle/dropdown/textbox/slider) mas oscuro que Bg
+        Surface3  = Color3.fromRGB(56, 56, 62),      -- hover / pill categoria activa
+        Knob      = Color3.fromRGB(206, 206, 211),   -- perilla gris clara
+        Outline   = Color3.fromRGB(48, 48, 53),
+        Border    = Color3.fromRGB(8, 8, 10),        -- borde negro thin de panels
+        Text      = Color3.fromRGB(228, 228, 233),
+        SubText   = Color3.fromRGB(132, 132, 140),
+        Positive  = Color3.fromRGB(120, 200, 120),
+        Negative  = Color3.fromRGB(210, 70, 70),
+        Radius    = 6,
+        RadiusBig = 9,
+        Pad       = 8,
+        RowH      = 26,
+        Font      = Enum.Font.Gotham,
+        FontBold  = Enum.Font.GothamBold,
+        TextSize  = 13,
+        Shadow    = "rbxassetid://6014261993",       -- drop shadow 9-slice
+    }
+end
+
+end)(); __m(P) end
+-- ==== Core/Util ====
+do local __m = (function()
+return function(P)
+    local TweenService = game:GetService("TweenService")
+    local UIS = game:GetService("UserInputService")
+    local Util = {}
+
+    function Util.Create(class, props, children)
+        local inst = Instance.new(class)
+        for k, v in pairs(props or {}) do
+            if k ~= "Parent" then inst[k] = v end
+        end
+        for _, c in ipairs(children or {}) do c.Parent = inst end
+        if props and props.Parent then inst.Parent = props.Parent end
+        return inst
+    end
+
+    function Util.Tween(inst, info, goal)
+        local t = TweenService:Create(inst, info, goal); t:Play(); return t
+    end
+
+    function Util.Round(n, dec)
+        local m = 10 ^ (dec or 0)
+        return math.floor(n * m + 0.5) / m
+    end
+
+    function Util.GetGui()
+        local parent
+        local ok = pcall(function() parent = gethui() end)
+        if not ok or not parent then
+            parent = game:GetService("CoreGui")
+        end
+        return parent
+    end
+
+    -- Arrastre: handleGui recibe input, mueve targetFrame por delta.
+    -- maid opcional: objeto con :Maid(conn) para limpiar la conexion global en Unload.
+    function Util.Drag(handleGui, targetFrame, maid)
+        local dragging, startPos, startInput
+        local function reg(c) if maid then maid:Maid(c) end return c end
+        reg(handleGui.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+                if maid and maid.CloseActivePopup then maid:CloseActivePopup() end
+                dragging = true
+                startPos = targetFrame.Position
+                startInput = input.Position
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                end)
+            end
+        end))
+        reg(UIS.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+                local d = input.Position - startInput
+                targetFrame.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + d.X,
+                    startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end))
+    end
+
+    -- Sombra suave y externa detras de un frame (elevacion sutil).
+    -- Usar SOLO en frames que NO sean AutomaticSize (si no, la infla).
+    function Util.Shadow(target, opts)
+        opts = opts or {}
+        local sp = opts.Spread or 22
+        local sh = Instance.new("ImageLabel")
+        sh.Name = "Shadow"
+        sh.BackgroundTransparency = 1
+        sh.Image = P.Theme.Shadow
+        sh.ImageColor3 = opts.Color or Color3.new(0, 0, 0)
+        sh.ImageTransparency = opts.Transparency or 0.78
+        sh.ScaleType = Enum.ScaleType.Slice
+        sh.SliceCenter = Rect.new(49, 49, 450, 450)
+        sh.ZIndex = -1
+        sh.AnchorPoint = Vector2.new(0.5, 0.5)
+        sh.Position = UDim2.new(0.5, 0, 0.5, opts.YOffset or 4)
+        sh.Size = UDim2.new(1, sp * 2, 1, sp * 2)
+        sh.Parent = target
+        return sh
+    end
+
+    P.Util = Util
+end
+
+end)(); __m(P) end
+-- ==== Core/Registry ====
+do local __m = (function()
+return function(P)
+    local Registry = {}
+    Registry.__index = Registry
+    function Registry.new() return setmetatable({ _items = {} }, Registry) end
+    function Registry:Add(inst, role, prop)
+        table.insert(self._items, { inst = inst, role = role, prop = prop })
+        if P.Theme[role] then inst[prop] = P.Theme[role] end
+    end
+    function Registry:Apply(theme)
+        for _, it in ipairs(self._items) do
+            if it.inst and it.inst.Parent ~= nil and theme[it.role] then
+                it.inst[it.prop] = theme[it.role]
+            end
+        end
+    end
+    P.Registry = Registry
+end
+
+end)(); __m(P) end
+-- ==== Core/Icons ====
+do local __m = (function()
+return function(P)
+    local Icons = {}
+    -- fuente Lucide para Roblox (spritesheet), cargada lazy + cacheada
+    Icons.URL = "https://raw.githubusercontent.com/deividcomsono/lucide-roblox-direct/refs/heads/main/source.lua"
+    Icons._mod = nil  -- nil = sin intentar; false = fallo; table = cargado
+
+    function Icons.load()
+        if Icons._mod ~= nil then return Icons._mod or nil end
+        local ok, mod = pcall(function()
+            return loadstring(game:HttpGet(Icons.URL))()
+        end)
+        Icons._mod = (ok and type(mod) == "table" and mod) or false
+        return Icons._mod or nil
+    end
+
+    -- resuelve un icono a props de ImageLabel.
+    -- acepta: nombre Lucide ("crosshair"), "rbxassetid://123", "rbxasset://...", o numero.
+    function Icons.resolve(icon)
+        if not icon or icon == "" then return nil end
+        icon = tostring(icon)
+        if icon:match("^%d+$") then return { Image = "rbxassetid://" .. icon } end
+        if icon:match("^rbxasset") then return { Image = icon } end
+        local mod = Icons.load()
+        if mod and mod.GetAsset then
+            local ok, a = pcall(mod.GetAsset, icon)
+            if ok and type(a) == "table" then
+                return { Image = a.Url or a.Image, ImageRectOffset = a.ImageRectOffset, ImageRectSize = a.ImageRectSize }
+            end
+        end
+        return nil
+    end
+
+    -- aplica el icono a un ImageLabel/ImageButton existente
+    function Icons.apply(img, icon)
+        local r = Icons.resolve(icon)
+        if not r then img.Image = ""; return false end
+        img.Image = r.Image
+        img.ImageRectOffset = r.ImageRectOffset or Vector2.zero
+        img.ImageRectSize = r.ImageRectSize or Vector2.zero
+        return true
+    end
+
+    P.Icons = Icons
+end
+
+end)(); __m(P) end
+-- ==== Core/Library ====
+do local __m = (function()
+return function(P)
+    local UIS = game:GetService("UserInputService")
+    local Library = {
+        Flags = {}, Toggles = {}, Options = {}, Windows = {},
+        Open = true, Unloaded = false,
+        ToggleKey = Enum.KeyCode.RightShift,
+        Connections = {}, _flagSignals = {},
+    }
+    Library.Registry = P.Registry.new()
+    Library.FlagChanged = P.Signal.new()
+
+    function Library:Maid(x) table.insert(self.Connections, x); return x end
+
+    function Library:GetFlagSignal(flag)
+        local s = self._flagSignals[flag]
+        if not s then s = P.Signal.new(); self._flagSignals[flag] = s end
+        return s
+    end
+
+    function Library:SetFlag(flag, value)
+        self.Flags[flag] = value
+        self.FlagChanged:Fire(flag, value)
+        local s = self._flagSignals[flag]
+        if s then s:Fire(value) end
+    end
+
+    -- solo un popup (dropdown/colorpicker/gear) abierto a la vez
+    function Library:OpenPopup(closer)
+        if self._activePopup and self._activePopup ~= closer then pcall(self._activePopup) end
+        self._activePopup = closer
+    end
+    function Library:ClosePopup(closer)
+        if self._activePopup == closer then self._activePopup = nil end
+    end
+    function Library:CloseActivePopup()
+        if self._activePopup then local c = self._activePopup; self._activePopup = nil; pcall(c) end
+    end
+
+    function Library:SetTheme(patch)
+        for k, v in pairs(patch or {}) do P.Theme[k] = v end
+        self.Registry:Apply(P.Theme)
+    end
+
+    function Library:CreateWindow(opts)
+        if not P.Window then warn("PrimordialUI: Window module ausente"); return nil end
+        local w = P.Window.new(self, opts or {})
+        table.insert(self.Windows, w)
+        return w
+    end
+
+    function Library:Unload()
+        self.Unloaded = true
+        for _, c in ipairs(self.Connections) do
+            pcall(function() if c.Disconnect then c:Disconnect() elseif c.Destroy then c:Destroy() end end)
+        end
+        self.Connections = {}
+        for _, w in ipairs(self.Windows) do pcall(function() w:Destroy() end) end
+        self.Windows = {}
+        if getgenv then getgenv().__PUI = nil end
+    end
+
+    -- toggle show/hide global
+    Library:Maid(UIS.InputBegan:Connect(function(inp, gpe)
+        if gpe then return end
+        if inp.KeyCode == Library.ToggleKey then
+            Library.Open = not Library.Open
+            for _, w in ipairs(Library.Windows) do w:SetVisible(Library.Open) end
+        end
+    end))
+
+    -- single-instance: descarga cualquier instancia previa al recargar la lib
+    if getgenv then
+        if getgenv().__PUI then pcall(function() getgenv().__PUI:Unload() end) end
+        -- barrer guis huerfanas (windows PUI_ y overlays PUIo_) de instancias leakeadas
+        pcall(function()
+            local roots = {}
+            local ok, hui = pcall(function() return gethui() end)
+            if ok and hui then table.insert(roots, hui) end
+            table.insert(roots, game:GetService("CoreGui"))
+            for _, r in ipairs(roots) do
+                for _, g in ipairs(r:GetChildren()) do
+                    if g:IsA("ScreenGui") and (tostring(g.Name):match("^PUI_") or tostring(g.Name):match("^PUIo_")) then
+                        g:Destroy()
+                    end
+                end
+            end
+        end)
+        getgenv().__PUI = Library
+    end
+    P.Library = Library
+end
+
+end)(); __m(P) end
+-- ==== Core/Overlays ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local UIS = game:GetService("UserInputService")
+    local Lib = P.Library
+
+    Lib.DPIScale = 1
+    function Lib:SetDPIScale(pct)
+        self.DPIScale = math.clamp(pct / 100, 0.5, 2)
+        for _, w in ipairs(self.Windows) do
+            if w.UIScale then w.UIScale.Scale = self.DPIScale end
+        end
+    end
+
+    -- ScreenGui compartido para overlays (no escala con el DPI del menu)
+    local function overlay()
+        if Lib._overlayGui and Lib._overlayGui.Parent then return Lib._overlayGui end
+        Lib._overlayGui = U.Create("ScreenGui", { Name = "PUIo_" .. tostring(math.random(1e5, 9e5)),
+            ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 9999, Parent = U.GetGui() })
+        Lib:Maid(Lib._overlayGui)
+        return Lib._overlayGui
+    end
+
+    -- hace un overlay arrastrable y persiste su posicion en self._overlayPos[key]
+    function Lib:_trackOverlay(key, frame)
+        self._overlayPos = self._overlayPos or {}
+        local p = self._overlayPos[key]
+        if p then frame.Position = UDim2.fromOffset(p[1], p[2]) end
+        U.Drag(frame, frame, self)
+        frame:GetPropertyChangedSignal("Position"):Connect(function()
+            self._overlayPos[key] = { frame.Position.X.Offset, frame.Position.Y.Offset }
+        end)
+    end
+    -- aplica posiciones guardadas (llamado por LoadConfig)
+    function Lib:ApplyOverlayPositions(pos)
+        self._overlayPos = pos or {}
+        if self._wm and self._overlayPos.watermark then
+            local p = self._overlayPos.watermark; self._wm.Position = UDim2.fromOffset(p[1], p[2])
+        end
+        if self._kbFrame and self._overlayPos.keybindlist then
+            local p = self._overlayPos.keybindlist; self._kbFrame.Position = UDim2.fromOffset(p[1], p[2])
+        end
+    end
+
+    ---------------------------------------------------------------- WATERMARK
+    function Lib:SetWatermark(text)
+        local g = overlay()
+        if not self._wm then
+            self._wm = U.Create("Frame", { Parent = g, BackgroundColor3 = T.Bar, BorderSizePixel = 0,
+                Position = UDim2.fromOffset(12, 12), Size = UDim2.fromOffset(10, 24),
+                AutomaticSize = Enum.AutomaticSize.X,
+            }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+                U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+                U.Create("Frame", { Name = "Bar", BackgroundColor3 = T.Accent, BorderSizePixel = 0,
+                    Size = UDim2.new(0, 2, 1, 0) }),
+                U.Create("TextLabel", { Name = "T", BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.X,
+                    Position = UDim2.fromOffset(10, 0), Size = UDim2.new(0, 0, 1, 0),
+                    Font = T.FontBold, TextSize = 13, TextColor3 = T.Text, TextXAlignment = Enum.TextXAlignment.Left },
+                    { U.Create("UIPadding", { PaddingRight = UDim.new(0, 10) }) }) })
+            self.Registry:Add(self._wm.Bar, "Accent", "BackgroundColor3")
+            self:_trackOverlay("watermark", self._wm)
+        end
+        self._wm.T.Text = text
+    end
+    function Lib:SetWatermarkVisibility(b)
+        if not self._wm and b then self:SetWatermark("PrimordialUI") end
+        if self._wm then self._wm.Visible = b end
+    end
+
+    ---------------------------------------------------------------- TOOLTIP
+    local function tip()
+        if Lib._tip and Lib._tip.Parent then return Lib._tip end
+        Lib._tip = U.Create("TextLabel", { Parent = overlay(), Visible = false, ZIndex = 50,
+            BackgroundColor3 = T.Surface2, AutomaticSize = Enum.AutomaticSize.XY,
+            Font = T.Font, TextSize = 12, TextColor3 = T.Text, Text = "",
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+            U.Create("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6),
+                PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 3) }) })
+        return Lib._tip
+    end
+    function Lib:ShowTooltip(text)
+        local t = tip(); t.Text = text; t.Visible = true
+        local m = UIS:GetMouseLocation()
+        t.Position = UDim2.fromOffset(m.X + 14, m.Y + 6)
+    end
+    function Lib:MoveTooltip()
+        if self._tip and self._tip.Visible then
+            local m = UIS:GetMouseLocation()
+            self._tip.Position = UDim2.fromOffset(m.X + 14, m.Y + 6)
+        end
+    end
+    function Lib:HideTooltip() if self._tip then self._tip.Visible = false end end
+
+    ---------------------------------------------------------------- NOTIFY
+    function Lib:_notifyHolder()
+        if self._nHolder and self._nHolder.Parent then return self._nHolder end
+        self._nHolder = U.Create("Frame", { Parent = overlay(), BackgroundTransparency = 1,
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -16, 0, 16),
+            Size = UDim2.fromOffset(250, 600),
+        }, { U.Create("UIListLayout", { VerticalAlignment = Enum.VerticalAlignment.Top,
+            HorizontalAlignment = Enum.HorizontalAlignment.Right, Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+        return self._nHolder
+    end
+    function Lib:Notify(a, b)
+        local title, desc, time
+        if type(a) == "table" then title, desc, time = a.Title, a.Description, a.Time
+        else title, desc, time = a, nil, b end
+        time = time or 4
+        local card = U.Create("Frame", { Parent = self:_notifyHolder(), BackgroundColor3 = T.Bar,
+            BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+            U.Create("Frame", { Name = "Bar", BackgroundColor3 = T.Accent, BorderSizePixel = 0,
+                Size = UDim2.new(0, 2, 1, 0) }) })
+        local content = U.Create("Frame", { Parent = card, BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -18, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+        }, { U.Create("UIListLayout", { Padding = UDim.new(0, 1), SortOrder = Enum.SortOrder.LayoutOrder }),
+            U.Create("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6) }) })
+        U.Create("TextLabel", { Parent = content, BackgroundTransparency = 1, LayoutOrder = 1,
+            Size = UDim2.new(1, 0, 0, 16), Font = T.FontBold, TextSize = 13, TextColor3 = T.Text,
+            Text = title or "", TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
+            AutomaticSize = Enum.AutomaticSize.Y })
+        if desc then
+            U.Create("TextLabel", { Parent = content, BackgroundTransparency = 1, LayoutOrder = 2,
+                Size = UDim2.new(1, 0, 0, 14), Font = T.Font, TextSize = 12, TextColor3 = T.SubText,
+                Text = desc, TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
+                AutomaticSize = Enum.AutomaticSize.Y })
+        end
+        task.delay(time, function()
+            if card and card.Parent then card:Destroy() end
+        end)
+        return card
+    end
+
+    ---------------------------------------------------------------- THEME PRESETS
+    Lib.ThemePresets = {
+        Default  = { Accent = Color3.fromRGB(202, 151, 161) },
+        Crimson  = { Accent = Color3.fromRGB(214, 84, 84) },
+        Ocean    = { Accent = Color3.fromRGB(96, 156, 214) },
+        Emerald  = { Accent = Color3.fromRGB(104, 196, 140) },
+        Amethyst = { Accent = Color3.fromRGB(168, 130, 214) },
+        Amber    = { Accent = Color3.fromRGB(214, 168, 92) },
+    }
+    function Lib:ListThemePresets()
+        local list = {}
+        for k in pairs(self.ThemePresets) do table.insert(list, k) end
+        table.sort(list)
+        return list
+    end
+    function Lib:ApplyThemePreset(name)
+        local p = self.ThemePresets[name]
+        if p then self:SetTheme(p) end
+    end
+
+    ---------------------------------------------------------------- KEYBIND LIST
+    function Lib:_kbHolder()
+        if self._kbFrame and self._kbFrame.Parent then return self._kbFrame end
+        self._kbFrame = U.Create("Frame", { Parent = overlay(), Visible = false,
+            BackgroundColor3 = T.Bar, BorderSizePixel = 0, Position = UDim2.fromOffset(12, 46),
+            Size = UDim2.new(0, 160, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+            U.Create("Frame", { Name = "Bar", BackgroundColor3 = T.Accent, BorderSizePixel = 0,
+                Size = UDim2.new(1, 0, 0, 2) }) })
+        self.Registry:Add(self._kbFrame.Bar, "Accent", "BackgroundColor3")
+        local body = U.Create("Frame", { Parent = self._kbFrame, Name = "Body", BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(0, 4), Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        }, { U.Create("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }),
+            U.Create("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 6),
+                PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+        U.Create("TextLabel", { Parent = body, BackgroundTransparency = 1, LayoutOrder = 0,
+            Size = UDim2.new(1, 0, 0, 15), Font = T.FontBold, TextSize = 13, TextColor3 = T.Text,
+            Text = "Keybinds", TextXAlignment = Enum.TextXAlignment.Left })
+        self._kbBody = body
+        self:_trackOverlay("keybindlist", self._kbFrame)
+        return self._kbFrame
+    end
+    function Lib:RegisterKeybind(kb)
+        local body = self:_kbHolder().Body or self._kbBody
+        local row = U.Create("TextLabel", { Parent = body, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 14), Font = T.Font, TextSize = 12, TextColor3 = T.SubText,
+            Text = "", TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = #self.KeybindEntries + 1 })
+        local entry = { row = row, kb = kb }
+        function entry:Update()
+            local keyN = self.kb.Key and self.kb.Key.Name or "None"
+            self.row.Text = ("%s  [%s]"):format(self.kb.Text or self.kb.Flag, keyN)
+            self.row.TextColor3 = self.kb.Active and T.Accent or T.SubText
+        end
+        table.insert(self.KeybindEntries, entry)
+        entry:Update()
+        return entry
+    end
+    Lib.KeybindEntries = Lib.KeybindEntries or {}
+    function Lib:SetKeybindListVisibility(b)
+        self:_kbHolder().Visible = b
+    end
+end
+
+end)(); __m(P) end
+-- ==== Core/ConfigManager ====
+do local __m = (function()
+return function(P)
+    local Lib = P.Library
+    local HttpService = game:GetService("HttpService")
+
+    Lib.ConfigFolder = "PrimordialUI/configs"
+
+    local function ensure()
+        if typeof(makefolder) == "function" then
+            if not (typeof(isfolder) == "function" and isfolder(Lib.ConfigFolder)) then
+                pcall(makefolder, Lib.ConfigFolder)
+            end
+        end
+    end
+
+    -- serializar tipos Roblox a JSON-safe
+    local function ser(v)
+        local t = typeof(v)
+        if t == "boolean" or t == "number" or t == "string" then return v end
+        if t == "Color3" then
+            return { __ = "c3", r = math.floor(v.R * 255 + 0.5), g = math.floor(v.G * 255 + 0.5), b = math.floor(v.B * 255 + 0.5) }
+        end
+        if t == "EnumItem" then return { __ = "en", t = tostring(v.EnumType):gsub("^Enum%.", ""), n = v.Name } end
+        if t == "table" then
+            local o = {}
+            for k, x in pairs(v) do o[k] = ser(x) end
+            return o
+        end
+        return nil
+    end
+    local function deser(v)
+        if type(v) ~= "table" then return v end
+        if v.__ == "c3" then return Color3.fromRGB(v.r, v.g, v.b) end
+        if v.__ == "en" then local ok, e = pcall(function() return Enum[v.t][v.n] end); return ok and e or nil end
+        local o = {}
+        for k, x in pairs(v) do if k ~= "__" then o[k] = deser(x) end end
+        return o
+    end
+
+    Lib.ConfigIgnore = {}  -- flags a NO guardar (ej. los widgets del settings tab)
+    function Lib:GetConfig()
+        local out = {}
+        for flag, t in pairs(self.Toggles) do
+            if not self.ConfigIgnore[flag] then out[flag] = ser(t:GetValue()) end
+        end
+        for flag, o in pairs(self.Options) do
+            if not self.ConfigIgnore[flag] and o.GetValue then
+                local v = o:GetValue()
+                if v ~= nil then out[flag] = ser(v) end
+            end
+        end
+        if self._overlayPos then out.__overlays = self._overlayPos end
+        return out
+    end
+
+    function Lib:LoadConfig(tbl)
+        for flag, v in pairs(tbl or {}) do
+            if flag ~= "__overlays" then
+                local w = self.Toggles[flag] or self.Options[flag]
+                if w and w.SetValue then pcall(function() w:SetValue(deser(v)) end) end
+            end
+        end
+        if tbl and tbl.__overlays and self.ApplyOverlayPositions then
+            self:ApplyOverlayPositions(tbl.__overlays)
+        end
+    end
+
+    local function path(name) return Lib.ConfigFolder .. "/" .. name .. ".json" end
+
+    function Lib:SaveConfig(name)
+        if not name or name == "" then return false, "sin nombre" end
+        ensure()
+        local ok = pcall(function()
+            writefile(path(name), HttpService:JSONEncode(self:GetConfig()))
+        end)
+        return ok
+    end
+    function Lib:LoadConfigFile(name)
+        local p = path(name)
+        if typeof(isfile) == "function" and not isfile(p) then return false end
+        local ok, data = pcall(function() return HttpService:JSONDecode(readfile(p)) end)
+        if ok and data then self:LoadConfig(data); return true end
+        return false
+    end
+    function Lib:DeleteConfig(name)
+        if typeof(delfile) == "function" then pcall(delfile, path(name)) end
+    end
+    function Lib:ListConfigs()
+        local list = {}
+        if typeof(listfiles) == "function" and typeof(isfolder) == "function" and isfolder(self.ConfigFolder) then
+            for _, f in ipairs(listfiles(self.ConfigFolder)) do
+                local n = tostring(f):match("([^/\\]+)%.json$")
+                if n then table.insert(list, n) end
+            end
+        end
+        return list
+    end
+    function Lib:SetAutoloadConfig(name)
+        ensure()
+        pcall(function() writefile(Lib.ConfigFolder .. "/autoload.txt", name or "") end)
+    end
+    function Lib:GetAutoloadConfig()
+        local p = Lib.ConfigFolder .. "/autoload.txt"
+        if typeof(isfile) == "function" and isfile(p) then
+            local ok, n = pcall(readfile, p)
+            if ok and n and n ~= "" then return n end
+        end
+        return nil
+    end
+    function Lib:LoadAutoloadConfig()
+        local n = self:GetAutoloadConfig()
+        if n then return self:LoadConfigFile(n) end
+        return false
+    end
+end
+
+end)(); __m(P) end
+-- ==== Chrome/Window ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Window = {}
+    Window.__index = Window
+
+    function Window.new(Library, opts)
+        local self = setmetatable({ Library = Library, Categories = {}, ActiveCategory = nil }, Window)
+        local size = opts.Size or Vector2.new(834, 586)
+
+        self.Gui = U.Create("ScreenGui", {
+            Name = "PUI_"..tostring(math.random(1e5,9e5)),
+            ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+            Parent = U.GetGui(),
+        })
+        self.Root = U.Create("Frame", {
+            Parent = self.Gui, Size = UDim2.fromOffset(size.X, size.Y),
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            BackgroundColor3 = T.Bg, BorderSizePixel = 0,
+        }, {
+            U.Create("UICorner", { CornerRadius = UDim.new(0, 10) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),   -- borde negro thin alrededor
+        })
+        self.UIScale = U.Create("UIScale", { Parent = self.Root, Scale = Library.DPIScale or 1 })
+        Library.Registry:Add(self.Root, "Bg", "BackgroundColor3")
+
+        -- Header (mismo alto que la barra inferior = 64); esquinas superiores redondeadas
+        local HEADERH = 64
+        self.Header = U.Create("Frame", {
+            Parent = self.Root, Size = UDim2.new(1, 0, 0, HEADERH),
+            BackgroundColor3 = T.Bar, BorderSizePixel = 0,
+        }, {
+            U.Create("UICorner", { CornerRadius = UDim.new(0, 10) }),
+            U.Create("Frame", { Name = "SquareBottom", BorderSizePixel = 0, BackgroundColor3 = T.Bar,
+                Position = UDim2.new(0, 0, 1, -10), Size = UDim2.new(1, 0, 0, 10) }),
+            U.Create("TextLabel", {
+                Name = "Title", BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(48, 0), Size = UDim2.new(0.5, -60, 1, 0),
+                Font = T.FontBold, TextSize = 22, TextColor3 = T.Accent,
+                Text = opts.Title or "primordial",
+                TextXAlignment = Enum.TextXAlignment.Left,
+            }),
+        })
+        Library.Registry:Add(self.Header, "Bar", "BackgroundColor3")
+        Library.Registry:Add(self.Header.SquareBottom, "Bar", "BackgroundColor3")
+
+        -- barra de busqueda en el header (top-right): contenedor + icono separado del texto
+        self.SearchBar = U.Create("Frame", {
+            Parent = self.Header, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0),
+            Size = UDim2.fromOffset(220, 28), BackgroundColor3 = T.Surface2, BorderSizePixel = 0,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+            U.Create("ImageLabel", { Name = "Icon", BackgroundTransparency = 1,
+                AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 9, 0.5, 0),
+                Size = UDim2.fromOffset(14, 14), Image = "rbxassetid://6031154871", ImageColor3 = T.SubText }) })
+        self.Search = U.Create("TextBox", { Parent = self.SearchBar, BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(28, 0), Size = UDim2.new(1, -36, 1, 0), ClearTextOnFocus = false,
+            Font = T.Font, TextSize = 13, TextColor3 = T.Text, Text = "",
+            PlaceholderText = "Search...", PlaceholderColor3 = T.SubText, TextXAlignment = Enum.TextXAlignment.Left })
+        Library.Registry:Add(self.SearchBar, "Surface2", "BackgroundColor3")
+
+        -- separador accent bajo header
+        U.Create("Frame", { Parent = self.Root, Position = UDim2.fromOffset(0, HEADERH),
+            Size = UDim2.new(1, 0, 0, 1), BorderSizePixel = 0, BackgroundColor3 = T.Accent })
+
+        -- Category holder (franja inferior); esquinas inferiores redondeadas, superiores cuadradas
+        self.CategoryHolder = U.Create("Frame", {
+            Parent = self.Root, AnchorPoint = Vector2.new(0, 1),
+            Position = UDim2.new(0, 0, 1, 0), Size = UDim2.new(1, 0, 0, 56),
+            BackgroundColor3 = T.Bar, BorderSizePixel = 0,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 10) }),
+            U.Create("Frame", { Name = "SquareTop", BorderSizePixel = 0, BackgroundColor3 = T.Bar,
+                Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 0, 10) }) })
+        Library.Registry:Add(self.CategoryHolder, "Bar", "BackgroundColor3")
+        Library.Registry:Add(self.CategoryHolder.SquareTop, "Bar", "BackgroundColor3")
+        -- fila interna que ordena las categorias (fuera del cover)
+        self.CategoryButtons = U.Create("Frame", { Parent = self.CategoryHolder,
+            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+        }, { U.Create("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal,
+            HorizontalAlignment = Enum.HorizontalAlignment.Center,
+            VerticalAlignment = Enum.VerticalAlignment.Center,
+            Padding = UDim.new(0, 18) }) })
+        -- linea de theme (accent) que separa el content de la barra de categorias
+        local catLine = U.Create("Frame", { Parent = self.Root, BorderSizePixel = 0,
+            Position = UDim2.new(0, 0, 1, -56), Size = UDim2.new(1, 0, 0, 1),
+            BackgroundColor3 = T.Accent })
+        Library.Registry:Add(catLine, "Accent", "BackgroundColor3")
+
+        -- Body (entre header y category holder)
+        self.Body = U.Create("Frame", {
+            Parent = self.Root, Position = UDim2.fromOffset(0, 65),
+            Size = UDim2.new(1, 0, 1, -(65 + 56)), BackgroundTransparency = 1,
+        })
+
+        U.Drag(self.Header, self.Root, Library)
+        return self
+    end
+
+    -- callback de la barra de busqueda del header
+    function Window:OnSearch(fn)
+        self._searchConn = self.Search:GetPropertyChangedSignal("Text"):Connect(function()
+            fn(self.Search.Text)
+        end)
+        return self
+    end
+
+    function Window:AddCategory(name, icon)
+        if not P.CategoryBar then warn("PrimordialUI: CategoryBar ausente"); return nil end
+        local cat = P.CategoryBar.new(self, name, icon)
+        table.insert(self.Categories, cat)
+        if not self.ActiveCategory then self:SetActiveCategory(cat) end
+        return cat
+    end
+
+    function Window:SetActiveCategory(cat)
+        if self.Library.CloseActivePopup then self.Library:CloseActivePopup() end
+        for _, c in ipairs(self.Categories) do c:SetActive(c == cat) end
+        self.ActiveCategory = cat
+    end
+
+    -- categoria estandar para configurar la UI (accent, DPI, keybind, watermark, themes, configs, unload)
+    function Window:AddSettingsTab(name)
+        local Lib = self.Library
+        local cat = self:AddCategory(name or "Settings", "settings")
+        local sec = cat:AddSection("Configuration", "Configure the UI")
+
+        -- no guardar los widgets del settings tab en las configs del usuario
+        for _, f in ipairs({ "UIAccent", "UIDPIScale", "UIMenuKey", "UIWatermark", "UIWatermarkText",
+            "UITheme", "UIKeybindList", "UIConfigName", "UIConfigList", "UIAutoload" }) do
+            if Lib.ConfigIgnore then Lib.ConfigIgnore[f] = true end
+        end
+
+        local menu = sec:AddPanel("Menu", { Column = 1 })
+        menu:AddColorPicker("UIAccent", { Text = "Accent Color", Default = T.Accent,
+            Callback = function(c) Lib:SetTheme({ Accent = c }) end })
+        if Lib.ListThemePresets then
+            menu:AddDropdown("UITheme", { Text = "Theme Preset", Values = Lib:ListThemePresets(), Default = "Default",
+                Callback = function(v) Lib:ApplyThemePreset(v) end })
+        end
+        menu:AddSlider("UIDPIScale", { Text = "DPI Scale", Min = 50, Max = 200, Default = 100, Suffix = "%",
+            Callback = function(v) Lib:SetDPIScale(v) end })
+        menu:AddKeybind("UIMenuKey", { Text = "Menu Keybind", Default = Lib.ToggleKey, NoUI = true,
+            BindCallback = function(k) Lib.ToggleKey = k end })
+        if Lib.SetKeybindListVisibility then
+            menu:AddToggle("UIKeybindList", { Text = "Show Keybind List", Default = false,
+                Callback = function(v) Lib:SetKeybindListVisibility(v) end })
+        end
+        menu:AddDivider()
+        menu:AddButton("Unload", function() Lib:Unload() end)
+
+        local wm = sec:AddPanel("Watermark", { Column = 2 })
+        wm:AddToggle("UIWatermark", { Text = "Show Watermark", Default = false,
+            Callback = function(v) Lib:SetWatermarkVisibility(v) end })
+        wm:AddTextBox("UIWatermarkText", { Text = "Watermark Text", Default = "primordial",
+            Placeholder = "text", Callback = function(t) if Lib.Flags.UIWatermark then Lib:SetWatermark(t) end end })
+
+        -- Config manager (save/load)
+        if Lib.SaveConfig then
+            local cfg = sec:AddPanel("Configs", { Column = 2 })
+            cfg:AddTextBox("UIConfigName", { Text = "Config Name", Placeholder = "my config" })
+            local list = cfg:AddDropdown("UIConfigList", { Text = "Saved", Values = Lib:ListConfigs(), AllowNull = true })
+            local function refresh() list:SetValues(Lib:ListConfigs()) end
+            cfg:AddButton("Save", function()
+                local n = Lib.Flags.UIConfigName
+                if n and n ~= "" and Lib:SaveConfig(n) then refresh(); Lib:Notify("Config saved: " .. n, 3)
+                else Lib:Notify("Enter a config name", 3) end
+            end)
+            cfg:AddButton("Load", function()
+                local n = Lib.Flags.UIConfigList
+                if n and Lib:LoadConfigFile(n) then Lib:Notify("Config loaded: " .. n, 3) end
+            end)
+            cfg:AddButton("Delete", function()
+                local n = Lib.Flags.UIConfigList
+                if n then Lib:DeleteConfig(n); refresh(); Lib:Notify("Config deleted: " .. n, 3) end
+            end)
+            cfg:AddToggle("UIAutoload", { Text = "Autoload selected", Default = Lib:GetAutoloadConfig() ~= nil,
+                Callback = function(v) Lib:SetAutoloadConfig(v and Lib.Flags.UIConfigList or "") end })
+        end
+        return cat
+    end
+
+    function Window:SetVisible(b) self.Root.Visible = b end
+    function Window:Destroy() self.Gui:Destroy() end
+
+    P.Window = Window
+end
+
+end)(); __m(P) end
+-- ==== Chrome/CategoryBar ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Category = {}
+    Category.__index = Category
+
+    function Category.new(Window, name, icon)
+        local self = setmetatable({ Window = Window, Name = name, Sections = {}, ActiveSection = nil }, Category)
+
+        -- botón en la franja inferior (icono + label)
+        self.Button = U.Create("TextButton", {
+            Parent = Window.CategoryButtons, AutoButtonColor = false,
+            BackgroundTransparency = 1, Size = UDim2.fromOffset(72, 52), Text = "",
+        }, {
+            U.Create("Frame", { Name = "Hi", BackgroundColor3 = T.Surface3,
+                BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) },
+                { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }) }),
+            U.Create("ImageLabel", {
+                Name = "Icon", BackgroundTransparency = 1,
+                AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 4),
+                Size = UDim2.fromOffset(24, 24), Image = "",
+                ImageColor3 = T.SubText,
+            }),
+            U.Create("TextLabel", {
+                Name = "Label", BackgroundTransparency = 1,
+                AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 0),
+                Size = UDim2.new(1, 0, 0, 16), Font = T.Font, TextSize = 12,
+                Text = name, TextColor3 = T.SubText,
+            }),
+        })
+
+        -- icono: nombre Lucide ("crosshair") o rbxassetid
+        if P.Icons then P.Icons.apply(self.Button.Icon, icon)
+        elseif icon then self.Button.Icon.Image = icon end
+
+        -- página de contenido
+        self.Page = U.Create("Frame", {
+            Parent = Window.Body, Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1, Visible = false,
+        })
+        self.Sidebar = U.Create("Frame", {
+            Parent = self.Page, Size = UDim2.new(0, 172, 1, 0),
+            BackgroundColor3 = T.Sidebar, BorderSizePixel = 0, ClipsDescendants = true,
+        }, { U.Create("UIListLayout", { Padding = UDim.new(0, 2),
+            SortOrder = Enum.SortOrder.LayoutOrder }),
+            U.Create("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8),
+                PaddingRight = UDim.new(0, 8) }) })
+        Window.Library.Registry:Add(self.Sidebar, "Sidebar", "BackgroundColor3")
+        self.Content = U.Create("Frame", {
+            Parent = self.Page, Position = UDim2.fromOffset(180, 8),
+            Size = UDim2.new(1, -188, 1, -16), BackgroundTransparency = 1,
+        })
+        -- separador vertical entre sidebar y content, con sombra suave
+        U.Create("Frame", { Parent = self.Page, BorderSizePixel = 0,
+            Position = UDim2.fromOffset(172, 0), Size = UDim2.new(0, 1, 1, 0),
+            BackgroundColor3 = T.Border })
+        U.Create("Frame", { Parent = self.Page, BorderSizePixel = 0,
+            Position = UDim2.fromOffset(173, 0), Size = UDim2.new(0, 8, 1, 0),
+            BackgroundColor3 = Color3.new(0, 0, 0) },
+            { U.Create("UIGradient", { Rotation = 0, Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0.6),
+                NumberSequenceKeypoint.new(1, 1) }) }) })
+
+        self.Button.MouseButton1Click:Connect(function()
+            Window:SetActiveCategory(self)
+        end)
+        return self
+    end
+
+    function Category:AddSection(title, subtitle, opts)
+        if not P.Section then warn("PrimordialUI: Section ausente"); return nil end
+        local s = P.Section.new(self, title, subtitle, opts)
+        table.insert(self.Sections, s)
+        if not self.ActiveSection then self:SetActiveSection(s) end
+        return s
+    end
+
+    function Category:SetActiveSection(s)
+        local Lib = self.Window.Library
+        if Lib.CloseActivePopup then Lib:CloseActivePopup() end
+        for _, sec in ipairs(self.Sections) do sec:SetActive(sec == s) end
+        self.ActiveSection = s
+    end
+
+    function Category:SetActive(b)
+        self.Page.Visible = b
+        self.Button.Hi.BackgroundTransparency = b and 0.55 or 1
+        self.Button.Icon.ImageColor3 = b and T.Accent or T.SubText
+        self.Button.Label.TextColor3 = b and T.Text or T.SubText
+    end
+
+    P.Category = Category
+    P.CategoryBar = Category  -- alias esperado por Window
+end
+
+end)(); __m(P) end
+-- ==== Chrome/Section ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Section = {}
+    Section.__index = Section
+
+    -- crea un set de N columnas (scrolling) dentro de parent, offset yOff arriba
+    local function makeBoardSet(parent, yOff, nCols)
+        nCols = nCols or 2
+        local gap = 8
+        local board = U.Create("Frame", { Parent = parent, BackgroundTransparency = 1, Visible = false,
+            Position = UDim2.fromOffset(0, yOff), Size = UDim2.new(1, 0, 1, -yOff),
+        }, { U.Create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, gap), SortOrder = Enum.SortOrder.LayoutOrder }) })
+        local cols = {}
+        local off = -(gap * (nCols - 1) / nCols)
+        for i = 1, nCols do
+            cols[i] = U.Create("ScrollingFrame", { Parent = board, LayoutOrder = i,
+                Size = UDim2.new(1 / nCols, off, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+                CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                ScrollBarThickness = 0, ScrollingDirection = Enum.ScrollingDirection.Y,
+            }, { U.Create("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }),
+                U.Create("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2),
+                    PaddingBottom = UDim.new(0, 2), PaddingRight = UDim.new(0, 5) }) })
+        end
+        return board, cols
+    end
+
+    function Section.new(Category, title, subtitle, opts)
+        opts = opts or {}
+        local self = setmetatable({ Category = Category, Panels = {}, Columns = {}, HasTabs = false,
+            NumCols = math.clamp(opts.Columns or 2, 1, 4) }, Section)
+
+        self.Button = U.Create("TextButton", {
+            Parent = Category.Sidebar, AutoButtonColor = false, Text = "",
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 44),
+        }, {
+            U.Create("Frame", { Name = "Hi", BackgroundColor3 = T.Accent, BorderSizePixel = 0,
+                BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(-8, 0),
+            }, { U.Create("UIGradient", { Rotation = 0, Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0.7),
+                NumberSequenceKeypoint.new(0.65, 0.9),
+                NumberSequenceKeypoint.new(1, 1) }) }) }),
+            U.Create("Frame", { Name = "Bar", BackgroundColor3 = T.Accent, BorderSizePixel = 0,
+                Position = UDim2.fromOffset(-8, 0), Size = UDim2.new(0, 2, 1, 0), Visible = false }),
+            U.Create("TextLabel", { Name = "Title", BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(8, 6), Size = UDim2.new(1, -16, 0, 16),
+                Font = T.FontBold, TextSize = 14, Text = title, TextColor3 = T.SubText,
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }),
+            U.Create("TextLabel", { Name = "Sub", BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(8, 22), Size = UDim2.new(1, -16, 0, 14),
+                Font = T.Font, TextSize = 12, Text = subtitle or "", TextColor3 = T.SubText,
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }),
+        })
+
+        -- raiz de contenido (toggle por SetActive)
+        self.Board = U.Create("Frame", { Parent = Category.Content, Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1, Visible = false })
+        -- set de columnas por defecto (sin content-tabs)
+        local b, c = makeBoardSet(self.Board, 0, self.NumCols)
+        b.Visible = true
+        self._defaultBoard = b
+        self.Columns = c
+        self._activeCols = c
+
+        self.Button.MouseButton1Click:Connect(function()
+            Category:SetActiveSection(self)
+        end)
+        return self
+    end
+
+    -- content-tabs de arma que abarcan AMBAS columnas (Rifles/Pistols/...)
+    -- opts.PerRow = cuantos tabs por fila (default: todos en 1 fila). Envuelve en varias filas.
+    function Section:AddTabs(list, opts)
+        opts = opts or {}
+        self.HasTabs = true
+        self._defaultBoard.Visible = false
+        self._tabBoards = {}
+        self._tabOrder = list
+
+        local n = #list
+        local perRow = math.max(1, math.min(opts.PerRow or n, n))
+        local rowH = 28
+        local rows = math.ceil(n / perRow)
+        local barH = rows * rowH
+
+        self.TabBar = U.Create("Frame", { Parent = self.Board, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, barH),
+        }, { U.Create("UIGridLayout", { CellSize = UDim2.new(1 / perRow, 0, 0, rowH),
+            CellPadding = UDim2.fromOffset(0, 0), FillDirectionMaxCells = perRow,
+            SortOrder = Enum.SortOrder.LayoutOrder }) })
+        -- separador bajo la barra de tabs
+        U.Create("Frame", { Parent = self.Board, Position = UDim2.fromOffset(0, barH),
+            Size = UDim2.new(1, 0, 0, 1), BorderSizePixel = 0, BackgroundColor3 = T.Border })
+
+        for i, name in ipairs(list) do
+            local btn = U.Create("TextButton", { Parent = self.TabBar, AutoButtonColor = false,
+                BackgroundTransparency = 1, LayoutOrder = i,
+                Font = T.FontBold, TextSize = 13, Text = name, TextColor3 = T.SubText,
+            }, { U.Create("Frame", { Name = "UL", BorderSizePixel = 0, BackgroundColor3 = T.Accent,
+                AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 0),
+                Size = UDim2.new(0, 40, 0, 2), Visible = false }) })
+            local board, cols = makeBoardSet(self.Board, barH + 4, self.NumCols)
+            self._tabBoards[name] = { board = board, cols = cols, btn = btn }
+            btn.MouseButton1Click:Connect(function() self:SetContentTab(name) end)
+        end
+        self:SetContentTab(list[1])
+        return self
+    end
+
+    function Section:SetContentTab(name)
+        local Lib = self.Category.Window.Library
+        if Lib.CloseActivePopup then Lib:CloseActivePopup() end
+        for n, t in pairs(self._tabBoards) do
+            local on = n == name
+            t.board.Visible = on
+            t.btn.TextColor3 = on and T.Accent or T.SubText
+            t.btn.UL.Visible = on
+        end
+        self._activeCols = self._tabBoards[name].cols
+        self._activeTab = name
+    end
+
+    function Section:AddPanel(title, opts)
+        opts = opts or {}
+        local col = opts.Column
+        if not col then col = (#self.Panels % self.NumCols) + 1 end
+        col = math.clamp(col, 1, self.NumCols)
+        local cols = self.Columns
+        if self.HasTabs then
+            local tab = opts.Tab or self._activeTab
+            local tb = self._tabBoards[tab]
+            cols = (tb and tb.cols) or self._activeCols
+        end
+        if not P.Panel then warn("PrimordialUI: Panel ausente"); return nil end
+        local p = P.Panel.new(self, cols[col], title, opts)
+        table.insert(self.Panels, p)
+        return p
+    end
+
+    function Section:SetActive(b)
+        self.Board.Visible = b
+        self.Button.Bar.Visible = b
+        self.Button.Hi.BackgroundTransparency = b and 0 or 1
+        self.Button.Title.TextColor3 = b and T.Text or T.SubText
+    end
+
+    P.Section = Section
+end
+
+end)(); __m(P) end
+-- ==== Chrome/Panel ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Panel = {}
+    Panel.__index = Panel
+
+    function Panel.new(Section, columnFrame, title, opts)
+        local self = setmetatable({
+            Section = Section,
+            Library = Section.Category.Window.Library,
+            _widgets = {}, Tabs = nil,
+        }, Panel)
+
+        -- alto FIJO ligado al Body (no AutomaticSize) para que la sombra offset no lo infle
+        self.Frame = U.Create("Frame", {
+            Parent = columnFrame, Size = UDim2.new(1, 0, 0, 31), ClipsDescendants = false,
+            BackgroundColor3 = T.Surface, BorderSizePixel = 0, LayoutOrder = #Section.Panels + 1,
+        }, {
+            U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+        })
+        self.Library.Registry:Add(self.Frame, "Surface", "BackgroundColor3")
+
+        -- sombra externa suave (Frame no es AutomaticSize => segura)
+        U.Shadow(self.Frame, { Spread = 20, Transparency = 0.8, YOffset = 5 })
+
+        self.Header = U.Create("TextLabel", {
+            Parent = self.Frame, BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -20, 0, 30),
+            Font = T.FontBold, TextSize = 14, Text = title, TextColor3 = T.Text,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        })
+        -- separador bajo el titulo: color principal (accent)
+        local sep = U.Create("Frame", { Parent = self.Frame, Position = UDim2.fromOffset(0, 30),
+            Size = UDim2.new(1, 0, 0, 1), BorderSizePixel = 0, BackgroundColor3 = T.Accent })
+        self.Library.Registry:Add(sep, "Accent", "BackgroundColor3")
+
+        self.Body = U.Create("Frame", {
+            Parent = self.Frame, Position = UDim2.fromOffset(0, 31),
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1,
+        }, {
+            U.Create("UIListLayout", { Padding = UDim.new(0, 3),
+                SortOrder = Enum.SortOrder.LayoutOrder }),
+            U.Create("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 8),
+                PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }),
+        })
+
+        -- ligar alto del Frame al contenido del Body
+        local function resize()
+            self.Frame.Size = UDim2.new(1, 0, 0, 31 + self.Body.AbsoluteSize.Y)
+        end
+        self.Library:Maid(self.Body:GetPropertyChangedSignal("AbsoluteSize"):Connect(resize))
+        resize()
+        return self
+    end
+
+    function Panel:_rowParent()
+        if self.Tabs then return self.Tabs:ActiveContent() end
+        return self.Body
+    end
+
+    local function widgetAdder(moduleKey)
+        return function(self, flag, o)
+            if not P[moduleKey] then warn("PrimordialUI: "..moduleKey.." ausente"); return nil end
+            local W = P[moduleKey].new(self, flag, o or {})
+            table.insert(self._widgets, W)
+            return W
+        end
+    end
+    Panel.AddToggle   = widgetAdder("Toggle")
+    Panel.AddSlider   = widgetAdder("Slider")
+    Panel.AddDropdown = widgetAdder("Dropdown")
+    Panel.AddKeybind  = widgetAdder("Keybind")
+    Panel.AddTextBox  = widgetAdder("TextBox")
+    Panel.AddColorPicker = widgetAdder("ColorPicker")
+    Panel.AddList        = widgetAdder("List")
+
+    function Panel:AddButton(text, cb, opts)
+        if not P.Button then return nil end
+        opts = opts or {}
+        local W = P.Button.new(self, nil, { Text = text, Callback = cb, DoubleClick = opts.DoubleClick })
+        table.insert(self._widgets, W); return W
+    end
+    function Panel:AddLabel(text, opts)
+        if not P.Label then return nil end
+        local W = P.Label.new(self, nil, { Text = text, Header = opts and opts.Header })
+        table.insert(self._widgets, W); return W
+    end
+    function Panel:AddDivider()
+        if not P.Divider then return nil end
+        local W = P.Divider.new(self, nil, {})
+        table.insert(self._widgets, W); return W
+    end
+    function Panel:AddTabs(list)
+        if not P.PanelTabs then return nil end
+        self.Tabs = P.PanelTabs.new(self, list); return self.Tabs
+    end
+    function Panel:AddViewport(opts)
+        if not P.Viewport then return nil end
+        local W = P.Viewport.new(self, opts or {})
+        table.insert(self._widgets, W); return W
+    end
+    function Panel:AddGrid(opts)
+        if not P.Grid then return nil end
+        local W = P.Grid.new(self, opts or {})
+        table.insert(self._widgets, W); return W
+    end
+
+    P.Panel = Panel
+end
+
+end)(); __m(P) end
+-- ==== Chrome/PanelTabs ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local PanelTabs = {}
+    PanelTabs.__index = PanelTabs
+
+    function PanelTabs.new(Panel, list)
+        local self = setmetatable({ Panel = Panel, Tabs = {}, Contents = {}, Active = nil }, PanelTabs)
+
+        self.Bar = U.Create("Frame", { Parent = Panel.Body, Size = UDim2.new(1, 0, 0, 26),
+            BackgroundTransparency = 1, LayoutOrder = 0,
+        }, { U.Create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        for i, name in ipairs(list) do
+            local btn = U.Create("TextButton", { Parent = self.Bar, AutoButtonColor = false,
+                BackgroundTransparency = 1, AutomaticSize = Enum.AutomaticSize.X,
+                Size = UDim2.new(0, 0, 1, 0), Font = T.FontBold, TextSize = 13,
+                Text = name, TextColor3 = T.SubText, LayoutOrder = i,
+            }, { U.Create("Frame", { Name = "UL", BorderSizePixel = 0, BackgroundColor3 = T.Accent,
+                AnchorPoint = Vector2.new(0.5,1), Position = UDim2.new(0.5,0,1,0),
+                Size = UDim2.new(1,0,0,2), Visible = false }) })
+            local content = U.Create("Frame", { Parent = Panel.Body, LayoutOrder = 1,
+                Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundTransparency = 1, Visible = false,
+            }, { U.Create("UIListLayout", { Padding = UDim.new(0, 4),
+                SortOrder = Enum.SortOrder.LayoutOrder }) })
+            self.Tabs[name] = btn; self.Contents[name] = content
+            btn.MouseButton1Click:Connect(function() self:SetActive(name) end)
+            if i == 1 then self:SetActive(name) end
+        end
+        return self
+    end
+
+    function PanelTabs:SetActive(name)
+        local Lib = self.Panel.Library
+        if Lib and Lib.CloseActivePopup then Lib:CloseActivePopup() end
+        for n, btn in pairs(self.Tabs) do
+            local on = n == name
+            btn.TextColor3 = on and T.Accent or T.SubText
+            btn.UL.Visible = on
+            self.Contents[n].Visible = on
+        end
+        self.Active = name
+    end
+
+    function PanelTabs:ActiveContent() return self.Contents[self.Active] end
+
+    P.PanelTabs = PanelTabs
+end
+
+end)(); __m(P) end
+-- ==== Widgets/_Base ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Base = {}
+    Base.__index = Base
+
+    function Base.new(Panel, opts)
+        local self = setmetatable({
+            Panel = Panel, Library = Panel.Library,
+            Changed = P.Signal.new(), _deps = {},
+        }, Base)
+        local h = opts.Height or T.RowH
+        self.Row = U.Create("Frame", {
+            Parent = Panel:_rowParent(), Size = UDim2.new(1, 0, 0, h),
+            BackgroundTransparency = 1, LayoutOrder = #Panel._widgets + 10,
+        })
+        if opts.LabelText ~= nil then
+            self.Label = U.Create("TextLabel", { Parent = self.Row, BackgroundTransparency = 1,
+                Size = UDim2.new(1, -120, 1, 0), Font = T.Font, TextSize = T.TextSize,
+                Text = opts.LabelText, TextColor3 = T.Text,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextYAlignment = Enum.TextYAlignment.Center })
+            self.Library.Registry:Add(self.Label, "Text", "TextColor3")
+        end
+        self.Control = U.Create("Frame", { Parent = self.Row,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.new(0, 110, 1, 0), BackgroundTransparency = 1 })
+        if opts.Tooltip and self.Library.ShowTooltip then
+            self.Row.MouseEnter:Connect(function() self.Library:ShowTooltip(opts.Tooltip) end)
+            self.Row.MouseMoved:Connect(function() self.Library:MoveTooltip() end)
+            self.Row.MouseLeave:Connect(function() self.Library:HideTooltip() end)
+        end
+        return self
+    end
+
+    function Base:SetVisible(b) self.Row.Visible = b end
+
+    function Base:_evalDeps()
+        local vis = true
+        for _, d in ipairs(self._deps) do
+            if self.Library.Flags[d.flag] ~= d.expected then vis = false break end
+        end
+        self:SetVisible(vis)
+    end
+
+    function Base:DependsOn(flag, expected)
+        table.insert(self._deps, { flag = flag, expected = expected })
+        self.Library:GetFlagSignal(flag):Connect(function() self:_evalDeps() end)
+        self:_evalDeps()
+        return self._widget or self
+    end
+
+    function Base:OnChanged(fn)
+        self.Changed:Connect(fn)
+        return self._widget or self
+    end
+
+    P.Base = Base
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Toggle ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Toggle = {}
+    Toggle.__index = Toggle
+
+    function Toggle.new(Panel, flag, opts)
+        -- checkbox a la IZQUIERDA + label despues (estilo primordial)
+        local base = P.Base.new(Panel, { LabelText = nil, Height = 22, Tooltip = opts.Tooltip })
+        local self = setmetatable({ _base = base, Panel = Panel, Library = Panel.Library,
+            Flag = flag, Value = opts.Default and true or false, Callback = opts.Callback }, Toggle)
+        base._widget = self
+
+        self.Box = U.Create("TextButton", { Parent = base.Row, AutoButtonColor = false,
+            Text = "", AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 1, 0.5, 0),
+            Size = UDim2.fromOffset(14, 14), BackgroundColor3 = T.Surface2,
+        }, {
+            U.Create("UICorner", { CornerRadius = UDim.new(0, 3) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+            U.Create("ImageLabel", { Name = "Check", BackgroundTransparency = 1,
+                AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+                Size = UDim2.fromScale(0.82, 0.82), Image = "rbxassetid://6031094667",
+                ImageColor3 = Color3.fromRGB(18, 18, 20), ImageTransparency = 1 }),
+        })
+        self.Label = U.Create("TextLabel", { Parent = base.Row, BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(24, 0), Size = UDim2.new(1, -140, 1, 0),
+            Font = T.Font, TextSize = T.TextSize, Text = opts.Text or flag, TextColor3 = T.Text,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center })
+
+        self.Box.MouseButton1Click:Connect(function() self:SetValue(not self.Value) end)
+        self.Library.Toggles[flag] = self
+        self:_render()
+        self.Library:SetFlag(flag, self.Value)
+        return self
+    end
+
+    function Toggle:_render()
+        self.Box.BackgroundColor3 = self.Value and T.Accent or T.Surface2
+        self.Box.Check.ImageTransparency = self.Value and 0 or 1
+        -- texto atenuado cuando esta apagado
+        self.Label.TextColor3 = self.Value and T.Text or Color3.fromRGB(150, 150, 157)
+    end
+
+    function Toggle:SetValue(v)
+        v = v and true or false
+        if v == self.Value then return end
+        self.Value = v; self:_render()
+        self.Library:SetFlag(self.Flag, v)
+        self._base.Changed:Fire(v)
+        if self.Callback then task.spawn(self.Callback, v) end
+    end
+    function Toggle:GetValue() return self.Value end
+    -- adjunta un swatch de color a la fila del toggle (patron Hitmarker); apilable
+    function Toggle:AddColorPicker(flag, opts)
+        if not P.ColorPicker then return self end
+        self._cpCount = (self._cpCount or 0) + 1
+        local xOffset = -(24 + (self._cpCount - 1) * 34)  -- deja lugar al checkbox + apila
+        P.ColorPicker._attach(self.Library, self._base.Control, flag, opts or {}, xOffset)
+        return self
+    end
+    function Toggle:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function Toggle:OnChanged(fn) self._base:OnChanged(fn); return self end
+    function Toggle:SetVisible(b) self._base:SetVisible(b) end
+
+    P.Toggle = Toggle
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Slider ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local UIS = game:GetService("UserInputService")
+    local Slider = {}
+    Slider.__index = Slider
+
+    function Slider.new(Panel, flag, opts)
+        local base = P.Base.new(Panel, { LabelText = nil, Height = 40, Tooltip = opts.Tooltip })
+        local self = setmetatable({ _base = base, Library = Panel.Library, Flag = flag,
+            Min = opts.Min or 0, Max = opts.Max or 100, Decimals = opts.Decimals or 0,
+            Suffix = opts.Suffix or "", Prefix = opts.Prefix or "", OffAtMin = opts.OffAtMin,
+            Callback = opts.Callback }, Slider)
+        base._widget = self
+        base.Control.Visible = false
+
+        -- linea superior: nombre + box de valor pegado al lado
+        local topRow = U.Create("Frame", { Parent = base.Row, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 16),
+        }, { U.Create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+            VerticalAlignment = Enum.VerticalAlignment.Center,
+            Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+        U.Create("TextLabel", { Parent = topRow, BackgroundTransparency = 1, LayoutOrder = 1,
+            AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0),
+            Font = T.FontBold, TextSize = T.TextSize, Text = opts.Text or flag,
+            TextColor3 = T.Text, TextXAlignment = Enum.TextXAlignment.Left })
+
+        self.ValBox = U.Create("Frame", { Parent = topRow, LayoutOrder = 2,
+            AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 15),
+            BackgroundColor3 = T.Surface2,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            U.Create("UIPadding", { PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5) }),
+            U.Create("TextLabel", { Name = "V", BackgroundTransparency = 1,
+                AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0),
+                Font = T.Font, TextSize = 12, Text = "", TextColor3 = T.SubText,
+                TextYAlignment = Enum.TextYAlignment.Center }) })
+        self.ValLabel = self.ValBox.V
+
+        -- track con fill (gradient de textura) + perilla
+        self.Track = U.Create("TextButton", { Parent = base.Row, Text = "", AutoButtonColor = false,
+            Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, 8),
+            BackgroundColor3 = T.Surface2,
+        }, {
+            U.Create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+            U.Create("Frame", { Name = "Fill", BorderSizePixel = 0, BackgroundColor3 = T.Accent,
+                Size = UDim2.new(0, 0, 1, 0) }, {
+                U.Create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+                U.Create("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 0.15),
+                    NumberSequenceKeypoint.new(0.5, 0),
+                    NumberSequenceKeypoint.new(1, 0.2) }) }),
+            }),
+        })
+        -- perilla deslizable GRIS con textura (gradient vertical claro->oscuro)
+        self.Knob = U.Create("Frame", { Parent = self.Track, AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0, 0, 0.5, 0), Size = UDim2.fromOffset(7, 13),
+            BackgroundColor3 = T.Knob, ZIndex = 3,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 2) }),
+            U.Create("UIStroke", { Color = Color3.fromRGB(20,20,22), Transparency = 0.5, Thickness = 1 }),
+            U.Create("UIGradient", { Rotation = 90, Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(235,235,238)),
+                ColorSequenceKeypoint.new(0.5, T.Knob),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(150,150,156)) }) }) })
+        base.Control.Visible = false
+
+        local function setFromX(px)
+            local abs = self.Track.AbsolutePosition.X
+            local w = self.Track.AbsoluteSize.X
+            local a = math.clamp((px - abs) / w, 0, 1)
+            self:SetValue(self.Min + a * (self.Max - self.Min))
+        end
+        local dragging = false
+        self.Track.MouseButton1Down:Connect(function() dragging = true
+            setFromX(UIS:GetMouseLocation().X) end)
+        self.Library:Maid(UIS.InputEnded:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end))
+        self.Library:Maid(UIS.InputChanged:Connect(function(i)
+            if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+                setFromX(UIS:GetMouseLocation().X) end end))
+
+        self.Library.Options[flag] = self
+        self:SetValue(opts.Default ~= nil and opts.Default or self.Min)
+        return self
+    end
+
+    function Slider:_fmt(v)
+        if self.OffAtMin and v <= self.Min then return "Off" end
+        local num
+        if self.Decimals > 0 then
+            num = string.format("%." .. self.Decimals .. "f", v)
+        else
+            num = tostring(math.floor(v + 0.5))
+        end
+        return self.Prefix .. num .. self.Suffix
+    end
+
+    function Slider:SetValue(v)
+        v = math.clamp(v, self.Min, self.Max)
+        if self.Decimals == 0 then v = math.floor(v + 0.5) end
+        self.Value = v
+        local a = (v - self.Min) / (self.Max - self.Min)
+        self.Track.Fill.Size = UDim2.new(a, 0, 1, 0)
+        self.Knob.Position = UDim2.new(a, 0, 0.5, 0)
+        self.ValLabel.Text = self:_fmt(v)
+        self.Library:SetFlag(self.Flag, v)
+        self._base.Changed:Fire(v)
+        if self.Callback then task.spawn(self.Callback, v) end
+    end
+    function Slider:GetValue() return self.Value end
+    function Slider:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function Slider:OnChanged(fn) self._base:OnChanged(fn); return self end
+    function Slider:SetVisible(b) self._base:SetVisible(b) end
+
+    P.Slider = Slider
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Dropdown ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Dropdown = {}
+    Dropdown.__index = Dropdown
+
+    local function hamburger(parent)
+        local f = U.Create("Frame", { Parent = parent, Name = "Ham", BackgroundTransparency = 1,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0),
+            Size = UDim2.fromOffset(14, 11) })
+        for i = 0, 2 do
+            U.Create("Frame", { Parent = f, BorderSizePixel = 0, BackgroundColor3 = T.SubText,
+                Position = UDim2.new(0, 0, 0, i * 5), Size = UDim2.new(1, 0, 0, 1.5) })
+        end
+        return f
+    end
+
+    function Dropdown.new(Panel, flag, opts)
+        local base = P.Base.new(Panel, { LabelText = nil, Height = 46, Tooltip = opts.Tooltip })
+        local self = setmetatable({ _base = base, Library = Panel.Library, Flag = flag,
+            Values = opts.Values or {}, AllowNull = opts.AllowNull, Callback = opts.Callback,
+            Multi = opts.Multi and true or false, Searchable = opts.Searchable and true or false,
+            Open = false }, Dropdown)
+        base._widget = self
+        base.Control.Visible = false
+
+        self.Title = U.Create("TextLabel", { Parent = base.Row, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 16), Font = T.FontBold, TextSize = T.TextSize,
+            Text = opts.Text or flag, TextColor3 = T.SubText,
+            TextXAlignment = Enum.TextXAlignment.Left })
+
+        self.DControl = U.Create("TextButton", { Parent = base.Row, Text = "", AutoButtonColor = false,
+            Position = UDim2.fromOffset(0, 20), Size = UDim2.new(1, 0, 0, 24),
+            BackgroundColor3 = T.Surface2,
+        }, {
+            U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+            U.Create("TextLabel", { Name = "Val", BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -30, 1, 0),
+                Font = T.Font, TextSize = T.TextSize, Text = "...", TextColor3 = T.Text,
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }),
+        })
+        if self.Multi then
+            hamburger(self.DControl)
+            self.Value = {}
+        else
+            U.Create("ImageLabel", { Parent = self.DControl, Name = "Chev", BackgroundTransparency = 1,
+                AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0),
+                Size = UDim2.fromOffset(14, 14), Image = "rbxassetid://6034818372",
+                ImageColor3 = T.SubText })
+        end
+        self.DControl.MouseButton1Click:Connect(function() self:Toggle() end)
+
+        self.Library.Options[flag] = self
+        if self.Multi then
+            local def = opts.Default
+            if type(def) == "table" then for _, v in ipairs(def) do self.Value[v] = true end end
+            self:_renderMulti()
+            self.Library:SetFlag(flag, self:GetValue())
+        else
+            local def = opts.Default
+            if def == nil and not self.AllowNull then def = self.Values[1] end
+            self:SetValue(def)
+        end
+        return self
+    end
+
+    function Dropdown:_closePopup()
+        if self.Popup then self.Popup:Destroy(); self.Popup = nil end
+        self.Open = false
+        self.Library:ClosePopup(self._closer)
+    end
+
+    function Dropdown:Toggle()
+        if self.Open then self:_closePopup(); return end
+        self._closer = self._closer or function() self:_closePopup() end
+        self.Library:OpenPopup(self._closer)
+        self.Open = true
+        local gui = self.DControl:FindFirstAncestorWhichIsA("ScreenGui")
+        local ap, sz = self.DControl.AbsolutePosition, self.DControl.AbsoluteSize
+        local rows = math.min(#self.Values, 7)
+        local searchH = self.Searchable and 26 or 0
+        self.Popup = U.Create("Frame", { Parent = gui, ZIndex = 50,
+            Position = UDim2.fromOffset(ap.X, ap.Y + sz.Y + 2),
+            Size = UDim2.fromOffset(sz.X, rows * 24 + 4 + searchH), BackgroundColor3 = T.Surface2, BorderSizePixel = 0,
+            ClipsDescendants = true,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }) })
+        local searchBox
+        if self.Searchable then
+            searchBox = U.Create("TextBox", { Parent = self.Popup, ZIndex = 52,
+                Position = UDim2.fromOffset(4, 3), Size = UDim2.new(1, -8, 0, 20),
+                BackgroundColor3 = T.Bg, ClearTextOnFocus = false, Font = T.Font, TextSize = 12,
+                TextColor3 = T.Text, PlaceholderText = "Search...", PlaceholderColor3 = T.SubText,
+                Text = "", TextXAlignment = Enum.TextXAlignment.Left,
+            }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+                U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+                U.Create("UIPadding", { PaddingLeft = UDim.new(0, 6) }) })
+        end
+        local scroll = U.Create("ScrollingFrame", { Parent = self.Popup, ZIndex = 51,
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            Position = UDim2.fromOffset(0, searchH), Size = UDim2.new(1, 0, 1, -searchH),
+            CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollBarThickness = 0,
+        }, { U.Create("UIListLayout", {}), U.Create("UIPadding", {
+            PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2) }) })
+
+        local itemBtns = {}
+        if searchBox then
+            searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+                local q = searchBox.Text:lower()
+                for _, ib in ipairs(itemBtns) do
+                    ib.btn.Visible = (q == "") or ib.name:lower():find(q, 1, true) ~= nil
+                end
+            end)
+        end
+
+        for _, v in ipairs(self.Values) do
+            local sel = self.Multi and self.Value[v] or (v == self.Value)
+            local it = U.Create("TextButton", { Parent = scroll, ZIndex = 52,
+                BackgroundColor3 = T.Surface3, BackgroundTransparency = sel and 0.5 or 1,
+                Size = UDim2.new(1, 0, 0, 24), AutoButtonColor = false,
+                Font = T.Font, TextSize = T.TextSize, Text = "",
+            }, { U.Create("TextLabel", { Name = "L", BackgroundTransparency = 1, ZIndex = 52,
+                Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -12, 1, 0),
+                Font = T.Font, TextSize = T.TextSize, Text = tostring(v),
+                TextColor3 = sel and T.Accent or T.Text, TextXAlignment = Enum.TextXAlignment.Left }) })
+            table.insert(itemBtns, { btn = it, name = tostring(v) })
+            it.MouseButton1Click:Connect(function()
+                if self.Multi then
+                    self.Value[v] = (not self.Value[v]) or nil
+                    it.BackgroundTransparency = self.Value[v] and 0.5 or 1
+                    it.L.TextColor3 = self.Value[v] and T.Accent or T.Text
+                    self:_renderMulti()
+                    self.Library:SetFlag(self.Flag, self:GetValue())
+                    self._base.Changed:Fire(self:GetValue())
+                    if self.Callback then task.spawn(self.Callback, self:GetValue()) end
+                else
+                    self:SetValue(v); self:_closePopup()
+                end
+            end)
+        end
+    end
+
+    function Dropdown:_renderMulti()
+        local list = {}
+        for _, v in ipairs(self.Values) do if self.Value[v] then table.insert(list, v) end end
+        self.DControl.Val.Text = (#list == 0) and "None Selected" or table.concat(list, ", ")
+        self.DControl.Val.TextColor3 = (#list == 0) and T.SubText or T.Text
+    end
+
+    function Dropdown:SetValue(v)
+        if self.Multi then
+            self.Value = {}
+            if type(v) == "table" then for _, x in ipairs(v) do self.Value[x] = true end end
+            self:_renderMulti()
+            self.Library:SetFlag(self.Flag, self:GetValue())
+        else
+            self.Value = v
+            self.DControl.Val.Text = v == nil and "None" or tostring(v)
+            self.DControl.Val.TextColor3 = v == nil and T.SubText or T.Text
+            self.Library:SetFlag(self.Flag, v)
+        end
+        self._base.Changed:Fire(self:GetValue())
+        if self.Callback then task.spawn(self.Callback, self:GetValue()) end
+    end
+
+    function Dropdown:GetValue()
+        if not self.Multi then return self.Value end
+        local list = {}
+        for _, v in ipairs(self.Values) do if self.Value[v] then table.insert(list, v) end end
+        return list
+    end
+    function Dropdown:SetValues(list) self.Values = list end
+    -- gear ⚙ a la derecha del titulo, abre un mini-panel de settings
+    function Dropdown:AddGear()
+        if not P.Gear then return nil end
+        local g = P.Gear.new(self.Library)
+        local icon = P.Gear.icon(self._base.Row)
+        g:attachTo(icon)
+        return g
+    end
+    function Dropdown:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function Dropdown:OnChanged(fn) self._base:OnChanged(fn); return self end
+    function Dropdown:SetVisible(b) self._base:SetVisible(b) end
+
+    P.Dropdown = Dropdown
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Keybind ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local UIS = game:GetService("UserInputService")
+    local Keybind = {}
+    Keybind.__index = Keybind
+
+    local function keyName(kc) return kc and kc.Name or "None" end
+
+    function Keybind.new(Panel, flag, opts)
+        local base = P.Base.new(Panel, { LabelText = opts.Text or flag, Tooltip = opts.Tooltip })
+        local self = setmetatable({ _base = base, Library = Panel.Library, Flag = flag,
+            Mode = opts.Mode or "Toggle", Key = opts.Default, Capturing = false, Active = false,
+            Callback = opts.Callback, BindCallback = opts.BindCallback }, Keybind)
+        base._widget = self
+
+        self.Btn = U.Create("TextButton", { Parent = base.Control, AutoButtonColor = false,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.fromOffset(96, 20), BackgroundColor3 = T.Surface2,
+            Font = T.Font, TextSize = 12, TextColor3 = T.Text, Text = "Key: "..keyName(self.Key),
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Outline, Thickness = 1 }) })
+
+        self.Btn.MouseButton1Click:Connect(function()
+            self.Capturing = true; self.Btn.Text = "Key: ..."
+        end)
+
+        self.Library:Maid(UIS.InputBegan:Connect(function(inp, gpe)
+            if self.Capturing and inp.KeyCode ~= Enum.KeyCode.Unknown then
+                self.Capturing = false; self:SetKey(inp.KeyCode); return
+            end
+            if not gpe and self.Key and inp.KeyCode == self.Key then
+                if self.Mode == "Toggle" then self:_setActive(not self.Active)
+                elseif self.Mode == "Hold" then self:_setActive(true) end
+            end
+        end))
+        self.Library:Maid(UIS.InputEnded:Connect(function(inp)
+            if self.Mode == "Hold" and self.Key and inp.KeyCode == self.Key then
+                self:_setActive(false)
+            end
+        end))
+
+        self.Library.Options[flag] = self
+        self.Library.Flags[flag] = self.Key
+        if opts.NoUI ~= true and self.Library.RegisterKeybind then
+            self._kbEntry = self.Library:RegisterKeybind(self)
+        end
+        if self.Mode == "Always" then self:_setActive(true) end
+        return self
+    end
+
+    function Keybind:_setActive(v)
+        self.Active = v
+        self.Library.Flags[self.Flag.."Active"] = v
+        if self._kbEntry then self._kbEntry:Update() end
+        if self.Callback then task.spawn(self.Callback, v) end
+        self._base.Changed:Fire(v)
+    end
+    function Keybind:SetKey(kc)
+        self.Key = kc; self.Btn.Text = "Key: "..keyName(kc)
+        self.Library.Flags[self.Flag] = kc
+        if self._kbEntry then self._kbEntry:Update() end
+        if self.BindCallback then task.spawn(self.BindCallback, kc) end
+    end
+    function Keybind:GetKey() return self.Key end
+    function Keybind:SetValue(kc) self:SetKey(kc) end
+    function Keybind:GetValue() return self.Key end
+    function Keybind:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function Keybind:OnChanged(fn) self._base:OnChanged(fn); return self end
+    function Keybind:SetVisible(b) self._base:SetVisible(b) end
+
+    P.Keybind = Keybind
+end
+
+end)(); __m(P) end
+-- ==== Widgets/TextBox ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local TextBox = {}
+    TextBox.__index = TextBox
+    function TextBox.new(Panel, flag, opts)
+        local base = P.Base.new(Panel, { LabelText = nil, Height = 46, Tooltip = opts.Tooltip })
+        local self = setmetatable({ _base = base, Library = Panel.Library, Flag = flag,
+            Numeric = opts.Numeric, MaxLength = opts.MaxLength, Callback = opts.Callback }, TextBox)
+        base._widget = self; base.Control.Visible = false
+        U.Create("TextLabel", { Parent = base.Row, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 16), Font = T.FontBold, TextSize = T.TextSize,
+            Text = opts.Text or flag, TextColor3 = T.SubText,
+            TextXAlignment = Enum.TextXAlignment.Left })
+        self.Input = U.Create("TextBox", { Parent = base.Row, Position = UDim2.fromOffset(0, 20),
+            Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = T.Surface2, ClearTextOnFocus = false,
+            Font = T.Font, TextSize = T.TextSize, TextColor3 = T.Text,
+            PlaceholderText = opts.Placeholder or "Enter Text...", PlaceholderColor3 = T.SubText,
+            Text = opts.Default or "", TextXAlignment = Enum.TextXAlignment.Left,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Outline, Thickness = 1 }),
+            U.Create("UIPadding", { PaddingLeft = UDim.new(0, 8) }) })
+        self.Input:GetPropertyChangedSignal("Text"):Connect(function()
+            local t = self.Input.Text
+            if self.Numeric then t = t:gsub("[^%d%.%-]", "") end
+            if self.MaxLength then t = t:sub(1, self.MaxLength) end
+            if t ~= self.Input.Text then self.Input.Text = t end
+            self:_set(t)
+        end)
+        self.Library.Options[flag] = self
+        self:_set(opts.Default or "")
+        return self
+    end
+    function TextBox:_set(t) self.Value = t; self.Library:SetFlag(self.Flag, t)
+        self._base.Changed:Fire(t); if self.Callback then task.spawn(self.Callback, t) end end
+    function TextBox:SetValue(t) self.Input.Text = t end
+    function TextBox:GetValue() return self.Value end
+    function TextBox:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function TextBox:OnChanged(fn) self._base:OnChanged(fn); return self end
+    function TextBox:SetVisible(b) self._base:SetVisible(b) end
+    P.TextBox = TextBox
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Button ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Button = {}
+    Button.__index = Button
+    function Button.new(Panel, _flag, opts)
+        local base = P.Base.new(Panel, { LabelText = nil, Height = 30, Tooltip = opts.Tooltip })
+        local self = setmetatable({ _base = base, Callback = opts.Callback,
+            Double = opts.DoubleClick, _last = 0 }, Button)
+        base._widget = self; base.Control.Visible = false
+        self.Btn = U.Create("TextButton", { Parent = base.Row, AutoButtonColor = false,
+            Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = T.Surface2,
+            Font = T.FontBold, TextSize = T.TextSize, TextColor3 = T.Text, Text = opts.Text or "Button",
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Outline, Thickness = 1 }) })
+        self.Btn.MouseEnter:Connect(function() self.Btn.BackgroundColor3 = T.AccentDim end)
+        self.Btn.MouseLeave:Connect(function() self.Btn.BackgroundColor3 = T.Surface2 end)
+        self.Btn.MouseButton1Click:Connect(function()
+            if self.Double then
+                local now = os.clock()
+                if now - self._last > 0.4 then self._last = now; self.Btn.Text = "Are you sure?"; return end
+                self.Btn.Text = opts.Text or "Button"
+            end
+            if self.Callback then task.spawn(self.Callback) end
+        end)
+        return self
+    end
+    function Button:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function Button:SetVisible(b) self._base:SetVisible(b) end
+    P.Button = Button
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Label ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Label = {}
+    Label.__index = Label
+    function Label.new(Panel, _flag, opts)
+        local base = P.Base.new(Panel, { LabelText = nil, Height = opts.Header and 20 or 18 })
+        local self = setmetatable({ _base = base }, Label)
+        base._widget = self; base.Control.Visible = false
+        self.Text = U.Create("TextLabel", { Parent = base.Row, BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1), Text = opts.Text or "",
+            Font = opts.Header and T.FontBold or T.Font, TextSize = T.TextSize,
+            TextColor3 = opts.Header and T.Text or T.SubText,
+            TextXAlignment = Enum.TextXAlignment.Left })
+        return self
+    end
+    function Label:SetText(t) self.Text.Text = t end
+    function Label:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function Label:SetVisible(b) self._base:SetVisible(b) end
+    P.Label = Label
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Divider ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Divider = {}
+    Divider.__index = Divider
+    function Divider.new(Panel, _flag, _opts)
+        local base = P.Base.new(Panel, { LabelText = nil, Height = 9 })
+        local self = setmetatable({ _base = base }, Divider)
+        base._widget = self; base.Control.Visible = false
+        U.Create("Frame", { Parent = base.Row, AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, 0, 0.5, 0), Size = UDim2.new(1, 0, 0, 1),
+            BorderSizePixel = 0, BackgroundColor3 = T.Outline })
+        return self
+    end
+    function Divider:SetVisible(b) self._base:SetVisible(b) end
+    P.Divider = Divider
+end
+
+end)(); __m(P) end
+-- ==== Widgets/ColorPicker ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local UIS = game:GetService("UserInputService")
+    local GuiService = game:GetService("GuiService")
+    local function mouseXY()
+        local m = UIS:GetMouseLocation()
+        local ins = GuiService:GetGuiInset()
+        return m.X - ins.X, m.Y - ins.Y
+    end
+    local CP = {}
+    CP.__index = CP
+
+    local RAINBOW = ColorSequence.new({
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 0, 0)),
+        ColorSequenceKeypoint.new(0.17, Color3.fromRGB(255, 255, 0)),
+        ColorSequenceKeypoint.new(0.34, Color3.fromRGB(0, 255, 0)),
+        ColorSequenceKeypoint.new(0.51, Color3.fromRGB(0, 255, 255)),
+        ColorSequenceKeypoint.new(0.68, Color3.fromRGB(0, 0, 255)),
+        ColorSequenceKeypoint.new(0.85, Color3.fromRGB(255, 0, 255)),
+        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 0, 0)),
+    })
+
+    local function swatch(parent)
+        return U.Create("TextButton", { Parent = parent, Text = "", AutoButtonColor = false,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.fromOffset(28, 14), BackgroundColor3 = Color3.new(1, 1, 1),
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            U.Create("UIStroke", { Color = T.Outline, Thickness = 1 }) })
+    end
+
+    -- Crea el swatch en un parent arbitrario (uso standalone o adjunto a toggle)
+    function CP._attach(Library, parentControl, flag, opts, xOffset)
+        local self = setmetatable({ Library = Library, Flag = flag, Callback = opts.Callback,
+            Open = false }, CP)
+        self.Swatch = swatch(parentControl)
+        if xOffset then self.Swatch.Position = UDim2.new(1, xOffset, 0.5, 0) end
+        local d = opts.Default or Color3.fromRGB(255, 0, 0)
+        self.H, self.S, self.V = d:ToHSV()
+        self.Swatch.MouseButton1Click:Connect(function() self:Toggle() end)
+        Library.Options[flag] = self
+        self:_apply()
+        return self
+    end
+
+    function CP.new(Panel, flag, opts)
+        local base = P.Base.new(Panel, { LabelText = opts.Text or flag })
+        local self = CP._attach(Panel.Library, base.Control, flag, opts, nil)
+        self._base = base
+        base._widget = self
+        return self
+    end
+
+    function CP:_color() return Color3.fromHSV(self.H, self.S, self.V) end
+
+    function CP:_apply()
+        local c = self:_color()
+        self.Swatch.BackgroundColor3 = c
+        self.Library:SetFlag(self.Flag, c)
+        if self._base then self._base.Changed:Fire(c) end
+        if self.Callback then task.spawn(self.Callback, c) end
+    end
+
+    function CP:SetColor(c) self.H, self.S, self.V = c:ToHSV(); self:_apply()
+        if self.SVCursor then self:_syncCursors() end end
+    function CP:GetColor() return self:_color() end
+    function CP:SetValue(c) self:SetColor(c) end
+    function CP:GetValue() return self:_color() end
+
+    function CP:_syncCursors()
+        self.SVCursor.Position = UDim2.new(self.S, 0, 1 - self.V, 0)
+        self.SV.BackgroundColor3 = Color3.fromHSV(self.H, 1, 1)
+        self.HueCursor.Position = UDim2.new(0.5, 0, self.H, 0)
+    end
+
+    function CP:_closePopup()
+        if self._c1 then self._c1:Disconnect(); self._c1 = nil end
+        if self._c2 then self._c2:Disconnect(); self._c2 = nil end
+        if self.Popup then self.Popup:Destroy(); self.Popup = nil end
+        self.Open = false
+        self.Library:ClosePopup(self._closer)
+    end
+
+    function CP:Toggle()
+        if self.Open then self:_closePopup(); return end
+        self._closer = self._closer or function() self:_closePopup() end
+        self.Library:OpenPopup(self._closer)
+        self.Open = true
+        local gui = self.Swatch:FindFirstAncestorWhichIsA("ScreenGui")
+        local ap = self.Swatch.AbsolutePosition
+        local PH = 150
+        local py = ap.Y + 20
+        if py + PH > gui.AbsoluteSize.Y - 8 then py = ap.Y - PH - 6 end  -- flip arriba si no cabe
+        self.Popup = U.Create("Frame", { Parent = gui, ZIndex = 60,
+            Position = UDim2.fromOffset(ap.X - 150, py),
+            Size = UDim2.fromOffset(190, PH), BackgroundColor3 = T.Surface2, BorderSizePixel = 0,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Outline, Thickness = 1 }),
+            U.Create("UIPadding", { PaddingTop = UDim.new(0,8), PaddingLeft = UDim.new(0,8),
+                PaddingBottom = UDim.new(0,8), PaddingRight = UDim.new(0,8) }) })
+
+        -- cuadro SV (saturacion x, valor y)
+        self.SV = U.Create("Frame", { Parent = self.Popup, ZIndex = 61,
+            Size = UDim2.fromOffset(150, 134), BackgroundColor3 = Color3.fromHSV(self.H, 1, 1),
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            -- blanco horizontal (saturacion)
+            U.Create("Frame", { BackgroundColor3 = Color3.new(1,1,1), Size = UDim2.fromScale(1,1),
+                ZIndex = 61 }, { U.Create("UICorner", { CornerRadius = UDim.new(0,4) }),
+                U.Create("UIGradient", { Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }) }) }),
+            -- negro vertical (valor)
+            U.Create("Frame", { BackgroundColor3 = Color3.new(0,0,0), Size = UDim2.fromScale(1,1),
+                ZIndex = 62 }, { U.Create("UICorner", { CornerRadius = UDim.new(0,4) }),
+                U.Create("UIGradient", { Rotation = 90, Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) }) }) }),
+        })
+        self.SVBtn = U.Create("TextButton", { Parent = self.SV, Text = "", BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1,1), ZIndex = 64 })
+        self.SVCursor = U.Create("Frame", { Parent = self.SV, ZIndex = 63,
+            AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(8, 8),
+            BackgroundColor3 = Color3.new(1,1,1) },
+            { U.Create("UICorner", { CornerRadius = UDim.new(1,0) }),
+              U.Create("UIStroke", { Color = Color3.new(0,0,0), Thickness = 1 }) })
+
+        -- barra de hue vertical
+        self.Hue = U.Create("TextButton", { Parent = self.Popup, Text = "", AutoButtonColor = false,
+            ZIndex = 61, Position = UDim2.fromOffset(160, 0), Size = UDim2.fromOffset(14, 134),
+            BackgroundColor3 = Color3.new(1,1,1),
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            U.Create("UIGradient", { Rotation = 90, Color = RAINBOW }) })
+        self.HueCursor = U.Create("Frame", { Parent = self.Hue, ZIndex = 62,
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, self.H, 0),
+            Size = UDim2.new(1, 4, 0, 3), BackgroundColor3 = Color3.new(1,1,1) },
+            { U.Create("UIStroke", { Color = Color3.new(0,0,0), Thickness = 1 }) })
+
+        self:_syncCursors()
+
+        -- drag SV
+        local function svFrom(px, py)
+            local s = math.clamp((px - self.SV.AbsolutePosition.X) / self.SV.AbsoluteSize.X, 0, 1)
+            local v = 1 - math.clamp((py - self.SV.AbsolutePosition.Y) / self.SV.AbsoluteSize.Y, 0, 1)
+            self.S, self.V = s, v; self:_apply(); self:_syncCursors()
+        end
+        local function hueFrom(py)
+            self.H = math.clamp((py - self.Hue.AbsolutePosition.Y) / self.Hue.AbsoluteSize.Y, 0, 1)
+            self:_apply(); self:_syncCursors()
+        end
+        local svDrag, hueDrag = false, false
+        self.SVBtn.MouseButton1Down:Connect(function() svDrag = true
+            local mx, my = mouseXY(); svFrom(mx, my) end)
+        self.Hue.MouseButton1Down:Connect(function() hueDrag = true
+            local _, my = mouseXY(); hueFrom(my) end)
+        self._c1 = UIS.InputEnded:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1 then svDrag, hueDrag = false, false end end)
+        self._c2 = UIS.InputChanged:Connect(function(i)
+            if i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            local mx, my = mouseXY()
+            if svDrag then svFrom(mx, my) elseif hueDrag then hueFrom(my) end
+        end)
+    end
+
+    function CP:DependsOn(f, e) if self._base then self._base:DependsOn(f, e) end; return self end
+    function CP:OnChanged(fn) if self._base then self._base:OnChanged(fn) end; return self end
+    function CP:SetVisible(b) if self._base then self._base:SetVisible(b) end end
+
+    P.ColorPicker = CP
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Gear ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local UIS = game:GetService("UserInputService")
+    local Gear = {}
+    Gear.__index = Gear
+
+    -- icono engranaje
+    function Gear.icon(parent)
+        return U.Create("ImageButton", { Parent = parent, Name = "Gear", BackgroundTransparency = 1,
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -2, 0, 2), Size = UDim2.fromOffset(14, 14),
+            Image = "rbxassetid://6031280882", ImageColor3 = T.SubText, ZIndex = 5 })
+    end
+
+    -- mini-panel flotante que imita la interfaz de Panel (para reusar los widgets)
+    function Gear.new(Library)
+        local self = setmetatable({ Library = Library, _widgets = {}, Open = false }, Gear)
+        self.Popup = U.Create("Frame", { Visible = false, ZIndex = 70, BackgroundColor3 = T.Surface,
+            BorderSizePixel = 0, Size = UDim2.new(0, 210, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }) })
+        U.Shadow(self.Popup, { Spread = 18, Transparency = 0.72, YOffset = 5 })
+        self.Body = U.Create("Frame", { Parent = self.Popup, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        }, { U.Create("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }),
+            U.Create("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 8),
+                PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
+        return self
+    end
+
+    function Gear:_rowParent() return self.Body end
+
+    local function adder(key)
+        return function(self, flag, o)
+            if not P[key] then return nil end
+            local W = P[key].new(self, flag, o or {})
+            table.insert(self._widgets, W); return W
+        end
+    end
+    Gear.AddToggle   = adder("Toggle")
+    Gear.AddSlider   = adder("Slider")
+    Gear.AddDropdown = adder("Dropdown")
+    Gear.AddKeybind  = adder("Keybind")
+    Gear.AddTextBox  = adder("TextBox")
+    function Gear:AddButton(t, cb) local W = P.Button.new(self, nil, { Text = t, Callback = cb })
+        table.insert(self._widgets, W); return W end
+    function Gear:AddLabel(t, o) local W = P.Label.new(self, nil, { Text = t, Header = o and o.Header })
+        table.insert(self._widgets, W); return W end
+    function Gear:AddColorPicker(f, o) local W = P.ColorPicker.new(self, f, o or {})
+        table.insert(self._widgets, W); return W end
+
+    function Gear:attachTo(iconBtn)
+        self._icon = iconBtn
+        iconBtn.MouseButton1Click:Connect(function() self:Toggle() end)
+    end
+
+    function Gear:_forceClose()
+        self.Popup.Visible = false; self.Open = false
+        if self._icon then self._icon.ImageColor3 = T.SubText end
+        self.Library:ClosePopup(self._closer)
+    end
+
+    function Gear:Toggle()
+        if self.Open then self:_forceClose(); return end
+        self._closer = self._closer or function() self:_forceClose() end
+        self.Library:OpenPopup(self._closer)
+        local gui = self._icon:FindFirstAncestorWhichIsA("ScreenGui")
+        self.Popup.Parent = gui
+        local ap = self._icon.AbsolutePosition
+        self.Popup.Position = UDim2.fromOffset(ap.X - 210 + 20, ap.Y + 20)
+        self.Popup.Visible = true; self.Open = true
+        self._icon.ImageColor3 = T.Accent
+    end
+
+    P.Gear = Gear
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Viewport ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local RunService = game:GetService("RunService")
+    local Viewport = {}
+    Viewport.__index = Viewport
+
+    -- handler generico: mete cualquier modelo/instancia y lo muestra (auto-frame + auto-rotate)
+    function Viewport.new(Panel, opts)
+        opts = opts or {}
+        local base = P.Base.new(Panel, { LabelText = nil, Height = opts.Height or 180 })
+        local self = setmetatable({ _base = base, Library = Panel.Library,
+            AutoRotate = opts.AutoRotate ~= false, Speed = opts.RotateSpeed or 40,
+            Pitch = opts.Pitch or 0.35, _angle = 0 }, Viewport)
+        base._widget = self
+        base.Control.Visible = false
+
+        self.VF = U.Create("ViewportFrame", { Parent = base.Row, Size = UDim2.new(1, 0, 1, 0),
+            BackgroundColor3 = opts.Background or T.Surface2, BorderSizePixel = 0,
+            Ambient = Color3.fromRGB(170, 170, 175), LightColor = Color3.fromRGB(255, 255, 255),
+            LightDirection = Vector3.new(-0.4, -1, -0.5),
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }) })
+        self.Cam = Instance.new("Camera"); self.Cam.Parent = self.VF; self.VF.CurrentCamera = self.Cam
+        self.World = Instance.new("WorldModel"); self.World.Parent = self.VF
+        self.Library:Maid(self.VF)
+        return self
+    end
+
+    function Viewport:Clear()
+        if self._conn then self._conn:Disconnect(); self._conn = nil end
+        for _, c in ipairs(self.World:GetChildren()) do c:Destroy() end
+        self.Model = nil
+    end
+
+    -- inst: cualquier Model / BasePart / Folder de partes. opts.AutoRotate opcional override.
+    function Viewport:SetModel(inst, opts)
+        self:Clear()
+        if not inst then return end
+        opts = opts or {}
+        local m
+        pcall(function() m = inst:Clone() end)
+        if not m then
+            -- Archivable=false devuelve nil: forzarlo temporalmente
+            local prev = inst.Archivable
+            inst.Archivable = true
+            pcall(function() m = inst:Clone() end)
+            inst.Archivable = prev
+        end
+        if not m then return end
+        if not m:IsA("Model") then
+            local wrap = Instance.new("Model")
+            m.Parent = wrap
+            m = wrap
+        end
+        m.Parent = self.World
+        self.Model = m
+
+        local ok, cf, size = pcall(function() return m:GetBoundingBox() end)
+        if not ok or not cf then cf, size = CFrame.new(), Vector3.new(4, 4, 4) end
+        self._center = cf.Position
+        self._radius = math.max(size.Magnitude / 2, 1)
+        self._dist = self._radius / math.tan(math.rad(30)) + self._radius
+        self:_apply(0)
+
+        local rotate = opts.AutoRotate
+        if rotate == nil then rotate = self.AutoRotate end
+        if rotate then
+            self._conn = RunService.RenderStepped:Connect(function(dt) self:_spin(dt) end)
+            self.Library:Maid(self._conn)
+        end
+        return self
+    end
+
+    function Viewport:_apply(angle)
+        local c = self._center
+        local pos = c + Vector3.new(math.sin(angle) * self._dist, self._radius * self.Pitch, math.cos(angle) * self._dist)
+        self.Cam.CFrame = CFrame.lookAt(pos, c)
+    end
+    function Viewport:_spin(dt)
+        self._angle = self._angle + math.rad(self.Speed) * dt
+        self:_apply(self._angle)
+    end
+
+    function Viewport:SetAutoRotate(b)
+        self.AutoRotate = b
+        if not b and self._conn then self._conn:Disconnect(); self._conn = nil
+        elseif b and self.Model and not self._conn then
+            self._conn = RunService.RenderStepped:Connect(function(dt) self:_spin(dt) end)
+            self.Library:Maid(self._conn)
+        end
+    end
+    function Viewport:SetSpeed(s) self.Speed = s end
+    function Viewport:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function Viewport:SetVisible(b) self._base:SetVisible(b) end
+
+    P.Viewport = Viewport
+end
+
+end)(); __m(P) end
+-- ==== Widgets/Grid ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local Grid = {}
+    Grid.__index = Grid
+
+    -- grid de thumbnails (estilo Skins de primordial). opts: Height, CellSize, Callback
+    function Grid.new(Panel, opts)
+        opts = opts or {}
+        local base = P.Base.new(Panel, { LabelText = nil, Height = opts.Height or 200 })
+        local self = setmetatable({ _base = base, Library = Panel.Library,
+            Cell = opts.CellSize or 54, Callback = opts.Callback, Items = {}, Selected = nil }, Grid)
+        base._widget = self
+        base.Control.Visible = false
+
+        self.Scroll = U.Create("ScrollingFrame", { Parent = base.Row, BackgroundColor3 = T.Surface2,
+            BorderSizePixel = 0, Size = UDim2.new(1, 0, 1, 0), CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 0,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }),
+            U.Create("UIGridLayout", { CellSize = UDim2.fromOffset(self.Cell, self.Cell),
+                CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+                HorizontalAlignment = Enum.HorizontalAlignment.Left }),
+            U.Create("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingLeft = UDim.new(0, 6),
+                PaddingBottom = UDim.new(0, 6) }) })
+        return self
+    end
+
+    -- item: { Image = assetId, Name = string?, Callback = fn? }
+    function Grid:AddItem(item)
+        local i = #self.Items + 1
+        local cell = U.Create("TextButton", { Parent = self.Scroll, AutoButtonColor = false, Text = "",
+            BackgroundColor3 = T.Surface3, LayoutOrder = i,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            U.Create("UIStroke", { Name = "Sel", Color = T.Accent, Thickness = 1, Transparency = 1 }),
+            U.Create("ImageLabel", { Name = "Icon", BackgroundTransparency = 1, Image = item.Image or "",
+                AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+                Size = UDim2.fromScale(0.78, 0.78), ScaleType = Enum.ScaleType.Fit }) })
+        if item.Name then
+            cell.Icon.Position = UDim2.fromScale(0.5, 0.42)
+            cell.Icon.Size = UDim2.fromScale(0.66, 0.66)
+            U.Create("TextLabel", { Parent = cell, BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 1),
+                Position = UDim2.new(0.5, 0, 1, -3), Size = UDim2.new(1, -4, 0, 11),
+                Font = T.Font, TextSize = 10, TextColor3 = T.SubText, Text = item.Name,
+                TextTruncate = Enum.TextTruncate.AtEnd })
+        end
+        local rec = { cell = cell, item = item }
+        table.insert(self.Items, rec)
+        cell.MouseButton1Click:Connect(function() self:Select(i) end)
+        return rec
+    end
+
+    function Grid:Select(i)
+        for idx, rec in ipairs(self.Items) do
+            rec.cell.Sel.Transparency = (idx == i) and 0 or 1
+        end
+        self.Selected = i
+        local it = self.Items[i]
+        if it then
+            if it.item.Callback then task.spawn(it.item.Callback, it.item) end
+            if self.Callback then task.spawn(self.Callback, it.item, i) end
+        end
+    end
+    function Grid:GetSelected() local r = self.Items[self.Selected]; return r and r.item end
+    function Grid:Clear()
+        for _, r in ipairs(self.Items) do r.cell:Destroy() end
+        self.Items = {}; self.Selected = nil
+    end
+    function Grid:SetVisible(b) self._base:SetVisible(b) end
+
+    P.Grid = Grid
+end
+
+end)(); __m(P) end
+-- ==== Widgets/List ====
+do local __m = (function()
+return function(P)
+    local U, T = P.Util, P.Theme
+    local List = {}
+    List.__index = List
+
+    -- list-box permanente (dropdown pre-abierto). opts: Text, Values, Multi, Default, Height, Callback
+    function List.new(Panel, flag, opts)
+        local titleH = opts.Text and 18 or 0
+        local boxH = opts.Height or 120
+        local base = P.Base.new(Panel, { LabelText = nil, Height = titleH + boxH, Tooltip = opts.Tooltip })
+        local self = setmetatable({ _base = base, Library = Panel.Library, Flag = flag,
+            Values = opts.Values or {}, Multi = opts.Multi and true or false, Callback = opts.Callback,
+            Items = {} }, List)
+        base._widget = self
+        base.Control.Visible = false
+
+        if opts.Text then
+            self.Title = U.Create("TextLabel", { Parent = base.Row, BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 0, 16), Font = T.FontBold, TextSize = T.TextSize,
+                Text = opts.Text, TextColor3 = T.SubText, TextXAlignment = Enum.TextXAlignment.Left })
+        end
+
+        self.Box = U.Create("Frame", { Parent = base.Row, Position = UDim2.fromOffset(0, titleH),
+            Size = UDim2.new(1, 0, 0, boxH), BackgroundColor3 = T.Surface2, BorderSizePixel = 0, ClipsDescendants = true,
+        }, { U.Create("UICorner", { CornerRadius = UDim.new(0, T.Radius) }),
+            U.Create("UIStroke", { Color = T.Border, Thickness = 1 }) })
+        self.Scroll = U.Create("ScrollingFrame", { Parent = self.Box, BackgroundTransparency = 1,
+            BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 0,
+        }, { U.Create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
+            U.Create("UIPadding", { PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 3) }) })
+
+        if self.Multi then self.Value = {} else self.Value = nil end
+        self:_build()
+
+        self.Library.Options[flag] = self
+        local def = opts.Default
+        if self.Multi then
+            if type(def) == "table" then for _, v in ipairs(def) do self.Value[v] = true end end
+        elseif def == nil and not opts.AllowNull then def = self.Values[1] end
+        self:SetValue(self.Multi and self:GetValue() or def)
+        return self
+    end
+
+    function List:_build()
+        for _, it in ipairs(self.Items) do it.btn:Destroy() end
+        self.Items = {}
+        for i, v in ipairs(self.Values) do
+            local btn = U.Create("TextButton", { Parent = self.Scroll, AutoButtonColor = false,
+                BackgroundColor3 = T.Surface3, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22),
+                LayoutOrder = i, Text = "",
+            }, { U.Create("TextLabel", { Name = "L", BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(8, 0), Size = UDim2.new(1, -12, 1, 0), Font = T.Font,
+                TextSize = T.TextSize, Text = tostring(v), TextColor3 = T.Text,
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }) })
+            table.insert(self.Items, { btn = btn, value = v })
+            btn.MouseButton1Click:Connect(function() self:_click(v) end)
+        end
+        self:_render()
+    end
+
+    function List:_click(v)
+        if self.Multi then
+            self.Value[v] = (not self.Value[v]) or nil
+        else
+            self.Value = v
+        end
+        self:_render()
+        self.Library:SetFlag(self.Flag, self:GetValue())
+        self._base.Changed:Fire(self:GetValue())
+        if self.Callback then task.spawn(self.Callback, self:GetValue()) end
+    end
+
+    function List:_isSel(v)
+        if self.Multi then return self.Value[v] == true else return self.Value == v end
+    end
+    function List:_render()
+        for _, it in ipairs(self.Items) do
+            local sel = self:_isSel(it.value)
+            it.btn.BackgroundTransparency = sel and 0.4 or 1
+            it.btn.L.TextColor3 = sel and T.Accent or T.Text
+        end
+    end
+
+    function List:GetValue()
+        if not self.Multi then return self.Value end
+        local out = {}
+        for _, v in ipairs(self.Values) do if self.Value[v] then table.insert(out, v) end end
+        return out
+    end
+    function List:SetValue(v)
+        if self.Multi then
+            self.Value = {}
+            if type(v) == "table" then for _, x in ipairs(v) do self.Value[x] = true end end
+        else
+            self.Value = v
+        end
+        self:_render()
+        self.Library:SetFlag(self.Flag, self:GetValue())
+        self._base.Changed:Fire(self:GetValue())
+        if self.Callback then task.spawn(self.Callback, self:GetValue()) end
+    end
+    function List:SetValues(list) self.Values = list; self:_build() end
+    function List:DependsOn(f, e) self._base:DependsOn(f, e); return self end
+    function List:OnChanged(fn) self._base:OnChanged(fn); return self end
+    function List:SetVisible(b) self._base:SetVisible(b) end
+
+    P.List = List
+end
+
+end)(); __m(P) end
+return P.Library
+end)()
+local LIP
+local function require(name)
+    if _cache[name] then return _cache[name] end
+    local m = _MODS[name](require, LIP, Lib)
+    _cache[name] = m
+    return m
+end
+LIP = _MODS["Core.State"](require, nil, Lib)
+_cache["Core.State"] = LIP
+LIP.Library = Lib
+LIP.require = require
+_MODS["main"](require, LIP, Lib)
+return LIP
