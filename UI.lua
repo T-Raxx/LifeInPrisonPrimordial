@@ -12,6 +12,7 @@ return function(require, LIP, Lib)
         local Vehicle = require("Movement.Vehicle")
         local Void    = require("Movement.Void")
         local Util    = require("Combat.Utility")
+        local AutoWeapons = require("Combat.AutoWeapons")
 
         --========================= RAGE =========================--
         -- UNA sección con 3 columnas; cajas apiladas (estilo symbol: todas visibles a la vez).
@@ -160,6 +161,30 @@ return function(require, LIP, Lib)
         v3:AddToggle("AutoArrest", { Text = "Auto Arrest (op57)", Default = false,
             Tooltip = "Esposa al enemigo cercano (necesita Handcuffs; Police). Validación 8-studs es client-side" })
         v3:AddButton("Detonate C4 (op44)", function() Niche.detonateC4() end)
+
+        -- Auto Weapons: teleport a un pickup suelto + grab (op12) + volver. Multi-select con búsqueda.
+        local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })
+        local aw1 = AW:AddPanel("Auto Weapons", { Column = 1 })
+        aw1:AddToggle("AutoWeapons", { Text = "Auto Weapons", Default = false,
+            Tooltip = "Teleporta al pickup de un arma seleccionada, la agarra (op12 ReceiveTool) y restaura tu posición. Persiste en muerte. Elegí las armas en la lista →" })
+        aw1:AddButton("Grab Now", function()
+            local wl = Lib.Options.WeaponList
+            if wl then AutoWeapons.nextRun = 0; AutoWeapons.tick(wl:GetValue()) end
+        end)
+        aw1:AddDivider()
+        aw1:AddLabel("Buscá y tildá las armas que querés. Agarra la 1a disponible de tu selección.", {})
+        local aw2 = AW:AddPanel("Weapon List", { Column = 2 })
+        local weaponList
+        aw2:AddTextBox("WeaponSearch", { Text = "Search", Placeholder = "filtrar arma...",
+            Callback = function(txt)
+                if not weaponList then return end
+                txt = (txt or ""):lower()
+                if txt == "" then weaponList:SetValues(AutoWeapons.WEAPONS); return end
+                local f = {}
+                for _, n in ipairs(AutoWeapons.WEAPONS) do if n:lower():find(txt, 1, true) then f[#f+1] = n end end
+                weaponList:SetValues(f)
+            end })
+        weaponList = aw2:AddList("WeaponList", { Values = AutoWeapons.WEAPONS, Multi = true, Height = 150 })
 
         --========================= VISUALS =========================--
         local Vis  = Window:AddCategory("Visuals", "eye")

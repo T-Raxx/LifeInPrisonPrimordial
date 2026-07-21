@@ -14,6 +14,7 @@ local ORDER = {
     "Combat/Godmode.lua",
     "Combat/Niche.lua",
     "Combat/Utility.lua",
+    "Combat/AutoWeapons.lua",
     "Movement/Movement.lua",
     "Movement/Vehicle.lua",
     "Movement/Void.lua",

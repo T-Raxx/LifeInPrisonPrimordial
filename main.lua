@@ -13,6 +13,7 @@ return function(require, LIP, Lib)
     local Weapon  = require("Combat.Weapon")
     local Godmode = require("Combat.Godmode")
     local Niche   = require("Combat.Niche")
+    local AutoWeapons = require("Combat.AutoWeapons")
     local Net     = require("Net")
     local Move    = require("Movement.Movement")
     local Vehicle = require("Movement.Vehicle")
@@ -173,6 +174,11 @@ return function(require, LIP, Lib)
         end
         if T.AutoArrest and T.AutoArrest.Value then
             Niche.arrest({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+        end
+
+        -- auto weapons: recoge armas sueltas del mapa (teleport+grab, pos real restaurada)
+        if T.AutoWeapons and T.AutoWeapons.Value and O.WeaponList then
+            AutoWeapons.tick(O.WeaponList:GetValue())
         end
 
         -- permanent ragdoll (si no está godmode, que ya maneja el ragdoll)
