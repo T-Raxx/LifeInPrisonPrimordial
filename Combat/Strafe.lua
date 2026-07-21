@@ -122,12 +122,10 @@ return function(require, LIP, Lib)
     end
 
     local seed = 0
-    local baitFlip = 1
-    -- órbita alrededor de un CENTRO (predicho si chase), mirando al centro. bait = reversas random.
+    -- órbita alrededor de un CENTRO, mirando al centro. Normal/Random/Behind.
     local function orbitCF(center, tLook, opts)
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
         local mode = opts.mode or "Normal"
-        if opts.bait and math.noise(seed * 0.7, 3) > 0.55 then baitFlip = -baitFlip end
         if mode == "Behind" then
             local look = tLook or Vector3.new(0, 0, -1)
             local goPos = center - look * R + Vector3.new(0, h, 0)
@@ -138,14 +136,17 @@ return function(require, LIP, Lib)
             local rz = math.noise(seed, seed) * R
             seed = seed + spd * 0.02 + math.abs(math.sin(os.clock() * 91.7)) * 0.15
             local goPos = center + Vector3.new(rx, h + ry * 0.4, rz)
-            local rot = CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
-            return CFrame.new(goPos) * rot
-        else -- Normal: órbita circular (bait invierte el sentido)
-            seed = seed + spd * 0.05 * baitFlip
+            return CFrame.new(goPos) * CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
+        else -- Normal: órbita circular
+            seed = seed + spd * 0.05
             local off = Vector3.new(math.cos(seed) * R, h, math.sin(seed) * R)
             return CFrame.lookAt(center + off, center)
         end
     end
+
+    -- LCG para bait (Math.random bloqueado en el executor)
+    local brng = 987654321
+    local function rnd() brng = (brng * 1103515245 + 12345) % 2147483648; return brng / 2147483648 end
 
     -- llamado por el driver cada Heartbeat con el target resuelto
     function Strafe.tick(target, opts)
@@ -153,18 +154,36 @@ return function(require, LIP, Lib)
         local tRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         if not (root and tRoot) then Strafe.stop(); return end
 
-        -- centro dinámico (chase): predice la pos del target por su velocidad
-        local center = tRoot.Position
-        if opts.chase then center = center + Strafe.targetVel(target) * (opts.predict or 0.12) end
+        -- CENTRO: pos RESUELTA del target (resolver, contra jitter/spoof enemigo, con predicción por
+        -- velocidad para compensar el delay de replicación) o cruda + predicción manual.
+        local center
+        if opts.resolve then
+            center = Strafe.resolvePos(target, tRoot.Position, opts.resolveMethod, opts.samples, opts.predict)
+        else
+            center = tRoot.Position
+            if (opts.predict or 0) > 0 then center = center + Strafe.targetVel(target) * opts.predict end
+        end
+
         local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
+
+        -- BAIT: cada 1-3s (random) salta a un spot random lejano por 0.3s (baitea el aim enemigo)
+        if opts.bait then
+            local now = os.clock()
+            if not LIP.baitNext then LIP.baitNext = now + 1 + rnd() * 2 end
+            if not LIP.baitUntil and now >= LIP.baitNext then
+                LIP.baitUntil = now + 0.3
+                local R = opts.radius or 10
+                LIP.baitPos = center + Vector3.new((rnd()-0.5) * R * 6, opts.height or 0, (rnd()-0.5) * R * 6)
+            end
+            if LIP.baitUntil then
+                if now < LIP.baitUntil then goCF = CFrame.new(LIP.baitPos)
+                else LIP.baitUntil = nil; LIP.baitNext = now + 1 + rnd() * 2 end
+            end
+        end
+
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
-        if opts.connExploit then
-            -- CONNECTION WELD: server te ve orbitando (connPart); CUERPO REAL libre. Caminás/disparás normal.
-            if LIP.spoofOn then Spoof.stop(cam) end   -- salir del CFrame-desync si estaba
-            Spoof.weldTo(goCF)
-        elseif opts.posSpoof then
-            if LIP.connRep then Spoof.unweld() end
+        if opts.posSpoof then
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
@@ -175,9 +194,8 @@ return function(require, LIP, Lib)
             Spoof.camToLocal(cam, realCF)
             pcall(function() root.CFrame = goCF end)
         else
-            -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear Y angular cada frame para que
-            -- el motor no ACUMULE velocidad (si no, los teleports quedan "duros" y arrastran momentum).
-            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
+            -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear+angular (no acumula momentum).
+            if LIP.spoofOn then Spoof.stop(cam) end
             pcall(function()
                 root.CFrame = goCF
                 root.AssemblyLinearVelocity = Vector3.zero

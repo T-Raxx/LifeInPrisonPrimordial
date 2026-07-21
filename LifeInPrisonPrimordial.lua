@@ -582,12 +582,10 @@ return function(require, LIP, Lib)
     end
 
     local seed = 0
-    local baitFlip = 1
-    -- órbita alrededor de un CENTRO (predicho si chase), mirando al centro. bait = reversas random.
+    -- órbita alrededor de un CENTRO, mirando al centro. Normal/Random/Behind.
     local function orbitCF(center, tLook, opts)
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
         local mode = opts.mode or "Normal"
-        if opts.bait and math.noise(seed * 0.7, 3) > 0.55 then baitFlip = -baitFlip end
         if mode == "Behind" then
             local look = tLook or Vector3.new(0, 0, -1)
             local goPos = center - look * R + Vector3.new(0, h, 0)
@@ -598,14 +596,17 @@ return function(require, LIP, Lib)
             local rz = math.noise(seed, seed) * R
             seed = seed + spd * 0.02 + math.abs(math.sin(os.clock() * 91.7)) * 0.15
             local goPos = center + Vector3.new(rx, h + ry * 0.4, rz)
-            local rot = CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
-            return CFrame.new(goPos) * rot
-        else -- Normal: órbita circular (bait invierte el sentido)
-            seed = seed + spd * 0.05 * baitFlip
+            return CFrame.new(goPos) * CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
+        else -- Normal: órbita circular
+            seed = seed + spd * 0.05
             local off = Vector3.new(math.cos(seed) * R, h, math.sin(seed) * R)
             return CFrame.lookAt(center + off, center)
         end
     end
+
+    -- LCG para bait (Math.random bloqueado en el executor)
+    local brng = 987654321
+    local function rnd() brng = (brng * 1103515245 + 12345) % 2147483648; return brng / 2147483648 end
 
     -- llamado por el driver cada Heartbeat con el target resuelto
     function Strafe.tick(target, opts)
@@ -613,18 +614,36 @@ return function(require, LIP, Lib)
         local tRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         if not (root and tRoot) then Strafe.stop(); return end
 
-        -- centro dinámico (chase): predice la pos del target por su velocidad
-        local center = tRoot.Position
-        if opts.chase then center = center + Strafe.targetVel(target) * (opts.predict or 0.12) end
+        -- CENTRO: pos RESUELTA del target (resolver, contra jitter/spoof enemigo, con predicción por
+        -- velocidad para compensar el delay de replicación) o cruda + predicción manual.
+        local center
+        if opts.resolve then
+            center = Strafe.resolvePos(target, tRoot.Position, opts.resolveMethod, opts.samples, opts.predict)
+        else
+            center = tRoot.Position
+            if (opts.predict or 0) > 0 then center = center + Strafe.targetVel(target) * opts.predict end
+        end
+
         local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
+
+        -- BAIT: cada 1-3s (random) salta a un spot random lejano por 0.3s (baitea el aim enemigo)
+        if opts.bait then
+            local now = os.clock()
+            if not LIP.baitNext then LIP.baitNext = now + 1 + rnd() * 2 end
+            if not LIP.baitUntil and now >= LIP.baitNext then
+                LIP.baitUntil = now + 0.3
+                local R = opts.radius or 10
+                LIP.baitPos = center + Vector3.new((rnd()-0.5) * R * 6, opts.height or 0, (rnd()-0.5) * R * 6)
+            end
+            if LIP.baitUntil then
+                if now < LIP.baitUntil then goCF = CFrame.new(LIP.baitPos)
+                else LIP.baitUntil = nil; LIP.baitNext = now + 1 + rnd() * 2 end
+            end
+        end
+
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
-        if opts.connExploit then
-            -- CONNECTION WELD: server te ve orbitando (connPart); CUERPO REAL libre. Caminás/disparás normal.
-            if LIP.spoofOn then Spoof.stop(cam) end   -- salir del CFrame-desync si estaba
-            Spoof.weldTo(goCF)
-        elseif opts.posSpoof then
-            if LIP.connRep then Spoof.unweld() end
+        if opts.posSpoof then
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
@@ -635,9 +654,8 @@ return function(require, LIP, Lib)
             Spoof.camToLocal(cam, realCF)
             pcall(function() root.CFrame = goCF end)
         else
-            -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear Y angular cada frame para que
-            -- el motor no ACUMULE velocidad (si no, los teleports quedan "duros" y arrastran momentum).
-            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
+            -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear+angular (no acumula momentum).
+            if LIP.spoofOn then Spoof.stop(cam) end
             pcall(function()
                 root.CFrame = goCF
                 root.AssemblyLinearVelocity = Vector3.zero
@@ -794,7 +812,11 @@ return function(require, LIP, Lib)
         -- cargador del SERVER vacío (contamos op14 en Net) → reload inteligente
         if (LIP.shotsFired or 0) >= magSize() then Weapon.reload(); return end
         local now = os.clock()
-        local minInt = math.max(O("AutoFireRate") or 0.15, (LIP.observedFirerate or 0.12) * 1.02)
+        -- dispara al rate del slider; si conocemos el firerate REAL del arma (observado de tus disparos
+        -- manuales en el Net hook), lo usamos como CAP (no firar más rápido = no unequip). Sin calibrar
+        -- = rate del slider directo.
+        local slider = O("AutoFireRate") or 0.15
+        local minInt = LIP.observedFirerate and math.max(slider, LIP.observedFirerate * 1.02) or slider
         if now - lastFire < minInt then return end
         -- guard de RANGO: no firar si el target está fuera de rango (server rechaza = bala perdida)
         if LIP.cachedHitPos then
@@ -1263,12 +1285,7 @@ return function(require, LIP, Lib)
         local goCF = patternCF(dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
-        if opts.connExploit then
-            -- CONNECTION WELD: server te ve lejos/alto (connPart); cuerpo REAL libre.
-            if LIP.spoofOn then Spoof.stop(cam) end
-            Spoof.weldTo(goCF)
-        elseif opts.posSpoof then
-            if LIP.connRep then Spoof.unweld() end
+        if opts.posSpoof then
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
@@ -1429,7 +1446,8 @@ return function(require, LIP, Lib)
         if T("ESPFriendCheck") and isFriend(plr) then return hideSet(s) end
 
         local dist = (hrp.Position - myPos).Magnitude
-        if dist > (O("ESPMaxDist") or 1000) then return hideSet(s) end
+        local maxD = O("ESPMaxDist") or 0
+        if maxD > 0 and dist > maxD then return hideSet(s) end   -- 0 = sin límite
 
         local topV, onTop = cam:WorldToViewportPoint((hrp.CFrame * CFrame.new(0, 3, 0)).Position)
         local botV = cam:WorldToViewportPoint((hrp.CFrame * CFrame.new(0, -3.2, 0)).Position)
@@ -1439,20 +1457,23 @@ return function(require, LIP, Lib)
         local w = h * 0.5
         local x = topV.X - w / 2
         local y = topV.Y
-        local color = (visibleTo(cam, head or hrp, char) and col("ESPVisibleColor", Color3.fromRGB(80, 255, 120)))
+        -- color por LOS (box + chams fill). Cada otro elemento tiene su picker propio (fallback = LOS).
+        local los = (visibleTo(cam, head or hrp, char) and col("ESPVisibleColor", Color3.fromRGB(80, 255, 120)))
                        or col("ESPHiddenColor", Color3.fromRGB(255, 80, 80))
 
         if T("ESPBox") then
             s.boxO.Size = Vector2.new(w, h); s.boxO.Position = Vector2.new(x, y); s.boxO.Visible = true
-            s.box.Size  = Vector2.new(w, h); s.box.Position  = Vector2.new(x, y); s.box.Color = color; s.box.Visible = true
+            s.box.Size  = Vector2.new(w, h); s.box.Position  = Vector2.new(x, y); s.box.Color = los; s.box.Visible = true
         else s.boxO.Visible = false; s.box.Visible = false end
 
         if T("ESPName") then
-            s.name.Text = plr.Name; s.name.Position = Vector2.new(x + w / 2, y - 15); s.name.Color = color; s.name.Visible = true
+            s.name.Text = plr.Name; s.name.Position = Vector2.new(x + w / 2, y - 15)
+            s.name.Color = col("ESPNameColor", los); s.name.Visible = true
         else s.name.Visible = false end
 
         if T("ESPDistance") then
-            s.dist.Text = math.floor(dist) .. "m"; s.dist.Position = Vector2.new(x + w / 2, y + h + 2); s.dist.Visible = true
+            s.dist.Text = math.floor(dist) .. "m"; s.dist.Position = Vector2.new(x + w / 2, y + h + 2)
+            s.dist.Color = col("ESPDistColor", los); s.dist.Visible = true
         else s.dist.Visible = false end
 
         if T("ESPHealth") then
@@ -1469,10 +1490,12 @@ return function(require, LIP, Lib)
             local from = (originMode == "Center" and Vector2.new(vp.X / 2, vp.Y / 2))
                        or (originMode == "Top" and Vector2.new(vp.X / 2, 0))
                        or Vector2.new(vp.X / 2, vp.Y)
-            s.tracer.From = from; s.tracer.To = Vector2.new(topV.X, y + h); s.tracer.Color = color; s.tracer.Visible = true
+            s.tracer.From = from; s.tracer.To = Vector2.new(topV.X, y + h)
+            s.tracer.Color = col("ESPTracerColor", los); s.tracer.Visible = true
         else s.tracer.Visible = false end
 
         if T("ESPSkeleton") then
+            local skc = col("ESPSkeletonColor", los)
             for i, pair in ipairs(BONES) do
                 local a = char:FindFirstChild(pair[1]); local b = char:FindFirstChild(pair[2])
                 local bl = s.bones[i]
@@ -1480,7 +1503,7 @@ return function(require, LIP, Lib)
                     local av, aon = cam:WorldToViewportPoint(a.Position)
                     local bv, bon = cam:WorldToViewportPoint(b.Position)
                     if aon and bon then
-                        bl.From = Vector2.new(av.X, av.Y); bl.To = Vector2.new(bv.X, bv.Y); bl.Color = color; bl.Visible = true
+                        bl.From = Vector2.new(av.X, av.Y); bl.To = Vector2.new(bv.X, bv.Y); bl.Color = skc; bl.Visible = true
                     else bl.Visible = false end
                 else bl.Visible = false end
             end
@@ -1488,7 +1511,9 @@ return function(require, LIP, Lib)
 
         if T("ESPChams") then
             ensureHighlight(s, char)
-            s.highlight.FillColor = color; s.highlight.OutlineColor = WHITE; s.highlight.Enabled = true
+            s.highlight.FillColor = los
+            s.highlight.OutlineColor = col("ESPChamsOutline", WHITE)
+            s.highlight.Enabled = true
         elseif s.highlight then s.highlight.Enabled = false end
     end
 
@@ -1533,83 +1558,76 @@ return function(require, LIP, Lib)
 
         --========================= RAGE =========================--
         local Rage = Window:AddCategory("Rage", "crosshair")
-        local RS = Rage:AddSection("Ragebot", "Silent aim · Rapid fire · Target strafe", { Columns = 3 })
 
-        -- Col 1: Silent Aim
+        -- Ragebot: Silent Aim + Firepower
+        local RS = Rage:AddSection("Ragebot", "Silent aim · Rapid/Auto fire", { Columns = 2 })
         local c1 = RS:AddPanel("Silent Aim", { Column = 1 })
         c1:AddToggle("SilentAim", { Text = "Silent Aim", Default = false,
             Tooltip = "op14 passive arg-swap al target. Cámara no se toca, GST intacto." })
         c1:AddDropdown("SelMode", { Text = "Selection", Values = { "Crosshair", "Distance", "Health" }, Default = "Crosshair" })
         c1:AddSlider("FOV", { Text = "FOV", Min = 0, Max = 500, Default = 150 })
-        c1:AddToggle("Wallcheck", { Text = "Wallcheck", Default = false,
-            Tooltip = "ON = solo con línea de vista" })
+        c1:AddToggle("Wallcheck", { Text = "Wallcheck", Default = false, Tooltip = "ON = solo con línea de vista" })
         c1:AddToggle("Wallbang", { Text = "Wallbang", Default = false,
-            Tooltip = "Raycast target→vos, pone el origin del lado del target de la pared = LOS garantizada (atraviesa paredes)" })
-        c1:AddToggle("AntiInvis", { Text = "Anti Invisible", Default = false })
+            Tooltip = "Raycast target→vos, pone el origin del lado del target de la pared = LOS garantizada" })
         c1:AddDivider()
         c1:AddToggle("TeamCheck", { Text = "Team Check", Default = true })
         c1:AddToggle("FriendCheck", { Text = "Friend Check", Default = true })
 
-        -- Col 2: Rapid Fire / Instant Reload / Auto Fire
         local c2 = RS:AddPanel("Firepower", { Column = 2 })
         c2:AddToggle("RapidFire", { Text = "Rapid Fire", Default = false,
-            Tooltip = "Ráfaga extra de op14 al disparar (gate firerate es client-only)" })
-        c2:AddSlider("RapidCount", { Text = "Burst Count", Min = 1, Max = 12, Default = 3 })
+            Tooltip = "Dispara op14 mientras mantenés mouse1 (al rate de abajo, capeado al firerate real)" })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
-            Tooltip = "Dispara op14 al target auto (sin mouse1click). SOLO activo mientras Target Strafe esté ON." })
-        c2:AddSlider("AutoFireRate", { Text = "Auto Rate", Min = 0.05, Max = 1, Default = 0.15, Decimals = 2, Suffix = "s" })
-        c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs",
-            Tooltip = "No dispara si el target está más lejos (fuera de rango = server rechaza)" })
+            Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 0.03, Max = 1, Default = 0.1, Decimals = 2, Suffix = "s",
+            Tooltip = "Intervalo entre disparos. Se capea al firerate REAL del arma (observado de tus disparos manuales)." })
+        c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })
         c2:AddDivider()
         c2:AddButton("Force Reload", function() Weapon.instantReload() end)
         c2:AddKeybind("ReloadKey", { Text = "Reload Key", Mode = "Toggle", Callback = function() Weapon.instantReload() end })
         c2:AddSlider("ReloadAmmo", { Text = "Mag Size", Min = 1, Max = 120, Default = 15,
-            Tooltip = "Balas por cargador de tu arma (fallback; se auto-detecta del reload real del juego)" })
-        c2:AddSlider("ReloadTime", { Text = "Reload Time", Min = 0.3, Max = 3, Default = 1.2, Decimals = 1, Suffix = "s",
-            Tooltip = "Espera antes del op40 (debe ~= duración de la anim de recarga, o el server rechaza)" })
+            Tooltip = "Cargador de tu arma (fallback; se auto-detecta si recargás con R 1 vez)" })
+        c2:AddSlider("ReloadTime", { Text = "Reload Time", Min = 0.3, Max = 3, Default = 1.2, Decimals = 1, Suffix = "s" })
         c2:AddToggle("ShotgunReload", { Text = "Shotgun Reload", Default = false,
-            Tooltip = "Para escopetas (SPAS): op40 por bala en vez de uno solo (protocolo per-shell). Pistola/rifle = OFF." })
+            Tooltip = "Escopeta (SPAS): op40 por bala. Pistola/rifle = OFF." })
 
-        -- Col 3: Target Strafe
-        local c3 = RS:AddPanel("Target Strafe", { Column = 3 })
-        c3:AddToggle("TargetStrafe", { Text = "Target Strafe", Default = false,
-            Tooltip = "Desync: server te ve orbitando, cuerpo/cámara reales quietos (CFrame spoof)" })
-        c3:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
+        -- Target Strafe: SECCIÓN PROPIA (compacta)
+        local TSS = Rage:AddSection("Target Strafe", "Desync orbit", { Columns = 2 })
+        local ts1 = TSS:AddPanel("Strafe", { Column = 1 })
+        ts1:AddToggle("TargetStrafe", { Text = "Target Strafe", Default = false,
+            Tooltip = "Desync: el server te ve orbitando; cuerpo/cámara reales quietos (Pos Spoof)" })
+        ts1:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
             Callback = function(a) local t = Lib.Toggles.TargetStrafe; if t then t:SetValue(a) end end })
-        c3:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind" }, Default = "Normal",
+        ts1:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind" }, Default = "Normal",
             Callback = function(v) Strafe.applyPreset(v) end })
-        c3:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind" }, Default = "Normal" })
-        c3:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 25, Default = 10, Decimals = 1, Suffix = "studs" })
-        c3:AddSlider("StrafeSpeed",  { Text = "Speed", Min = 1, Max = 40, Default = 4 })
-        c3:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
-        c3:AddToggle("PosSpoof", { Text = "Pos Spoof (master)", Default = true,
-            Tooltip = "MASTER de Strafe + Void. ON = desync (cuerpo/cámara reales quietos). OFF = mueve el cuerpo real." })
-        c3:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
-            Tooltip = "sethiddenproperty PhysicsRepRootPart → server te ve en el weld, CUERPO REAL LIBRE (caminás/disparás normal). Override de Pos Spoof." })
-        c3:AddToggle("StrafeChase", { Text = "Dynamic Chase", Default = true,
-            Tooltip = "Predice la pos del target por su velocidad (orbita su posición futura)" })
-        c3:AddToggle("StrafeBait", { Text = "Bait", Default = false,
-            Tooltip = "Invierte el sentido del strafe al azar (baitea el aim enemigo)" })
-        c3:AddDivider()
-        c3:AddKeybind("SetTargetKey", { Text = "Set Target (crosshair)", Mode = "Toggle",
+        ts1:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind" }, Default = "Normal" })
+        ts1:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 25, Default = 10, Decimals = 1, Suffix = "studs" })
+        ts1:AddSlider("StrafeSpeed",  { Text = "Speed", Min = 1, Max = 40, Default = 4 })
+        ts1:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
+        local ts2 = TSS:AddPanel("Target & Options", { Column = 2 })
+        ts2:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
+            Tooltip = "Master de Strafe + Void. ON = desync (cuerpo real quieto). OFF = mueve el cuerpo real." })
+        ts2:AddToggle("StrafeBait", { Text = "Bait", Default = false,
+            Tooltip = "Cada 1-3s (random) salta a un spot random por 0.3s (baitea el aim enemigo)" })
+        ts2:AddDivider()
+        ts2:AddKeybind("SetTargetKey", { Text = "Set Target (crosshair)", Mode = "Toggle",
             Callback = function() Strafe.pickCrosshair() end })
-        c3:AddButton("Clear Target", function() Strafe.clearManual() end)
-        c3:AddToggle("Spectate", { Text = "Spectate Target", Default = false,
-            Tooltip = "Cámara al target manual; persiste en muerte/rejoin hasta cambiarlo" })
+        ts2:AddButton("Clear Target", function() Strafe.clearManual() end)
+        ts2:AddToggle("Spectate", { Text = "Spectate Target", Default = false,
+            Tooltip = "Cámara al target manual; persiste en muerte/rejoin" })
 
-        -- Section propia: Resolver
-        local RSR = Rage:AddSection("Resolver", "Spam resolver (anti cheaters)")
+        -- Resolver (aplica al CENTRO del orbit del strafe: orbitás la pos real del enemigo, no su jitter)
+        local RSR = Rage:AddSection("Resolver", "Anti-cheater (jitter / fling / spoof)", { Columns = 2 })
         local r1 = RSR:AddPanel("Resolver", { Column = 1 })
         r1:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
-            Tooltip = "Resuelve el centro real del target vs strafe/fling enemigo" })
+            Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
         r1:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Median", "Weighted", "Average", "Latest" }, Default = "Median" })
-        r1:AddSlider("ResolverSamples", { Text = "Samples", Min = 3, Max = 16, Default = 8 })
+        r1:AddSlider("ResolverSamples", { Text = "Samples", Min = 3, Max = 20, Default = 12 })
         r1:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
             Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
         r1:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead por velocidad del target (compensa ping/movimiento). 0 = off" })
-        local r2 = RSR:AddPanel("Notes", { Column = 2 })
-        r2:AddLabel("Median = robusto a extremos. Weighted = recientes pesan más. Predict = lead por velocidad.", {})
+            Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
+        local r2 = RSR:AddPanel("Info", { Column = 2 })
+        r2:AddLabel("Median = robusto al jitter random. Average = media. Weighted = recientes pesan más. Latest = crudo. Predict = lead por velocidad.", {})
 
         -- Sección Void Spam (en Rage) — origen absoluto (0,100,0), random far cada frame
         local RSV = Rage:AddSection("Void Spam", "Anti-aim · origen absoluto (0,100,0)")
@@ -1686,21 +1704,22 @@ return function(require, LIP, Lib)
 
         --========================= VISUALS =========================--
         local Vis  = Window:AddCategory("Visuals", "eye")
-        local VSec = Vis:AddSection("ESP", "Player ESP (R6, client-side)")
-        local vp = VSec:AddPanel("ESP", { Column = 1 })
+        local VSec = Vis:AddSection("ESP", "Player ESP (R6, client-side) · todo coloreable", { Columns = 2 })
+        local vp = VSec:AddPanel("Elements", { Column = 1 })
         vp:AddToggle("ESP", { Text = "Enabled", Default = false })
+        vp:AddToggle("ESPBox", { Text = "Box (LOS color)" })
             :AddColorPicker("ESPVisibleColor", { Default = Color3.fromRGB(80, 255, 120) })
             :AddColorPicker("ESPHiddenColor",  { Default = Color3.fromRGB(255, 80, 80) })
-        vp:AddToggle("ESPBox",      { Text = "Box" })
-        vp:AddToggle("ESPName",     { Text = "Name" })
-        vp:AddToggle("ESPHealth",   { Text = "Health bar" })
-        vp:AddToggle("ESPDistance", { Text = "Distance" })
-        vp:AddToggle("ESPTracer",   { Text = "Tracer" })
-        vp:AddToggle("ESPSkeleton", { Text = "Skeleton" })
-        vp:AddToggle("ESPChams",    { Text = "Chams (through walls)" })
+        vp:AddToggle("ESPName", { Text = "Name" }):AddColorPicker("ESPNameColor", { Default = Color3.fromRGB(255, 255, 255) })
+        vp:AddToggle("ESPDistance", { Text = "Distance" }):AddColorPicker("ESPDistColor", { Default = Color3.fromRGB(220, 220, 220) })
+        vp:AddToggle("ESPHealth", { Text = "Health bar" })
+        vp:AddToggle("ESPTracer", { Text = "Tracer" }):AddColorPicker("ESPTracerColor", { Default = Color3.fromRGB(255, 255, 255) })
+        vp:AddToggle("ESPSkeleton", { Text = "Skeleton" }):AddColorPicker("ESPSkeletonColor", { Default = Color3.fromRGB(255, 255, 255) })
+        vp:AddToggle("ESPChams", { Text = "Chams (through walls)" }):AddColorPicker("ESPChamsOutline", { Default = Color3.fromRGB(255, 255, 255) })
         local vp2 = VSec:AddPanel("Filters", { Column = 2 })
         vp2:AddDropdown("TracerOrigin", { Text = "Tracer origin", Values = { "Bottom", "Center", "Top" }, Default = "Bottom" })
-        vp2:AddSlider("ESPMaxDist",     { Text = "Max distance", Min = 50, Max = 2000, Default = 1000, Suffix = "m" })
+        vp2:AddSlider("ESPMaxDist", { Text = "Max distance", Min = 0, Max = 5000, Default = 0, Suffix = "m",
+            Tooltip = "0 = SIN LÍMITE" })
         vp2:AddToggle("ESPTeamCheck",   { Text = "Team Check", Default = true })
         vp2:AddToggle("ESPFriendCheck", { Text = "Friend Check", Default = false })
     end
@@ -1803,12 +1822,11 @@ return function(require, LIP, Lib)
         return true
     end
 
-    -- target: manual (persiste muerte/rejoin) > STICKY (mantiene el actual si sigue válido) > pick
+    -- target: manual (persiste muerte/rejoin) > selección por SelMode cada frame (Crosshair/Distance/Health)
     local function resolveTarget(filters, needAim)
         local manual = Strafe.manualPlayer()
         if manual then LIP.target = manual; return end
         if needAim then
-            if LIP.target and stillValid(LIP.target, filters) then return end   -- lock: no saltar a otro
             Target.pick({ mode = O.SelMode.Value, fov = O.FOV.Value, wallcheck = T.Wallcheck.Value,
                           teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
         else
@@ -1839,7 +1857,6 @@ return function(require, LIP, Lib)
 
         -- ── POSICIÓN: Godmode > Strafe > Void (EXCLUYENTES). PosSpoof/ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
-        local connExp  = T.ConnExploit and T.ConnExploit.Value
         if godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
@@ -1850,13 +1867,14 @@ return function(require, LIP, Lib)
             if st then
                 Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
                                   speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
-                                  posSpoof = posSpoof, connExploit = connExp, chase = T.StrafeChase.Value,
-                                  bait = T.StrafeBait.Value, predict = O.ResolverPredict.Value })
+                                  posSpoof = posSpoof, bait = T.StrafeBait.Value,
+                                  predict = O.ResolverPredict.Value,
+                                  resolve = T.Resolver and T.Resolver.Value,
+                                  resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value })
             else Strafe.stop() end
         elseif voidOn then
             if LIP.godBase then Godmode.stop() end
-            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value,
-                        posSpoof = posSpoof, connExploit = connExp })
+            Void.tick({ dist = O.VoidDist.Value, pattern = O.VoidPattern.Value, posSpoof = posSpoof })
         else
             if LIP.godBase then Godmode.stop() end
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
@@ -3838,6 +3856,7 @@ return function(P)
 
     function CP:_apply()
         local c = self:_color()
+        self.Value = c                      -- expone .Value como Color3 (fresco) para leerlo directo
         self.Swatch.BackgroundColor3 = c
         self.Library:SetFlag(self.Flag, c)
         if self._base then self._base.Changed:Fire(c) end

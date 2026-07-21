@@ -139,7 +139,11 @@ return function(require, LIP, Lib)
         -- cargador del SERVER vacío (contamos op14 en Net) → reload inteligente
         if (LIP.shotsFired or 0) >= magSize() then Weapon.reload(); return end
         local now = os.clock()
-        local minInt = math.max(O("AutoFireRate") or 0.15, (LIP.observedFirerate or 0.12) * 1.02)
+        -- dispara al rate del slider; si conocemos el firerate REAL del arma (observado de tus disparos
+        -- manuales en el Net hook), lo usamos como CAP (no firar más rápido = no unequip). Sin calibrar
+        -- = rate del slider directo.
+        local slider = O("AutoFireRate") or 0.15
+        local minInt = LIP.observedFirerate and math.max(slider, LIP.observedFirerate * 1.02) or slider
         if now - lastFire < minInt then return end
         -- guard de RANGO: no firar si el target está fuera de rango (server rechaza = bala perdida)
         if LIP.cachedHitPos then

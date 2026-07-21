@@ -88,7 +88,8 @@ return function(require, LIP, Lib)
         if T("ESPFriendCheck") and isFriend(plr) then return hideSet(s) end
 
         local dist = (hrp.Position - myPos).Magnitude
-        if dist > (O("ESPMaxDist") or 1000) then return hideSet(s) end
+        local maxD = O("ESPMaxDist") or 0
+        if maxD > 0 and dist > maxD then return hideSet(s) end   -- 0 = sin límite
 
         local topV, onTop = cam:WorldToViewportPoint((hrp.CFrame * CFrame.new(0, 3, 0)).Position)
         local botV = cam:WorldToViewportPoint((hrp.CFrame * CFrame.new(0, -3.2, 0)).Position)
@@ -98,20 +99,23 @@ return function(require, LIP, Lib)
         local w = h * 0.5
         local x = topV.X - w / 2
         local y = topV.Y
-        local color = (visibleTo(cam, head or hrp, char) and col("ESPVisibleColor", Color3.fromRGB(80, 255, 120)))
+        -- color por LOS (box + chams fill). Cada otro elemento tiene su picker propio (fallback = LOS).
+        local los = (visibleTo(cam, head or hrp, char) and col("ESPVisibleColor", Color3.fromRGB(80, 255, 120)))
                        or col("ESPHiddenColor", Color3.fromRGB(255, 80, 80))
 
         if T("ESPBox") then
             s.boxO.Size = Vector2.new(w, h); s.boxO.Position = Vector2.new(x, y); s.boxO.Visible = true
-            s.box.Size  = Vector2.new(w, h); s.box.Position  = Vector2.new(x, y); s.box.Color = color; s.box.Visible = true
+            s.box.Size  = Vector2.new(w, h); s.box.Position  = Vector2.new(x, y); s.box.Color = los; s.box.Visible = true
         else s.boxO.Visible = false; s.box.Visible = false end
 
         if T("ESPName") then
-            s.name.Text = plr.Name; s.name.Position = Vector2.new(x + w / 2, y - 15); s.name.Color = color; s.name.Visible = true
+            s.name.Text = plr.Name; s.name.Position = Vector2.new(x + w / 2, y - 15)
+            s.name.Color = col("ESPNameColor", los); s.name.Visible = true
         else s.name.Visible = false end
 
         if T("ESPDistance") then
-            s.dist.Text = math.floor(dist) .. "m"; s.dist.Position = Vector2.new(x + w / 2, y + h + 2); s.dist.Visible = true
+            s.dist.Text = math.floor(dist) .. "m"; s.dist.Position = Vector2.new(x + w / 2, y + h + 2)
+            s.dist.Color = col("ESPDistColor", los); s.dist.Visible = true
         else s.dist.Visible = false end
 
         if T("ESPHealth") then
@@ -128,10 +132,12 @@ return function(require, LIP, Lib)
             local from = (originMode == "Center" and Vector2.new(vp.X / 2, vp.Y / 2))
                        or (originMode == "Top" and Vector2.new(vp.X / 2, 0))
                        or Vector2.new(vp.X / 2, vp.Y)
-            s.tracer.From = from; s.tracer.To = Vector2.new(topV.X, y + h); s.tracer.Color = color; s.tracer.Visible = true
+            s.tracer.From = from; s.tracer.To = Vector2.new(topV.X, y + h)
+            s.tracer.Color = col("ESPTracerColor", los); s.tracer.Visible = true
         else s.tracer.Visible = false end
 
         if T("ESPSkeleton") then
+            local skc = col("ESPSkeletonColor", los)
             for i, pair in ipairs(BONES) do
                 local a = char:FindFirstChild(pair[1]); local b = char:FindFirstChild(pair[2])
                 local bl = s.bones[i]
@@ -139,7 +145,7 @@ return function(require, LIP, Lib)
                     local av, aon = cam:WorldToViewportPoint(a.Position)
                     local bv, bon = cam:WorldToViewportPoint(b.Position)
                     if aon and bon then
-                        bl.From = Vector2.new(av.X, av.Y); bl.To = Vector2.new(bv.X, bv.Y); bl.Color = color; bl.Visible = true
+                        bl.From = Vector2.new(av.X, av.Y); bl.To = Vector2.new(bv.X, bv.Y); bl.Color = skc; bl.Visible = true
                     else bl.Visible = false end
                 else bl.Visible = false end
             end
@@ -147,7 +153,9 @@ return function(require, LIP, Lib)
 
         if T("ESPChams") then
             ensureHighlight(s, char)
-            s.highlight.FillColor = color; s.highlight.OutlineColor = WHITE; s.highlight.Enabled = true
+            s.highlight.FillColor = los
+            s.highlight.OutlineColor = col("ESPChamsOutline", WHITE)
+            s.highlight.Enabled = true
         elseif s.highlight then s.highlight.Enabled = false end
     end
 

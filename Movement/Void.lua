@@ -64,12 +64,7 @@ return function(require, LIP, Lib)
         local goCF = patternCF(dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
-        if opts.connExploit then
-            -- CONNECTION WELD: server te ve lejos/alto (connPart); cuerpo REAL libre.
-            if LIP.spoofOn then Spoof.stop(cam) end
-            Spoof.weldTo(goCF)
-        elseif opts.posSpoof then
-            if LIP.connRep then Spoof.unweld() end
+        if opts.posSpoof then
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
             local realCF = Spoof.trueCF(root)
             LIP.cachedRoot   = root
