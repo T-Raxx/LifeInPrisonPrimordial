@@ -117,7 +117,8 @@ return function(require, LIP, Lib)
         local strafeOn   = T.TargetStrafe and T.TargetStrafe.Value
         local autoOn     = T.AutoFire and T.AutoFire.Value
         local godOn      = T.Godmode and T.Godmode.Value
-        local voidSpamOn = T.VoidSpam and T.VoidSpam.Value       -- NUEVO: shoot/dodge (rompe resolver)
+        -- Void Spam SOLO con Target Strafe (compone): OUT = strafe-orbit (dispara), IN = void (esconde).
+        local voidSpamOn = T.VoidSpam and T.VoidSpam.Value and strafeOn
         local idleOn     = T.IdleState and T.IdleState.Value     -- viejo void = anti-aim idle continuo
         LIP.voidSpamOn   = voidSpamOn
         LIP.voidShootOut = (not T.VoidShootOut) or T.VoidShootOut.Value    -- default on
@@ -131,28 +132,35 @@ return function(require, LIP, Lib)
         resolveTarget(filters, needAim)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
-        -- ── POSICIÓN: Godmode > VoidSpam > Strafe > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
+        -- ── POSICIÓN: Godmode > Strafe (+VoidSpam) > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
         local connExp  = T.ConnExploit and T.ConnExploit.Value
         if godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
-        elseif voidSpamOn then
-            if LIP.godBase then Godmode.stop() end
-            Void.tickSpam({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(),
-                            inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
-                            voidReload = T.VoidReload and T.VoidReload.Value, connExploit = connExp })
         elseif strafeOn then
             if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
                           teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
             if st then
-                Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
+                local strafeOpts = { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
                                   speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
                                   posSpoof = posSpoof, connExploit = connExp, bait = T.StrafeBait.Value,
                                   predict = O.ResolverPredict.Value,
                                   resolve = T.Resolver and T.Resolver.Value,
-                                  resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value })
+                                  resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value }
+                if voidSpamOn then
+                    -- VOID SPAM sobre el strafe: OUT = strafe-orbit (dispara), IN = void (esconde); force-void en reload
+                    local phase = Void.voidStep({ inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
+                                                  voidReload = T.VoidReload and T.VoidReload.Value })
+                    if phase == "out" then
+                        Strafe.tick(st, strafeOpts)
+                    else
+                        Void.tickVoidPos({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(), connExploit = connExp })
+                    end
+                else
+                    Strafe.tick(st, strafeOpts)
+                end
             else Strafe.stop() end
         elseif idleOn then
             if LIP.godBase then Godmode.stop() end

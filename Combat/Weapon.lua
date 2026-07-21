@@ -166,7 +166,8 @@ return function(require, LIP, Lib)
         end
         -- AUTO-RELOAD al agotar el cargador (timing real, no instantáneo). Solo en AutoFire; con mouse1 el
         -- juego recarga su propia munición.
-        if autoOn and T("AutoReload") ~= false and (LIP.shotsFired or 0) >= magSize() then
+        -- auto-reload normal (NO si void spam lo maneja: ahí se recarga en el void, escondido)
+        if autoOn and T("AutoReload") ~= false and not LIP.voidSpamOn and (LIP.shotsFired or 0) >= magSize() then
             Weapon.reload(); LIP.fireAccum = 0; lastTick = now; return
         end
         -- CAP al firerate REAL del arma (exceder = unequip). observedFirerate = seg/disparo (de tus disparos

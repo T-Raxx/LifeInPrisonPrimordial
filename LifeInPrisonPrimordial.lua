@@ -923,7 +923,8 @@ return function(require, LIP, Lib)
         end
         -- AUTO-RELOAD al agotar el cargador (timing real, no instantáneo). Solo en AutoFire; con mouse1 el
         -- juego recarga su propia munición.
-        if autoOn and T("AutoReload") ~= false and (LIP.shotsFired or 0) >= magSize() then
+        -- auto-reload normal (NO si void spam lo maneja: ahí se recarga en el void, escondido)
+        if autoOn and T("AutoReload") ~= false and not LIP.voidSpamOn and (LIP.shotsFired or 0) >= magSize() then
             Weapon.reload(); LIP.fireAccum = 0; lastTick = now; return
         end
         -- CAP al firerate REAL del arma (exceder = unequip). observedFirerate = seg/disparo (de tus disparos
@@ -1580,33 +1581,35 @@ return function(require, LIP, Lib)
             pcall(function() root.CFrame = goCF end)
         end
     end
-    function Void.tickSpam(opts)
-        local root = myRoot(); local cam = Workspace.CurrentCamera
-        if not root then Spoof.stop(cam); LIP.voidShootOk = true; return end
+    -- Avanza la máquina de estados IN↔OUT y devuelve la fase ("in"/"out"). Setea LIP.voidShootOk (dispara
+    -- solo OUT). **FORCE VOID durante la recarga** (LIP.reloading): se queda IN hasta que el reload termina
+    -- → recargás 100% escondido. Compone con Target Strafe: main llama Strafe.tick en OUT, tickVoidPos en IN.
+    function Void.voidStep(opts)
         local now = os.clock()
-        -- máquina de estados IN ↔ OUT
+        if LIP.reloading then                          -- FORCE VOID mientras recarga (hasta completar)
+            LIP.voidPhase = "in"; LIP.voidShootOk = false
+            return "in"
+        end
         if not LIP.voidPhase or now >= (LIP.voidPhaseUntil or 0) then
             if LIP.voidPhase == "in" then
                 LIP.voidPhase = "out"; LIP.voidPhaseUntil = now + (opts.outTime or 0.5)
             else
                 LIP.voidPhase = "in"; LIP.voidPhaseUntil = now + (opts.inTime or 0.5)
-                -- al ENTRAR al void: reload si el cargador está gastado (recargás escondido)
-                if opts.voidReload and not LIP.reloading and (LIP.shotsFired or 0) >= (Weapon.magSize() or 15) then
-                    Weapon.reload()
-                end
+                -- al ENTRAR al void: reload si el cargador está gastado (recargás escondido; force-void lo cubre)
+                if opts.voidReload and (LIP.shotsFired or 0) >= (Weapon.magSize() or 15) then Weapon.reload() end
             end
         end
-        if LIP.voidPhase == "in" then
-            local goCF = patternCF(opts.dist or 1000, opts.pattern)
-            LIP.spoofFakePos = goCF.Position
-            LIP.voidShootOk = false                    -- disparo pausado en el void
-            spoofTo(root, cam, goCF, opts.connExploit)
-        else
-            -- OUT VOID: server te ve en tu pos REAL → disparás desde acá
-            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
-            LIP.spoofFakePos = nil
-            LIP.voidShootOk = true
-        end
+        LIP.voidShootOk = (LIP.voidPhase == "out")
+        return LIP.voidPhase
+    end
+
+    -- POSICIÓN del void (fase IN): spoofea lejos con el pattern (esconderse del resolver enemigo).
+    function Void.tickVoidPos(opts)
+        local root = myRoot(); local cam = Workspace.CurrentCamera
+        if not root then return end
+        local goCF = patternCF(opts.dist or 1000, opts.pattern)
+        LIP.spoofFakePos = goCF.Position
+        spoofTo(root, cam, goCF, opts.connExploit)
     end
 
     -- ── VISUALIZADOR ──────────────────────────────────────────────────────────
@@ -1920,7 +1923,7 @@ return function(require, LIP, Lib)
 
         local vd = RS:AddPanel("Void Spam", { Column = 2 })
         vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
-            Tooltip = "Shoot/dodge: oscila IN void (server te ve lejos con el pattern, disparo pausado) ↔ OUT void (pos real, disparás). El salto constante rompe el resolver de PREDICCIÓN de otros cheaters mientras seguís tirando." })
+            Tooltip = "SOLO con Target Strafe ON. Oscila OUT (strafe-orbit al target, disparás) ↔ IN void (server te ve lejos, esconde, disparo pausado). Rompe el resolver de PREDICCIÓN enemigo. Con Void Reload: fuerza el void durante toda la recarga (recargás escondido)." })
         vd:AddSlider("VoidInTime", { Text = "In Void", Min = 0.1, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s",
             Tooltip = "Tiempo escondido en el void (disparo pausado)" })
         vd:AddSlider("VoidOutTime", { Text = "Out Void", Min = 0.1, Max = 2, Default = 0.3, Decimals = 2, Suffix = "s",
@@ -2200,7 +2203,8 @@ return function(require, LIP, Lib)
         local strafeOn   = T.TargetStrafe and T.TargetStrafe.Value
         local autoOn     = T.AutoFire and T.AutoFire.Value
         local godOn      = T.Godmode and T.Godmode.Value
-        local voidSpamOn = T.VoidSpam and T.VoidSpam.Value       -- NUEVO: shoot/dodge (rompe resolver)
+        -- Void Spam SOLO con Target Strafe (compone): OUT = strafe-orbit (dispara), IN = void (esconde).
+        local voidSpamOn = T.VoidSpam and T.VoidSpam.Value and strafeOn
         local idleOn     = T.IdleState and T.IdleState.Value     -- viejo void = anti-aim idle continuo
         LIP.voidSpamOn   = voidSpamOn
         LIP.voidShootOut = (not T.VoidShootOut) or T.VoidShootOut.Value    -- default on
@@ -2214,28 +2218,35 @@ return function(require, LIP, Lib)
         resolveTarget(filters, needAim)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
-        -- ── POSICIÓN: Godmode > VoidSpam > Strafe > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
+        -- ── POSICIÓN: Godmode > Strafe (+VoidSpam) > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
         local connExp  = T.ConnExploit and T.ConnExploit.Value
         if godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
-        elseif voidSpamOn then
-            if LIP.godBase then Godmode.stop() end
-            Void.tickSpam({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(),
-                            inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
-                            voidReload = T.VoidReload and T.VoidReload.Value, connExploit = connExp })
         elseif strafeOn then
             if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
                           teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
             if st then
-                Strafe.tick(st, { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
+                local strafeOpts = { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
                                   speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
                                   posSpoof = posSpoof, connExploit = connExp, bait = T.StrafeBait.Value,
                                   predict = O.ResolverPredict.Value,
                                   resolve = T.Resolver and T.Resolver.Value,
-                                  resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value })
+                                  resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value }
+                if voidSpamOn then
+                    -- VOID SPAM sobre el strafe: OUT = strafe-orbit (dispara), IN = void (esconde); force-void en reload
+                    local phase = Void.voidStep({ inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
+                                                  voidReload = T.VoidReload and T.VoidReload.Value })
+                    if phase == "out" then
+                        Strafe.tick(st, strafeOpts)
+                    else
+                        Void.tickVoidPos({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(), connExploit = connExp })
+                    end
+                else
+                    Strafe.tick(st, strafeOpts)
+                end
             else Strafe.stop() end
         elseif idleOn then
             if LIP.godBase then Godmode.stop() end

@@ -66,7 +66,7 @@ return function(require, LIP, Lib)
 
         local vd = RS:AddPanel("Void Spam", { Column = 2 })
         vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
-            Tooltip = "Shoot/dodge: oscila IN void (server te ve lejos con el pattern, disparo pausado) ↔ OUT void (pos real, disparás). El salto constante rompe el resolver de PREDICCIÓN de otros cheaters mientras seguís tirando." })
+            Tooltip = "SOLO con Target Strafe ON. Oscila OUT (strafe-orbit al target, disparás) ↔ IN void (server te ve lejos, esconde, disparo pausado). Rompe el resolver de PREDICCIÓN enemigo. Con Void Reload: fuerza el void durante toda la recarga (recargás escondido)." })
         vd:AddSlider("VoidInTime", { Text = "In Void", Min = 0.1, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s",
             Tooltip = "Tiempo escondido en el void (disparo pausado)" })
         vd:AddSlider("VoidOutTime", { Text = "Out Void", Min = 0.1, Max = 2, Default = 0.3, Decimals = 2, Suffix = "s",

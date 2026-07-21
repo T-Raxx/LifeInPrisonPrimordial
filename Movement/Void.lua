@@ -104,33 +104,35 @@ return function(require, LIP, Lib)
             pcall(function() root.CFrame = goCF end)
         end
     end
-    function Void.tickSpam(opts)
-        local root = myRoot(); local cam = Workspace.CurrentCamera
-        if not root then Spoof.stop(cam); LIP.voidShootOk = true; return end
+    -- Avanza la máquina de estados IN↔OUT y devuelve la fase ("in"/"out"). Setea LIP.voidShootOk (dispara
+    -- solo OUT). **FORCE VOID durante la recarga** (LIP.reloading): se queda IN hasta que el reload termina
+    -- → recargás 100% escondido. Compone con Target Strafe: main llama Strafe.tick en OUT, tickVoidPos en IN.
+    function Void.voidStep(opts)
         local now = os.clock()
-        -- máquina de estados IN ↔ OUT
+        if LIP.reloading then                          -- FORCE VOID mientras recarga (hasta completar)
+            LIP.voidPhase = "in"; LIP.voidShootOk = false
+            return "in"
+        end
         if not LIP.voidPhase or now >= (LIP.voidPhaseUntil or 0) then
             if LIP.voidPhase == "in" then
                 LIP.voidPhase = "out"; LIP.voidPhaseUntil = now + (opts.outTime or 0.5)
             else
                 LIP.voidPhase = "in"; LIP.voidPhaseUntil = now + (opts.inTime or 0.5)
-                -- al ENTRAR al void: reload si el cargador está gastado (recargás escondido)
-                if opts.voidReload and not LIP.reloading and (LIP.shotsFired or 0) >= (Weapon.magSize() or 15) then
-                    Weapon.reload()
-                end
+                -- al ENTRAR al void: reload si el cargador está gastado (recargás escondido; force-void lo cubre)
+                if opts.voidReload and (LIP.shotsFired or 0) >= (Weapon.magSize() or 15) then Weapon.reload() end
             end
         end
-        if LIP.voidPhase == "in" then
-            local goCF = patternCF(opts.dist or 1000, opts.pattern)
-            LIP.spoofFakePos = goCF.Position
-            LIP.voidShootOk = false                    -- disparo pausado en el void
-            spoofTo(root, cam, goCF, opts.connExploit)
-        else
-            -- OUT VOID: server te ve en tu pos REAL → disparás desde acá
-            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
-            LIP.spoofFakePos = nil
-            LIP.voidShootOk = true
-        end
+        LIP.voidShootOk = (LIP.voidPhase == "out")
+        return LIP.voidPhase
+    end
+
+    -- POSICIÓN del void (fase IN): spoofea lejos con el pattern (esconderse del resolver enemigo).
+    function Void.tickVoidPos(opts)
+        local root = myRoot(); local cam = Workspace.CurrentCamera
+        if not root then return end
+        local goCF = patternCF(opts.dist or 1000, opts.pattern)
+        LIP.spoofFakePos = goCF.Position
+        spoofTo(root, cam, goCF, opts.connExploit)
     end
 
     -- ── VISUALIZADOR ──────────────────────────────────────────────────────────
