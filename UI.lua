@@ -42,12 +42,18 @@ return function(require, LIP, Lib)
 
         --== Col 2: Firepower + Void Spam ==--
         local c2 = RS:AddPanel("Firepower", { Column = 2 })
+        c2:AddToggle("MultiFire", { Text = "Bullet Multiplier", Default = false,
+            Tooltip = "Padea el array de balas del op14 (del juego Y nuestro) a N pellets → N× daño POR disparo legal. Este es el rapidfire real (el server rate-limita disparar rápido, pero NO cuántas balas por disparo)." })
+        c2:AddSlider("BulletMult", { Text = "Bullets/Shot", Min = 1, Max = 20, Default = 6,
+            Tooltip = "Cuántas balas mete cada disparo. Sube el daño por disparo. También arregla escopetas (autofire necesita varios pellets)." })
         c2:AddToggle("RapidFire", { Text = "Rapid Fire", Default = false,
-            Tooltip = "Stream de op14 mientras mantenés mouse1, al Fire Rate. GST real + muzzle correcto = sin unequip." })
+            Tooltip = "Stream de op14 mientras mantenés mouse1, CAPEADO al firerate del arma (exceder = unequip). El daño extra viene del Bullet Multiplier, no de disparar más rápido." })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
-            Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON." })
-        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 1, Max = 120, Default = 50, Suffix = "/s",
-            Tooltip = "Disparos por segundo REALES. Probado: 50/s con GST real = sin unequip. El server no rate-limita op14." })
+            Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON. Capeado al firerate." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 1, Max = 120, Default = 12, Suffix = "/s",
+            Tooltip = "Tope de disparos/s (se capea SIEMPRE al firerate real del arma). El DPS lo da el Bullet Multiplier." })
+        c2:AddToggle("AutoReload", { Text = "Auto Reload", Default = true,
+            Tooltip = "Recarga sola al agotar el cargador (op42→espera ReloadTime→op40, timing real). Solo en Auto Fire." })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })
         c2:AddDivider()
         c2:AddButton("Force Reload", function() Weapon.instantReload() end)

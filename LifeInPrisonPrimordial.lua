@@ -105,21 +105,31 @@ return function(require, LIP, Lib)
                             D.magByWeapon[wtool.Name] = mag
                         end
                     end
-                    -- SILENT AIM (op14): redirige cada bullet al target cacheado (Head)
-                    if op == 14 and D.swapOn and D.cachedHitPart and D.cachedHitPos then
+                    -- op14: SILENT AIM (redirige al target) + BULLET MULTIPLIER (padea el array a N pellets).
+                    -- Se aplica al op14 del JUEGO (mouse1) y al nuestro → N× daño por disparo LEGAL (mismo
+                    -- GST/firerate/timing del juego = sin rate-limit, sin unequip). Escopetas: suma pellets.
+                    if op == 14 then
                         local bullets = p[3]
-                        if type(bullets) == "table" then
-                            for i = 1, #bullets do
-                                local b = bullets[i]
-                                if type(b) == "table" then
-                                    b[3] = D.cachedHitPos    -- hitPos
-                                    b[4] = D.cachedHitPart   -- hitPart
-                                    b[5] = D.cachedHitPos    -- partPos
-                                    b[6] = ZERO              -- objspace (centro)
-                                    -- WALLBANG: mueve el origin al lado del target de la pared (LOS clara)
-                                    if D.wallbang and D.cachedOrigin then
-                                        b[1] = D.cachedOrigin
-                                        b[2] = D.cachedOrigin
+                        local mult = D.bulletMult or 1
+                        local swap = D.swapOn and D.cachedHitPart and D.cachedHitPos
+                        if type(bullets) == "table" and (swap or mult > 1) then
+                            -- 1) redirige los existentes al target (silent aim)
+                            if swap then
+                                for i = 1, #bullets do
+                                    local b = bullets[i]
+                                    if type(b) == "table" then
+                                        b[3] = D.cachedHitPos; b[4] = D.cachedHitPart; b[5] = D.cachedHitPos; b[6] = ZERO
+                                        if D.wallbang and D.cachedOrigin then b[1] = D.cachedOrigin; b[2] = D.cachedOrigin end
+                                    end
+                                end
+                            end
+                            -- 2) MULTIPLICADOR: clona el array hasta #bullets*mult (cada clon = bala nueva)
+                            local base = #bullets
+                            if mult > 1 and base > 0 then
+                                for k = 1, base * (mult - 1) do
+                                    local s = bullets[((k - 1) % base) + 1]
+                                    if type(s) == "table" then
+                                        bullets[base + k] = { s[1], s[2], s[3], s[4], s[5], s[6] }
                                     end
                                 end
                             end
@@ -888,17 +898,18 @@ return function(require, LIP, Lib)
         return true
     end
 
-    -- AUTO/RAPID tick (main Heartbeat). Stream de op14 con GST FORJADO (reloj virtual = espaciado
-    -- legal) → dispara a `Fire Rate` disparos/s REALES (hasta 120) sin que el server te quite la tool.
-    -- Acumulador desacoplado del Heartbeat (fires-per-frame) → alcanza >60/s aunque el HB corra a 60fps.
-    -- Sin gate de munición (el server no la valida; reload sigue en botón/keybind por si el arma lo pide).
+    -- AUTO/RAPID tick (main Heartbeat). Stream de op14 (GST real) CAPEADO al firerate del arma → exceder
+    -- el firerate = el server te quita la tool (probado: M9 a 50/s = unequip; M60 = OK porque su firerate
+    -- es alto). El DPS extra NO sale de disparar más rápido (rate-limited) sino del BULLET MULTIPLIER (el
+    -- Net hook padea el array a N pellets → N× daño por disparo legal). Auto-reload con timing real al
+    -- agotar el cargador (op42→wait→op40). observedFirerate se aprende de tus disparos manuales (Net).
     local lastTick = 0
     function Weapon.tickAuto()
         local autoOn  = T("AutoFire") and T("TargetStrafe")   -- autofire SOLO con target strafe activo
         local rapidOn = T("RapidFire") and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
         if not (autoOn or rapidOn) then LIP.fireAccum = 0; lastTick = 0; return end
-        if LIP.reloading then return end
         local now = os.clock()
+        if LIP.reloading then LIP.fireAccum = 0; lastTick = now; return end
         -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server.
         if autoOn and LIP.cachedHitPos then
             local h = char() and char():FindFirstChild("Head")
@@ -908,18 +919,23 @@ return function(require, LIP, Lib)
                 LIP.fireAccum = 0; lastTick = now; return
             end
         end
-        -- NO auto-reload: el server NO gatea munición (probado: 40 disparos > mag sin recargar = 0 unequip).
-        -- El reload instantáneo (op42→op40 mismo frame) es lo que causaba el unequip (~disparo 15). Si
-        -- mantenés mouse1, el JUEGO además dispara y recarga su propia munición. Reload = manual (botón/keybind).
-        -- acumulador: rate = disparos/s REALES (desacoplado del framerate)
-        local rate = math.clamp(O("AutoFireRate") or 30, 1, 120)
+        -- AUTO-RELOAD al agotar el cargador (timing real, no instantáneo). Solo en AutoFire; con mouse1 el
+        -- juego recarga su propia munición.
+        if autoOn and T("AutoReload") ~= false and (LIP.shotsFired or 0) >= magSize() then
+            Weapon.reload(); LIP.fireAccum = 0; lastTick = now; return
+        end
+        -- CAP al firerate REAL del arma (exceder = unequip). observedFirerate = seg/disparo (de tus disparos
+        -- manuales); sin calibrar = cap conservador 9/s. El multiplier compensa el rate bajo con más pellets.
+        local userRate = math.clamp(O("AutoFireRate") or 12, 1, 120)
+        local capRate  = LIP.observedFirerate and (1 / LIP.observedFirerate) or 9
+        local rate = math.min(userRate, capRate)
         local dt = (lastTick > 0) and math.min(now - lastTick, 0.1) or 0
         lastTick = now
         LIP.fireAccum = (LIP.fireAccum or 0) + dt * rate
         local budget = 0
-        while LIP.fireAccum >= 1 and budget < 8 do   -- cap 8 disparos/frame (anti-lag)
+        while LIP.fireAccum >= 1 and budget < 4 do
             LIP.fireAccum = LIP.fireAccum - 1; budget = budget + 1
-            fireOne(LIP.cachedHitPart, LIP.cachedHitPos, nextGST())   -- GST REAL fresco
+            fireOne(LIP.cachedHitPart, LIP.cachedHitPos, nextGST())   -- 1 bala; el hook la multiplica a N
         end
     end
 
@@ -1709,12 +1725,18 @@ return function(require, LIP, Lib)
 
         --== Col 2: Firepower + Void Spam ==--
         local c2 = RS:AddPanel("Firepower", { Column = 2 })
+        c2:AddToggle("MultiFire", { Text = "Bullet Multiplier", Default = false,
+            Tooltip = "Padea el array de balas del op14 (del juego Y nuestro) a N pellets → N× daño POR disparo legal. Este es el rapidfire real (el server rate-limita disparar rápido, pero NO cuántas balas por disparo)." })
+        c2:AddSlider("BulletMult", { Text = "Bullets/Shot", Min = 1, Max = 20, Default = 6,
+            Tooltip = "Cuántas balas mete cada disparo. Sube el daño por disparo. También arregla escopetas (autofire necesita varios pellets)." })
         c2:AddToggle("RapidFire", { Text = "Rapid Fire", Default = false,
-            Tooltip = "Stream de op14 mientras mantenés mouse1, al Fire Rate. GST real + muzzle correcto = sin unequip." })
+            Tooltip = "Stream de op14 mientras mantenés mouse1, CAPEADO al firerate del arma (exceder = unequip). El daño extra viene del Bullet Multiplier, no de disparar más rápido." })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
-            Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON." })
-        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 1, Max = 120, Default = 50, Suffix = "/s",
-            Tooltip = "Disparos por segundo REALES. Probado: 50/s con GST real = sin unequip. El server no rate-limita op14." })
+            Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON. Capeado al firerate." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 1, Max = 120, Default = 12, Suffix = "/s",
+            Tooltip = "Tope de disparos/s (se capea SIEMPRE al firerate real del arma). El DPS lo da el Bullet Multiplier." })
+        c2:AddToggle("AutoReload", { Text = "Auto Reload", Default = true,
+            Tooltip = "Recarga sola al agotar el cargador (op42→espera ReloadTime→op40, timing real). Solo en Auto Fire." })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })
         c2:AddDivider()
         c2:AddButton("Force Reload", function() Weapon.instantReload() end)
@@ -1959,6 +1981,8 @@ return function(require, LIP, Lib)
         LIP.swapOn    = T.SilentAim and T.SilentAim.Value or false
         LIP.meleeOn   = T.MeleeAura and T.MeleeAura.Value or false
         LIP.wallbang  = T.Wallbang and T.Wallbang.Value or false
+        -- bullet multiplier: N pellets por disparo (el Net hook padea el array del op14 del juego/nuestro)
+        LIP.bulletMult = (T.MultiFire and T.MultiFire.Value and O.BulletMult and O.BulletMult.Value) or 1
         local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
         local cam = Workspace.CurrentCamera
 

@@ -108,6 +108,8 @@ return function(require, LIP, Lib)
         LIP.swapOn    = T.SilentAim and T.SilentAim.Value or false
         LIP.meleeOn   = T.MeleeAura and T.MeleeAura.Value or false
         LIP.wallbang  = T.Wallbang and T.Wallbang.Value or false
+        -- bullet multiplier: N pellets por disparo (el Net hook padea el array del op14 del juego/nuestro)
+        LIP.bulletMult = (T.MultiFire and T.MultiFire.Value and O.BulletMult and O.BulletMult.Value) or 1
         local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
         local cam = Workspace.CurrentCamera
 

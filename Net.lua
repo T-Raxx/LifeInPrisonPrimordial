@@ -44,21 +44,31 @@ return function(require, LIP, Lib)
                             D.magByWeapon[wtool.Name] = mag
                         end
                     end
-                    -- SILENT AIM (op14): redirige cada bullet al target cacheado (Head)
-                    if op == 14 and D.swapOn and D.cachedHitPart and D.cachedHitPos then
+                    -- op14: SILENT AIM (redirige al target) + BULLET MULTIPLIER (padea el array a N pellets).
+                    -- Se aplica al op14 del JUEGO (mouse1) y al nuestro → N× daño por disparo LEGAL (mismo
+                    -- GST/firerate/timing del juego = sin rate-limit, sin unequip). Escopetas: suma pellets.
+                    if op == 14 then
                         local bullets = p[3]
-                        if type(bullets) == "table" then
-                            for i = 1, #bullets do
-                                local b = bullets[i]
-                                if type(b) == "table" then
-                                    b[3] = D.cachedHitPos    -- hitPos
-                                    b[4] = D.cachedHitPart   -- hitPart
-                                    b[5] = D.cachedHitPos    -- partPos
-                                    b[6] = ZERO              -- objspace (centro)
-                                    -- WALLBANG: mueve el origin al lado del target de la pared (LOS clara)
-                                    if D.wallbang and D.cachedOrigin then
-                                        b[1] = D.cachedOrigin
-                                        b[2] = D.cachedOrigin
+                        local mult = D.bulletMult or 1
+                        local swap = D.swapOn and D.cachedHitPart and D.cachedHitPos
+                        if type(bullets) == "table" and (swap or mult > 1) then
+                            -- 1) redirige los existentes al target (silent aim)
+                            if swap then
+                                for i = 1, #bullets do
+                                    local b = bullets[i]
+                                    if type(b) == "table" then
+                                        b[3] = D.cachedHitPos; b[4] = D.cachedHitPart; b[5] = D.cachedHitPos; b[6] = ZERO
+                                        if D.wallbang and D.cachedOrigin then b[1] = D.cachedOrigin; b[2] = D.cachedOrigin end
+                                    end
+                                end
+                            end
+                            -- 2) MULTIPLICADOR: clona el array hasta #bullets*mult (cada clon = bala nueva)
+                            local base = #bullets
+                            if mult > 1 and base > 0 then
+                                for k = 1, base * (mult - 1) do
+                                    local s = bullets[((k - 1) % base) + 1]
+                                    if type(s) == "table" then
+                                        bullets[base + k] = { s[1], s[2], s[3], s[4], s[5], s[6] }
                                     end
                                 end
                             end
