@@ -65,8 +65,8 @@ return function(require, LIP, Lib)
         LIP.spoofFakePos = goCF.Position
 
         if opts.connExploit then
-            if LIP.spoofOn then Spoof.stop(cam) end
-            Spoof.weldTo(goCF)   -- server te ve lejos/alto (solo pos); cuerpo real libre
+            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta desync, mantiene el weld
+            Spoof.weldToPos(goCF.Position)   -- void: sin target → pos absoluta lejana; cuerpo real libre
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos

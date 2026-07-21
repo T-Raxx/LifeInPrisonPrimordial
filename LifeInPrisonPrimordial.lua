@@ -352,20 +352,36 @@ return function(require, LIP, Lib)
 
     local function myRoot() local c = LP.Character; return c and c:FindFirstChild("HumanoidRootPart") end
 
-    -- driver único de restore: tras la replicación, devolver el cuerpo real (compartido Strafe/Void)
+    -- driver único (RenderStepped, compartido Strafe/Void):
+    --  (1) restore del cuerpo real tras la replicación del desync (__index).
+    --  (2) TRACKING del connection weld: connPart sigue al target (o a una pos fija) en RENDER, donde la
+    --      CFrame del target ya está interpolada SUAVE → cero jitter (a diferencia de Heartbeat).
     function Spoof.init()
         Spoof.install()
         if getgenv().__LIP_RESTORE then return end
         getgenv().__LIP_RESTORE = true
         LIP.track(RunService.RenderStepped:Connect(function()
             local D = getgenv().LIP
-            local root = D and D.cachedRoot
+            if not D then return end
+            -- (1) desync restore
+            local root = D.cachedRoot
             if root and root.Parent and D.spoofRestore then
                 pcall(function()
                     root.CFrame = D.spoofRestore
                     if D.spoofVel then root.AssemblyLinearVelocity = D.spoofVel end
                 end)
                 D.spoofRestore = nil
+            end
+            -- (2) connection weld tracking (server te ve en connPart; cuerpo real NUNCA se escribe)
+            if D.connRep and D.connPart then
+                local tr = D.connTargetHRP
+                if tr and tr.Parent then
+                    -- pos del target (suave) + offset de config (radius/height/mode). SIN rotación (identidad)
+                    pcall(function() D.connPart.CFrame = CFrame.new(tr.Position + (D.connOffsetVec or Vector3.zero)) end)
+                elseif D.connStaticPos then
+                    pcall(function() D.connPart.CFrame = CFrame.new(D.connStaticPos) end)
+                end
+                D.spoofFakePos = D.connPart.Position
             end
         end))
     end
@@ -390,26 +406,50 @@ return function(require, LIP, Lib)
         LIP.connPart  = getgenv().__LIP_ConnPart
     end
 
-    -- CONNECTION WELD EXPLOIT: el server replica la pos del root desde PhysicsRepRootPart. Apuntándolo
-    -- a connPart, el server te ve en connPart.CFrame mientras tu CUERPO REAL queda LIBRE (sin escribir
-    -- root.CFrame, sin pelea de física, sin restore). Camina/dispara normal; el server te ve en el weld.
+    -- CONNECTION WELD EXPLOIT: el server replica tu pos desde PhysicsRepRootPart. Apuntándolo a connPart
+    -- (anclado, network-owned por vos), el server te ve en connPart.CFrame mientras tu CUERPO REAL queda
+    -- LIBRE (nunca escribimos root.CFrame → sin pelea de física, sin restore, sin jitter). connPart se
+    -- posiciona en RENDER (Spoof.init loop): pegado al HRP del target + offset = sync PERFECTO.
     local sethidden = sethiddenproperty
-    -- weld a la POSICIÓN (sin rotación): el server te ve en connPart. NO seguir la rotación del jugador/
-    -- órbita → evita jitters no deseados (pedido del usuario).
-    function Spoof.weldTo(goCF)
+    local function armPhysRep()
         local r = myRoot()
-        if r and sethidden and LIP.connPart then
-            pcall(function()
-                LIP.connPart.CFrame = CFrame.new(goCF.Position)   -- solo posición, rotación identidad
-                sethidden(r, "PhysicsRepRootPart", LIP.connPart)
-            end)
+        if r and sethidden and LIP.connPart and not LIP.connRep then
+            pcall(function() sethidden(r, "PhysicsRepRootPart", LIP.connPart) end)
             LIP.connRep = true
         end
+    end
+    -- SOLDAR AL TARGET: el server te ve en target.Position + offsetVec (radius/height/mode). El tracking
+    -- real lo hace el loop de RENDER contra la CFrame SUAVE del target (cero jitter). Coexiste con pos spoof.
+    function Spoof.weldToTarget(targetHRP, offsetVec)
+        if not (targetHRP and targetHRP.Parent) then return end
+        LIP.connTargetHRP = targetHRP
+        LIP.connOffsetVec = offsetVec or Vector3.zero
+        LIP.connStaticPos = nil
+        -- set inmediato (evita 1 frame de connPart viejo antes del render)
+        if LIP.connPart then pcall(function() LIP.connPart.CFrame = CFrame.new(targetHRP.Position + LIP.connOffsetVec) end) end
+        armPhysRep()
+    end
+    -- SOLDAR A UNA POS FIJA (void spam: sin target, pos absoluta lejana). El render mantiene connPart ahí.
+    function Spoof.weldToPos(pos)
+        LIP.connTargetHRP = nil
+        LIP.connStaticPos = pos
+        if LIP.connPart then pcall(function() LIP.connPart.CFrame = CFrame.new(pos) end) end
+        armPhysRep()
     end
     function Spoof.unweld()
         local r = myRoot()
         if r and sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", r) end) end
-        LIP.connRep = false
+        LIP.connRep = false; LIP.connTargetHRP = nil; LIP.connStaticPos = nil; LIP.connOffsetVec = nil
+    end
+    -- corta SOLO el desync __index (restaura el cuerpo real) SIN tocar el connection weld → permite
+    -- la transición desync→conn en el mismo target sin perder el weld (harmonía pedida por el usuario).
+    function Spoof.stopDesyncOnly(cam)
+        if LIP.spoofOn then
+            local r = myRoot()
+            if r and LIP.spoofRealCF then pcall(function() r.CFrame = LIP.spoofRealCF end) end
+        end
+        LIP.spoofOn = false; LIP.spoofRealCF = nil; LIP.spoofRestore = nil; LIP.spoofVel = nil
+        if cam then Spoof.camToChar(cam) end
     end
 
     function Spoof.install()
@@ -606,6 +646,28 @@ return function(require, LIP, Lib)
         end
     end
 
+    -- OFFSET (world-space) para el CONNECTION WELD: pos relativa al target donde el server debe verte
+    -- (radius/height/mode). SIN rotación (identidad) → el server te ve orbitando/detrás del target sin
+    -- jitter de rotación. El render suma esto a target.Position (suave) = sync perfecto al objetivo.
+    local cseed = 0
+    function Strafe.offsetVec(target, opts)
+        local tRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
+        local mode = opts.mode or "Normal"
+        if mode == "Behind" and tRoot then
+            local lv = tRoot.CFrame.LookVector
+            local flat = Vector3.new(lv.X, 0, lv.Z)
+            if flat.Magnitude < 1e-3 then flat = Vector3.new(0, 0, -1) end
+            return -flat.Unit * R + Vector3.new(0, h, 0)
+        elseif mode == "Random" then
+            cseed = cseed + spd * 0.02
+            return Vector3.new(math.noise(cseed,0)*R, h + math.noise(0,cseed)*R*0.4, math.noise(cseed,cseed)*R)
+        else -- Normal: órbita circular alrededor del target
+            cseed = cseed + spd * 0.05
+            return Vector3.new(math.cos(cseed)*R, h, math.sin(cseed)*R)
+        end
+    end
+
     -- LCG para bait (Math.random bloqueado en el executor)
     local brng = 987654321
     local function rnd() brng = (brng * 1103515245 + 12345) % 2147483648; return brng / 2147483648 end
@@ -646,9 +708,14 @@ return function(require, LIP, Lib)
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
         if opts.connExploit then
-            -- CONNECTION WELD: server te ve en connPart (solo posición); cuerpo REAL libre. Caminás/disparás normal.
-            if LIP.spoofOn then Spoof.stop(cam) end
-            Spoof.weldTo(goCF)
+            -- CONNECTION WELD al TARGET: soldamos tu PhysicsRepRootPart pegado al HRP del objetivo + offset
+            -- (radius/height/mode) → el server te ve sincronizado PERFECTO con él, sin jitter (el tracking
+            -- corre en render contra la CFrame suave del target, NO usa resolver/predict). Cuerpo REAL libre.
+            -- Bypassa el orbit/goCF (resolver era la fuente de jitter). Coexiste con pos spoof (harmonía).
+            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta SOLO el desync, mantiene el weld
+            local off = Strafe.offsetVec(target, opts)
+            Spoof.weldToTarget(tRoot, off)
+            LIP.spoofFakePos = tRoot.Position + off
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
@@ -1293,8 +1360,8 @@ return function(require, LIP, Lib)
         LIP.spoofFakePos = goCF.Position
 
         if opts.connExploit then
-            if LIP.spoofOn then Spoof.stop(cam) end
-            Spoof.weldTo(goCF)   -- server te ve lejos/alto (solo pos); cuerpo real libre
+            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta desync, mantiene el weld
+            Spoof.weldToPos(goCF.Position)   -- void: sin target → pos absoluta lejana; cuerpo real libre
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
