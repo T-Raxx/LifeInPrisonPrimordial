@@ -1,21 +1,23 @@
--- Combat/Weapon.lua — FACTORY. Instant reload (op40) + rapid fire (burst op14).
--- GST(): el 3er arg de shoot/reload NO es nil en runtime — es un token real derivado de time()
--- (el stub v56.GST se sobrescribe con u3669 en el init). Reimplementación exacta (agent reverse).
--- El gate de firerate y el delay de reload son 100% CLIENTE → firar op14/op40 directo los saltea.
+-- Combat/Weapon.lua — FACTORY. Auto/Rapid fire (op14) + reload seguro.
+-- CAUSA del unequip (reverse): el server trackea el cargador y valida cadencia via el token GST.
+--   · Mandar más op14 que balas del cargador → disparos sin munición → UNEQUIP.
+--   · op40 instantáneo (reload sin esperar la animación / sin MagDrop) → recarga imposible → UNEQUIP.
+--   · Firar bajo firerate → el token GST(time()) delata el spacing → UNEQUIP.
+-- FIX: contador de balas local (Mag Size) + fire a rate configurable ≥ firerate del arma; reload
+-- via `shared.ReloadCallback()` (el reload legítimo del juego, expuesto L247297, SIN riesgo de unequip).
 return function(require, LIP, Lib)
     local Players    = game:GetService("Players")
     local Workspace  = game:GetService("Workspace")
+    local UIS        = game:GetService("UserInputService")
     local LP = Players.LocalPlayer
     local Weapon = {}
 
     local function O(f) local o = Lib.Options[f]; return o and o.Value end
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
     local function char() return LP.Character end
-    local function firearm()
-        local c = char(); if not c then return nil end
-        return c:FindFirstChildOfClass("Tool")
-    end
+    local function firearm() local c = char(); return c and c:FindFirstChildOfClass("Tool") end  -- equipado (== u3379.Tool)
 
-    -- ── GST(): token {int,int,int} de time() (reimpl exacta del builder u4162) ──
+    -- ── GST(): token {int,int,int} de time() (reimpl exacta de u4162) ──
     local bnot, band, bor = bit32.bnot, bit32.band, bit32.bor
     local lsh, rsh = bit32.lshift, bit32.rshift
     local function GST(t)
@@ -38,17 +40,22 @@ return function(require, LIP, Lib)
     end
     Weapon.GST = GST
 
-    -- ── INSTANT RELOAD (op40): OnReload(Tool, ammoValue, GST()) ──
-    -- ammoValue = magammo absoluto (caso común, arma reserva infinita). Configurable por si el arma
-    -- usa ammocategory (ahí sería delta). Saltea la animación de reload (100% cliente).
-    function Weapon.instantReload()
-        local tool = firearm(); if not tool then return end
-        local mag = O("ReloadAmmo") or 30
-        pcall(function() LIP.fire(40, tool, mag, GST()) end)
-    end
+    -- ── contador de balas local (evita over-fire = unequip) ──
+    local ammo = nil               -- nil = desconocido; se inicia al primer fire con Mag Size
+    local reloading = false
+    local function magSize() return math.floor(O("ReloadAmmo") or 30) end
 
-    -- ── RAPID FIRE: burst de op14 al target cacheado por silent aim (o forward raycast) ──
-    -- bullet = {origin(head), muzzle, hitPos, hitPart, hitPart.Position, objspace}. GST fresco por bala.
+    -- reload SEGURO: usa el callback legítimo del juego (MagDrop+espera+op40, sin unequip)
+    function Weapon.reload()
+        reloading = true
+        local ok = pcall(function() if shared and shared.ReloadCallback then shared.ReloadCallback() end end)
+        ammo = magSize()
+        task.delay(0.1, function() reloading = false end)
+        return ok
+    end
+    Weapon.instantReload = Weapon.reload   -- alias UI
+
+    -- construye el bullet {origin, muzzle, hitPos, hitPart, hitPart.Position, objspace}
     local function buildBullet(hitPart, hitPos)
         local c = char(); local head = c and c:FindFirstChild("Head")
         if not head then return nil end
@@ -57,10 +64,9 @@ return function(require, LIP, Lib)
         local handle = tool and tool:FindFirstChild("Handle")
         local muzzleAtt = handle and handle:FindFirstChild("Muzzle")
         local muzzle = (muzzleAtt and muzzleAtt.WorldPosition) or origin
-        if hitPart then
+        if hitPart and hitPos then
             return { origin, muzzle, hitPos, hitPart, hitPart.Position, hitPart.CFrame:PointToObjectSpace(hitPos) }
         end
-        -- sin target: forward raycast desde cámara
         local cam = Workspace.CurrentCamera
         local dir = cam.CFrame.LookVector * 300
         local rp = RaycastParams.new()
@@ -74,17 +80,42 @@ return function(require, LIP, Lib)
         return { origin, muzzle, cam.CFrame.Position + dir, nil, nil, nil }
     end
 
-    -- dispara una ráfaga (N balas) al target de silent aim si existe. Cada op14 con GST fresco.
+    -- dispara 1 bala op14 al hit dado (con GST fresco). Descuenta ammo. Devuelve true si disparó.
+    local function fireOne(hitPart, hitPos)
+        local tool = firearm(); if not tool then return false end
+        if ammo == nil then ammo = magSize() end
+        if ammo <= 0 then return false end
+        local bullet = buildBullet(hitPart, hitPos)
+        if not bullet then return false end
+        LIP.fire(14, tool, { bullet }, GST())
+        ammo = ammo - 1
+        return true
+    end
+
+    -- rapid fire manual: ráfaga de N al disparar (respeta el contador; si vacía, no fuerza)
     function Weapon.rapidBurst()
-        local tool = firearm(); if not tool then return end
         local n = math.floor(O("RapidCount") or 3)
-        local hitPart = LIP.cachedHitPart      -- lo setea el driver (silent aim precache)
-        local hitPos  = LIP.cachedHitPos
         for _ = 1, n do
-            local bullet = buildBullet(hitPart, hitPos)
-            if bullet then LIP.fire(14, tool, { bullet }, GST()) end
+            if not fireOne(LIP.cachedHitPart, LIP.cachedHitPos) then break end
         end
     end
+
+    -- AUTO/RAPID tick (main Heartbeat): fire a rate al target de silent aim, tracking ammo + reload
+    local lastFire = 0
+    function Weapon.tickAuto()
+        local autoOn  = T("AutoFire")
+        local rapidOn = T("RapidFire") and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+        if not (autoOn or rapidOn) then return end
+        if reloading then return end
+        local now = os.clock()
+        local rate = O("AutoFireRate") or 0.15
+        if now - lastFire < rate then return end
+        if ammo ~= nil and ammo <= 0 then Weapon.reload(); return end
+        if fireOne(LIP.cachedHitPart, LIP.cachedHitPos) then lastFire = now end
+    end
+
+    -- respawn: resetea el contador (el arma nueva viene llena)
+    LP.CharacterAdded:Connect(function() ammo = nil; reloading = false end)
 
     return Weapon
 end
