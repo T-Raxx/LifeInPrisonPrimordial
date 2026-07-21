@@ -43,11 +43,13 @@ return function(require, LIP, Lib)
         --== Col 2: Firepower + Void Spam ==--
         local c2 = RS:AddPanel("Firepower", { Column = 2 })
         c2:AddToggle("RapidFire", { Text = "Rapid Fire", Default = false,
-            Tooltip = "Dispara op14 mientras mantenés mouse1 (al Fire Rate, capeado al firerate real)" })
+            Tooltip = "Stream de op14 mientras mantenés mouse1, al Fire Rate. GST forjado = sin unequip." })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
             Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON." })
-        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 0.03, Max = 1, Default = 0.1, Decimals = 2, Suffix = "s",
-            Tooltip = "Intervalo entre disparos. Se capea al firerate REAL (observado de tus disparos manuales)." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 1, Max = 120, Default = 40, Suffix = "/s",
+            Tooltip = "Disparos por segundo REALES. El GST forjado hace que el server los vea con espaciado legal → sin unequip aunque dispares 120/s." })
+        c2:AddSlider("FakeFirerate", { Text = "Faked Rate", Min = 0.05, Max = 0.5, Default = 0.11, Decimals = 2, Suffix = "s",
+            Tooltip = "Espaciado LEGAL que finge el GST (≥ firerate real del arma). Se auto-usa el firerate observado si recalibrás con un disparo manual." })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })
         c2:AddDivider()
         c2:AddButton("Force Reload", function() Weapon.instantReload() end)

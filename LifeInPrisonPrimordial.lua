@@ -745,13 +745,17 @@ end
 
 end)()
 _MODS["Combat.Weapon"] = (function()
--- Combat/Weapon.lua — FACTORY. Auto/Rapid fire (op14) + reload seguro.
--- CAUSA del unequip (reverse): el server trackea el cargador y valida cadencia via el token GST.
---   · Mandar más op14 que balas del cargador → disparos sin munición → UNEQUIP.
---   · op40 instantáneo (reload sin esperar la animación / sin MagDrop) → recarga imposible → UNEQUIP.
---   · Firar bajo firerate → el token GST(time()) delata el spacing → UNEQUIP.
--- FIX: contador de balas local (Mag Size) + fire a rate configurable ≥ firerate del arma; reload
--- via `shared.ReloadCallback()` (el reload legítimo del juego, expuesto L247297, SIN riesgo de unequip).
+-- Combat/Weapon.lua — FACTORY. Auto/Rapid fire (op14) con GST FORJADO.
+-- CAUSA REAL del unequip (re-reverse v48 + evidencia de cheater rival 100/s):
+--   · El server NO rate-limita por tiempo real, NO gatea por munición (se comprobó: 100 disparos/s
+--     con cualquier arma en flujo constante, sin recargar, sin unequip).
+--   · El GST = obfuscate(time()) del cliente, SIN nonce/secuencia, y acepta CUALQUIER argumento
+--     (u3669 = function(t) return u4162(t or time()) end). El server decodifica el timestamp del GST
+--     y valida el DELTA entre disparos consecutivos ≥ firerate. Mandar GST(time()) REAL a 100/s =
+--     deltas < firerate = UNEQUIP.
+-- FIX (como el rival): forjar el GST con un RELOJ VIRTUAL que avanza por el firerate del arma en cada
+--   disparo → el server ve espaciado legal aunque disparemos 100/s reales → sin unequip, cualquier arma.
+--   Sin gate de munición (el server no la valida). Reload sigue disponible (botón/keybind) por si acaso.
 return function(require, LIP, Lib)
     local Players    = game:GetService("Players")
     local Workspace  = game:GetService("Workspace")
@@ -786,6 +790,25 @@ return function(require, LIP, Lib)
         return { w1, w2, bnot(bor(lsh(w1, 8), rsh(w2, 16))) }
     end
     Weapon.GST = GST
+
+    -- ── GST FORJADO (reloj virtual) ──
+    -- El server valida el DELTA entre timestamps GST consecutivos ≥ firerate. Mantenemos un reloj
+    -- virtual que avanza por `fakeInt` (firerate legal del arma) en CADA disparo, sin importar cuán
+    -- rápido disparemos de verdad → el server ve espaciado legal siempre. Se re-sincroniza a time()
+    -- cuando arranca un stream nuevo (tras idle) para no mandar timestamps del pasado.
+    local function fakeInterval()
+        -- firerate real observado (de tus disparos manuales) o el slider; nunca menos que el mínimo legal
+        return LIP.observedFirerate or O("FakeFirerate") or 0.11
+    end
+    local function nextGST(now)
+        -- resync al arrancar stream (idle > 0.25s) → el reloj parte de "ahora" real
+        if not LIP.gstClock or (now - (LIP._gstReal or 0)) > 0.25 then LIP.gstClock = time() end
+        local g = GST(LIP.gstClock)
+        LIP.gstClock = LIP.gstClock + fakeInterval()   -- avanza SIEMPRE el intervalo legal
+        LIP._gstReal = now
+        return g
+    end
+    Weapon.nextGST = nextGST
 
     -- DETECCIÓN DE CARGADOR POR ARMA: el Net hook captura `magammo` del op40 del reload REAL del juego
     -- (arg2), keyed por nombre de arma → LIP.magByWeapon[name]. Se aprende al recargar 1 vez (R o auto
@@ -863,42 +886,47 @@ return function(require, LIP, Lib)
 
     -- dispara 1 bala op14 al hit dado (con GST fresco). Descuenta ammo. Marca _selfFiring para que
     -- el observador de firerate en Net NO cuente nuestros disparos.
-    local function fireOne(hitPart, hitPos)
+    local function fireOne(hitPart, hitPos, gst)
         local tool = firearm(); if not tool then return false end
         local bullet = buildBullet(hitPart, hitPos)
         if not bullet then return false end
         LIP._selfFiring = true
-        LIP.fire(14, tool, { bullet }, GST())
+        LIP.fire(14, tool, { bullet }, gst or GST())
         LIP._selfFiring = false
-        LIP.shotsFired = (LIP.shotsFired or 0) + 1   -- cuenta acá (fireOne, siempre fresco)
+        LIP.shotsFired = (LIP.shotsFired or 0) + 1
         return true
     end
 
-    -- AUTO/RAPID tick (main Heartbeat): fire al target de silent aim, tracking ammo + reload.
-    -- NUNCA más rápido que el firerate REAL del arma (observado en Net) → evita el unequip por cadencia
-    -- (armas rápidas: el firerate observado ya es bajo, así que no lo excedemos).
-    local lastFire = 0
+    -- AUTO/RAPID tick (main Heartbeat). Stream de op14 con GST FORJADO (reloj virtual = espaciado
+    -- legal) → dispara a `Fire Rate` disparos/s REALES (hasta 120) sin que el server te quite la tool.
+    -- Acumulador desacoplado del Heartbeat (fires-per-frame) → alcanza >60/s aunque el HB corra a 60fps.
+    -- Sin gate de munición (el server no la valida; reload sigue en botón/keybind por si el arma lo pide).
+    local lastTick = 0
     function Weapon.tickAuto()
         local autoOn  = T("AutoFire") and T("TargetStrafe")   -- autofire SOLO con target strafe activo
         local rapidOn = T("RapidFire") and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-        if not (autoOn or rapidOn) then return end
+        if not (autoOn or rapidOn) then LIP.fireAccum = 0; lastTick = 0; return end
         if LIP.reloading then return end
-        -- cargador del SERVER vacío (contamos op14 en Net) → reload inteligente
-        if (LIP.shotsFired or 0) >= magSize() then Weapon.reload(); return end
         local now = os.clock()
-        -- dispara al rate del slider; si conocemos el firerate REAL del arma (observado de tus disparos
-        -- manuales en el Net hook), lo usamos como CAP (no firar más rápido = no unequip). Sin calibrar
-        -- = rate del slider directo.
-        local slider = O("AutoFireRate") or 0.15
-        local minInt = LIP.observedFirerate and math.max(slider, LIP.observedFirerate * 1.02) or slider
-        if now - lastFire < minInt then return end
-        -- guard de RANGO: no firar si el target está fuera de rango (server rechaza = bala perdida)
-        if LIP.cachedHitPos then
+        -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server.
+        if autoOn and LIP.cachedHitPos then
             local h = char() and char():FindFirstChild("Head")
-            local ref = (LIP.wallbang and LIP.cachedOrigin) or (h and h.Position)
-            if ref and (LIP.cachedHitPos - ref).Magnitude > (O("FireRange") or 200) then return end
+            local ref = (LIP.wallbang and LIP.cachedOrigin) or (LIP.spoofOn and LIP.spoofFakePos)
+                        or (LIP.connRep and LIP.spoofFakePos) or (h and h.Position)
+            if ref and (LIP.cachedHitPos - ref).Magnitude > (O("FireRange") or 200) then
+                LIP.fireAccum = 0; lastTick = now; return
+            end
         end
-        if fireOne(LIP.cachedHitPart, LIP.cachedHitPos) then lastFire = now end
+        -- acumulador: rate = disparos/s REALES (desacoplado del framerate)
+        local rate = math.clamp(O("AutoFireRate") or 30, 1, 120)
+        local dt = (lastTick > 0) and math.min(now - lastTick, 0.1) or 0
+        lastTick = now
+        LIP.fireAccum = (LIP.fireAccum or 0) + dt * rate
+        local budget = 0
+        while LIP.fireAccum >= 1 and budget < 8 do   -- cap 8 disparos/frame (anti-lag)
+            LIP.fireAccum = LIP.fireAccum - 1; budget = budget + 1
+            fireOne(LIP.cachedHitPart, LIP.cachedHitPos, nextGST(now))   -- GST FORJADO
+        end
     end
 
     -- respawn: resetea el contador (el arma nueva viene con el cargador lleno)
@@ -1668,11 +1696,13 @@ return function(require, LIP, Lib)
         --== Col 2: Firepower + Void Spam ==--
         local c2 = RS:AddPanel("Firepower", { Column = 2 })
         c2:AddToggle("RapidFire", { Text = "Rapid Fire", Default = false,
-            Tooltip = "Dispara op14 mientras mantenés mouse1 (al Fire Rate, capeado al firerate real)" })
+            Tooltip = "Stream de op14 mientras mantenés mouse1, al Fire Rate. GST forjado = sin unequip." })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
             Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON." })
-        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 0.03, Max = 1, Default = 0.1, Decimals = 2, Suffix = "s",
-            Tooltip = "Intervalo entre disparos. Se capea al firerate REAL (observado de tus disparos manuales)." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 1, Max = 120, Default = 40, Suffix = "/s",
+            Tooltip = "Disparos por segundo REALES. El GST forjado hace que el server los vea con espaciado legal → sin unequip aunque dispares 120/s." })
+        c2:AddSlider("FakeFirerate", { Text = "Faked Rate", Min = 0.05, Max = 0.5, Default = 0.11, Decimals = 2, Suffix = "s",
+            Tooltip = "Espaciado LEGAL que finge el GST (≥ firerate real del arma). Se auto-usa el firerate observado si recalibrás con un disparo manual." })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })
         c2:AddDivider()
         c2:AddButton("Force Reload", function() Weapon.instantReload() end)
