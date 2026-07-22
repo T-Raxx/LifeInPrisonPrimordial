@@ -224,6 +224,25 @@ return function(require, LIP, Lib)
             Tooltip = "0 = SIN LÍMITE" })
         vp2:AddToggle("ESPTeamCheck",   { Text = "Team Check", Default = true })
         vp2:AddToggle("ESPFriendCheck", { Text = "Friend Check", Default = false })
+
+        -- Hit Effects: hitsounds + killsounds + hitmarker (op46 = hit confirmado por el server)
+        local HFX = Vis:AddSection("Hit Effects", "Hit/Kill sounds + hitmarker", { Columns = 2 })
+        local hf1 = HFX:AddPanel("Sounds", { Column = 1 })
+        hf1:AddToggle("HitSound", { Text = "Hit Sound", Default = false, Tooltip = "Suena al confirmar un hit (op46 del server)." })
+        hf1:AddTextBox("HitSoundId", { Text = "Hit Sound ID", Default = "4499400560", Numeric = true,
+            Tooltip = "rbxassetid. Default = click corto. Poné el tuyo." })
+        hf1:AddSlider("HitVol", { Text = "Hit Volume", Min = 0.1, Max = 10, Default = 2, Decimals = 1 })
+        hf1:AddSlider("HitPitch", { Text = "Hit Pitch", Min = 0.5, Max = 3, Default = 1, Decimals = 2 })
+        hf1:AddDivider()
+        hf1:AddToggle("KillSound", { Text = "Kill Sound", Default = false, Tooltip = "Suena al matar (enemigo muere con un hit tuyo reciente)." })
+        hf1:AddTextBox("KillSoundId", { Text = "Kill Sound ID", Default = "8394333801", Numeric = true })
+        hf1:AddSlider("KillVol", { Text = "Kill Volume", Min = 0.1, Max = 10, Default = 3, Decimals = 1 })
+        hf1:AddSlider("KillPitch", { Text = "Kill Pitch", Min = 0.5, Max = 3, Default = 1, Decimals = 2 })
+        local hf2 = HFX:AddPanel("Hitmarker", { Column = 2 })
+        hf2:AddToggle("HitMarker", { Text = "Hitmarker (X)", Default = false, Tooltip = "X en el punto del hit, se desvanece." })
+            :AddColorPicker("HitMarkColor", { Default = Color3.fromRGB(255, 255, 255) })
+        hf2:AddSlider("HitMarkSize", { Text = "Size", Min = 2, Max = 20, Default = 7 })
+        hf2:AddSlider("HitMarkGap", { Text = "Gap", Min = 0, Max = 15, Default = 4 })
     end
 
     return UI

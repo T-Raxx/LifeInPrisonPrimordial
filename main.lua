@@ -19,6 +19,7 @@ return function(require, LIP, Lib)
     local Vehicle = require("Movement.Vehicle")
     local Void    = require("Movement.Void")
     local ESP     = require("Visuals.ESP")
+    local HitFX   = require("Visuals.HitEffects")
     local UI      = require("UI")
 
     local Window = Lib:CreateWindow({ Title = "life in prison", Size = Vector2.new(834, 586) })
@@ -30,6 +31,7 @@ return function(require, LIP, Lib)
     Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
     ESP.init()       -- Visuals
+    HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
 
     -- ANTI-SLEEP (keep-alive del replicador): Roblox pausa la replicación de posición si el assembly
     -- "duerme" (velocity < ~0.05 studs/s) → rompe el desync/spoof. La velocity vieja (0.003) estaba POR
