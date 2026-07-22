@@ -13,6 +13,7 @@ return function(require, LIP, Lib)
         local Void    = require("Movement.Void")
         local Util    = require("Combat.Utility")
         local AutoWeapons = require("Combat.AutoWeapons")
+        local HitFX   = require("Visuals.HitEffects")
 
         --========================= RAGE =========================--
         -- UNA sección con 3 columnas; cajas apiladas (estilo symbol: todas visibles a la vez).
@@ -229,13 +230,16 @@ return function(require, LIP, Lib)
         local HFX = Vis:AddSection("Hit Effects", "Hit/Kill sounds + hitmarker", { Columns = 2 })
         local hf1 = HFX:AddPanel("Sounds", { Column = 1 })
         hf1:AddToggle("HitSound", { Text = "Hit Sound", Default = false, Tooltip = "Suena al confirmar un hit (op46 del server)." })
-        hf1:AddTextBox("HitSoundId", { Text = "Hit Sound ID", Default = "4499400560", Numeric = true,
-            Tooltip = "rbxassetid. Default = click corto. Poné el tuyo." })
+        hf1:AddDropdown("HitSoundName", { Text = "Sound", Values = HitFX.HITNAMES, Default = "Neverlose",
+            Tooltip = "Hitsounds de tu Overkill. (Neverlose Old / Sparkles / Ouch no cargan en LiP.)" })
+        hf1:AddTextBox("HitSoundId", { Text = "Custom ID (opcional)", Default = "", Numeric = true,
+            Tooltip = "rbxassetid propio; si lo ponés, overridea el dropdown." })
         hf1:AddSlider("HitVol", { Text = "Hit Volume", Min = 0.1, Max = 10, Default = 2, Decimals = 1 })
         hf1:AddSlider("HitPitch", { Text = "Hit Pitch", Min = 0.5, Max = 3, Default = 1, Decimals = 2 })
         hf1:AddDivider()
         hf1:AddToggle("KillSound", { Text = "Kill Sound", Default = false, Tooltip = "Suena al matar (enemigo muere con un hit tuyo reciente)." })
-        hf1:AddTextBox("KillSoundId", { Text = "Kill Sound ID", Default = "8394333801", Numeric = true })
+        hf1:AddDropdown("KillSoundName", { Text = "Sound", Values = HitFX.KILLNAMES, Default = "Killsound1" })
+        hf1:AddTextBox("KillSoundId", { Text = "Custom ID (opcional)", Default = "", Numeric = true })
         hf1:AddSlider("KillVol", { Text = "Kill Volume", Min = 0.1, Max = 10, Default = 3, Decimals = 1 })
         hf1:AddSlider("KillPitch", { Text = "Kill Pitch", Min = 0.5, Max = 3, Default = 1, Decimals = 2 })
         local hf2 = HFX:AddPanel("Hitmarker", { Column = 2 })

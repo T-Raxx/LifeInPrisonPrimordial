@@ -1952,6 +1952,25 @@ return function(require, LIP, Lib)
     local function O(f) local o = Lib.Options[f]; return o and o.Value end
     local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
 
+    -- hitsounds/killsounds del script de Overkill del usuario. (En LiP fallan 3: Neverlose Old / Sparkles /
+    -- Ouch → asset-type; el resto carga. Los dejamos igual para que matchee la lista de Overkill.)
+    HE.HITSOUNDS = {
+        Neverlose = "139452805868562", ["Neverlose Old"] = "8679627751", Killsound1 = "75221171330522",
+        ["Rust HS"] = "99796705017337", ["Fortnite HS"] = "132390332380260", Bell = "186809061",
+        Sparkles = "110241936966089", Ouch = "119713732135343", Break = "125409047699942", Skeet = "83717596220569",
+    }
+    HE.HITNAMES  = { "Neverlose", "Rust HS", "Fortnite HS", "Killsound1", "Bell", "Break", "Skeet", "Neverlose Old", "Sparkles", "Ouch" }
+    HE.KILLSOUNDS = { Killsound1 = "75221171330522", ["Rust HS"] = "99796705017337",
+                      ["Fortnite HS"] = "132390332380260", Neverlose = "139452805868562" }
+    HE.KILLNAMES  = { "Killsound1", "Rust HS", "Fortnite HS", "Neverlose" }
+
+    -- resuelve el ID: custom (textbox) si está seteado, si no el nombre elegido en el dropdown.
+    local function resolveId(customFlag, nameFlag, tbl, fallback)
+        local c = O(customFlag)
+        if c and tostring(c) ~= "" and tostring(c) ~= "0" then return c end
+        return tbl[O(nameFlag) or ""] or fallback
+    end
+
     local function playSound(id, vol, pitch)
         id = tostring(id or "")
         if id == "" or id == "0" then return end
@@ -2010,12 +2029,16 @@ return function(require, LIP, Lib)
     end
 
     function HE.hit(worldPos)
-        if T("HitSound") then playSound(O("HitSoundId") or "4499400560", O("HitVol") or 2, O("HitPitch") or 1) end
+        if T("HitSound") then
+            playSound(resolveId("HitSoundId", "HitSoundName", HE.HITSOUNDS, "139452805868562"), O("HitVol") or 2, O("HitPitch") or 1)
+        end
         if T("HitMarker") and worldPos then showHitmarker(worldPos) end
         LIP.lastHitT = os.clock()
     end
     function HE.kill()
-        if T("KillSound") then playSound(O("KillSoundId") or "8394333801", O("KillVol") or 3, O("KillPitch") or 1) end
+        if T("KillSound") then
+            playSound(resolveId("KillSoundId", "KillSoundName", HE.KILLSOUNDS, "75221171330522"), O("KillVol") or 3, O("KillPitch") or 1)
+        end
     end
 
     function HE.init()
@@ -2068,6 +2091,7 @@ return function(require, LIP, Lib)
         local Void    = require("Movement.Void")
         local Util    = require("Combat.Utility")
         local AutoWeapons = require("Combat.AutoWeapons")
+        local HitFX   = require("Visuals.HitEffects")
 
         --========================= RAGE =========================--
         -- UNA sección con 3 columnas; cajas apiladas (estilo symbol: todas visibles a la vez).
@@ -2284,13 +2308,16 @@ return function(require, LIP, Lib)
         local HFX = Vis:AddSection("Hit Effects", "Hit/Kill sounds + hitmarker", { Columns = 2 })
         local hf1 = HFX:AddPanel("Sounds", { Column = 1 })
         hf1:AddToggle("HitSound", { Text = "Hit Sound", Default = false, Tooltip = "Suena al confirmar un hit (op46 del server)." })
-        hf1:AddTextBox("HitSoundId", { Text = "Hit Sound ID", Default = "4499400560", Numeric = true,
-            Tooltip = "rbxassetid. Default = click corto. Poné el tuyo." })
+        hf1:AddDropdown("HitSoundName", { Text = "Sound", Values = HitFX.HITNAMES, Default = "Neverlose",
+            Tooltip = "Hitsounds de tu Overkill. (Neverlose Old / Sparkles / Ouch no cargan en LiP.)" })
+        hf1:AddTextBox("HitSoundId", { Text = "Custom ID (opcional)", Default = "", Numeric = true,
+            Tooltip = "rbxassetid propio; si lo ponés, overridea el dropdown." })
         hf1:AddSlider("HitVol", { Text = "Hit Volume", Min = 0.1, Max = 10, Default = 2, Decimals = 1 })
         hf1:AddSlider("HitPitch", { Text = "Hit Pitch", Min = 0.5, Max = 3, Default = 1, Decimals = 2 })
         hf1:AddDivider()
         hf1:AddToggle("KillSound", { Text = "Kill Sound", Default = false, Tooltip = "Suena al matar (enemigo muere con un hit tuyo reciente)." })
-        hf1:AddTextBox("KillSoundId", { Text = "Kill Sound ID", Default = "8394333801", Numeric = true })
+        hf1:AddDropdown("KillSoundName", { Text = "Sound", Values = HitFX.KILLNAMES, Default = "Killsound1" })
+        hf1:AddTextBox("KillSoundId", { Text = "Custom ID (opcional)", Default = "", Numeric = true })
         hf1:AddSlider("KillVol", { Text = "Kill Volume", Min = 0.1, Max = 10, Default = 3, Decimals = 1 })
         hf1:AddSlider("KillPitch", { Text = "Kill Pitch", Min = 0.5, Max = 3, Default = 1, Decimals = 2 })
         local hf2 = HFX:AddPanel("Hitmarker", { Column = 2 })

@@ -15,6 +15,25 @@ return function(require, LIP, Lib)
     local function O(f) local o = Lib.Options[f]; return o and o.Value end
     local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
 
+    -- hitsounds/killsounds del script de Overkill del usuario. (En LiP fallan 3: Neverlose Old / Sparkles /
+    -- Ouch → asset-type; el resto carga. Los dejamos igual para que matchee la lista de Overkill.)
+    HE.HITSOUNDS = {
+        Neverlose = "139452805868562", ["Neverlose Old"] = "8679627751", Killsound1 = "75221171330522",
+        ["Rust HS"] = "99796705017337", ["Fortnite HS"] = "132390332380260", Bell = "186809061",
+        Sparkles = "110241936966089", Ouch = "119713732135343", Break = "125409047699942", Skeet = "83717596220569",
+    }
+    HE.HITNAMES  = { "Neverlose", "Rust HS", "Fortnite HS", "Killsound1", "Bell", "Break", "Skeet", "Neverlose Old", "Sparkles", "Ouch" }
+    HE.KILLSOUNDS = { Killsound1 = "75221171330522", ["Rust HS"] = "99796705017337",
+                      ["Fortnite HS"] = "132390332380260", Neverlose = "139452805868562" }
+    HE.KILLNAMES  = { "Killsound1", "Rust HS", "Fortnite HS", "Neverlose" }
+
+    -- resuelve el ID: custom (textbox) si está seteado, si no el nombre elegido en el dropdown.
+    local function resolveId(customFlag, nameFlag, tbl, fallback)
+        local c = O(customFlag)
+        if c and tostring(c) ~= "" and tostring(c) ~= "0" then return c end
+        return tbl[O(nameFlag) or ""] or fallback
+    end
+
     local function playSound(id, vol, pitch)
         id = tostring(id or "")
         if id == "" or id == "0" then return end
@@ -73,12 +92,16 @@ return function(require, LIP, Lib)
     end
 
     function HE.hit(worldPos)
-        if T("HitSound") then playSound(O("HitSoundId") or "4499400560", O("HitVol") or 2, O("HitPitch") or 1) end
+        if T("HitSound") then
+            playSound(resolveId("HitSoundId", "HitSoundName", HE.HITSOUNDS, "139452805868562"), O("HitVol") or 2, O("HitPitch") or 1)
+        end
         if T("HitMarker") and worldPos then showHitmarker(worldPos) end
         LIP.lastHitT = os.clock()
     end
     function HE.kill()
-        if T("KillSound") then playSound(O("KillSoundId") or "8394333801", O("KillVol") or 3, O("KillPitch") or 1) end
+        if T("KillSound") then
+            playSound(resolveId("KillSoundId", "KillSoundName", HE.KILLSOUNDS, "75221171330522"), O("KillVol") or 3, O("KillPitch") or 1)
+        end
     end
 
     function HE.init()
