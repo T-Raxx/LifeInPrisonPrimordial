@@ -1313,11 +1313,13 @@ return function(require, LIP, Lib)
     local function T(f)   local t = Lib.Toggles[f]; return t and t.Value end
     local function O(f)   local o = Lib.Options[f];  return o and o.Value end
 
-    ------------------------------------------------------------------ FLY
-    local flyBV, flyBG, flying = nil, nil, false
+    ------------------------------------------------------------------ FLY (por AssemblyLinearVelocity)
+    -- Fly velocity-based: subir/bajar (Space/Shift) y moverse por AssemblyLinearVelocity directo. En hover
+    -- (sin input vertical) sumamos una contra-gravedad (Gravity*dt/2) para no hundirse. Solo un BodyGyro
+    -- para mantener la orientación (mirando la cámara). Mantiene el assembly despierto → no pisa el keep-alive.
+    local flyBG, flying = nil, false
     local function stopFly()
         flying = false
-        if flyBV then pcall(function() flyBV:Destroy() end); flyBV = nil end
         if flyBG then pcall(function() flyBG:Destroy() end); flyBG = nil end
         local h = hum(); if h then pcall(function() h.PlatformStand = false end) end
     end
@@ -1326,21 +1328,16 @@ return function(require, LIP, Lib)
         stopFly()
         flying = true
         local h = hum(); if h then h.PlatformStand = true end
-        flyBV = Instance.new("BodyVelocity")
-        flyBV.MaxForce = Vector3.new(1, 1, 1) * 9e9
-        flyBV.P = 1.25e4
-        flyBV.Velocity = Vector3.zero
-        flyBV.Parent = root
         flyBG = Instance.new("BodyGyro")
         flyBG.MaxTorque = Vector3.new(1, 1, 1) * 9e9
         flyBG.P = 1e4
         flyBG.CFrame = root.CFrame
         flyBG.Parent = root
     end
-    local function updateFly()
+    local function updateFly(dt)
         local root, cam = hrp(), Workspace.CurrentCamera
         if not (root and cam) then return end
-        if not flyBV or flyBV.Parent ~= root then startFly(); return end
+        if not flyBG or flyBG.Parent ~= root then startFly(); return end
         flyBG.CFrame = cam.CFrame
         local dir = Vector3.zero
         if not UIS:GetFocusedTextBox() then
@@ -1352,7 +1349,11 @@ return function(require, LIP, Lib)
             if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.new(0, 1, 0) end
         end
         local speed = O("FlySpeed") or 60
-        flyBV.Velocity = (dir.Magnitude > 0) and (dir.Unit * speed) or Vector3.zero
+        local vel = (dir.Magnitude > 0) and (dir.Unit * speed) or Vector3.zero
+        -- contra-gravedad (frame-rate independiente) → hover estable sin hundirse
+        local gcomp = Workspace.Gravity * (dt or (1/60)) * 0.5
+        root.AssemblyLinearVelocity  = vel + Vector3.new(0, gcomp, 0)
+        root.AssemblyAngularVelocity = Vector3.zero
     end
 
     ------------------------------------------------------------------ NOCLIP
@@ -1389,10 +1390,10 @@ return function(require, LIP, Lib)
     function Move.init()
         LIP.onCleanup(stopFly)
 
-        LIP.track(RunService.RenderStepped:Connect(function()
+        LIP.track(RunService.RenderStepped:Connect(function(dt)
             if T("Fly") then
                 if not flying then startFly() end
-                updateFly()
+                updateFly(dt)
             elseif flying then
                 stopFly()
             end
@@ -2200,15 +2201,17 @@ return function(require, LIP, Lib)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
     ESP.init()       -- Visuals
 
-    -- ANTI-SLEEP: Roblox pausa la replicación de posición si el assembly está QUIETO (rompe el
-    -- desync/spoof). Mantenemos una velocity pasiva mínima (0.003 studs/s hacia arriba) cuando estás
-    -- quieto → el assembly no "duerme" → la posición sigue replicando. Persiste en muerte (lee el
-    -- Character cada frame). Solo aplica cuando estás casi quieto (no pisa caminar/saltar/caer).
+    -- ANTI-SLEEP (keep-alive del replicador): Roblox pausa la replicación de posición si el assembly
+    -- "duerme" (velocity < ~0.05 studs/s) → rompe el desync/spoof. La velocity vieja (0.003) estaba POR
+    -- DEBAJO del umbral → dormía igual. Ahora aplicamos una magnitud CLARAMENTE arriba del umbral (0.6
+    -- studs/s) ALTERNANDO el signo cada frame → nunca duerme, pero el desplazamiento neto ≈ 0 (no derivás).
+    local kaSign = 1
     LIP.track(RunService.Heartbeat:Connect(function()
         local c = LP.Character
         local root = c and c:FindFirstChild("HumanoidRootPart")
-        if root and root.AssemblyLinearVelocity.Magnitude < 0.05 then
-            root.AssemblyLinearVelocity = Vector3.new(0, 0.003, 0)
+        if root and root.AssemblyLinearVelocity.Magnitude < 0.5 then
+            kaSign = -kaSign
+            root.AssemblyLinearVelocity = Vector3.new(0, 0.6 * kaSign, 0)
         end
     end))
 

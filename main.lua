@@ -31,15 +31,17 @@ return function(require, LIP, Lib)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
     ESP.init()       -- Visuals
 
-    -- ANTI-SLEEP: Roblox pausa la replicación de posición si el assembly está QUIETO (rompe el
-    -- desync/spoof). Mantenemos una velocity pasiva mínima (0.003 studs/s hacia arriba) cuando estás
-    -- quieto → el assembly no "duerme" → la posición sigue replicando. Persiste en muerte (lee el
-    -- Character cada frame). Solo aplica cuando estás casi quieto (no pisa caminar/saltar/caer).
+    -- ANTI-SLEEP (keep-alive del replicador): Roblox pausa la replicación de posición si el assembly
+    -- "duerme" (velocity < ~0.05 studs/s) → rompe el desync/spoof. La velocity vieja (0.003) estaba POR
+    -- DEBAJO del umbral → dormía igual. Ahora aplicamos una magnitud CLARAMENTE arriba del umbral (0.6
+    -- studs/s) ALTERNANDO el signo cada frame → nunca duerme, pero el desplazamiento neto ≈ 0 (no derivás).
+    local kaSign = 1
     LIP.track(RunService.Heartbeat:Connect(function()
         local c = LP.Character
         local root = c and c:FindFirstChild("HumanoidRootPart")
-        if root and root.AssemblyLinearVelocity.Magnitude < 0.05 then
-            root.AssemblyLinearVelocity = Vector3.new(0, 0.003, 0)
+        if root and root.AssemblyLinearVelocity.Magnitude < 0.5 then
+            kaSign = -kaSign
+            root.AssemblyLinearVelocity = Vector3.new(0, 0.6 * kaSign, 0)
         end
     end))
 
