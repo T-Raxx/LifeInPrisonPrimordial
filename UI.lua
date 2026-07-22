@@ -30,6 +30,8 @@ return function(require, LIP, Lib)
             Tooltip = "Origin del lado del target de la pared = LOS garantizada (atraviesa paredes)" })
         c1:AddToggle("TeamCheck", { Text = "Team Check", Default = true })
         c1:AddToggle("FriendCheck", { Text = "Friend Check", Default = true })
+        c1:AddToggle("FFCheck", { Text = "ForceField Check", Default = true,
+            Tooltip = "Si el target tiene ForceField (spawn protection) o murió → te escondés (idle) y no disparás hasta que respawnee / se le quite el FF. Ignore temporal." })
 
         local rp = RS:AddPanel("Resolver", { Column = 1 })
         rp:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
@@ -180,7 +182,9 @@ return function(require, LIP, Lib)
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })
         local aw1 = AW:AddPanel("Auto Weapons", { Column = 1 })
         aw1:AddToggle("AutoWeapons", { Text = "Auto Weapons", Default = false,
-            Tooltip = "Teleporta al pickup de un arma seleccionada, la agarra (op12 ReceiveTool) y restaura tu posición. Persiste en muerte. Elegí las armas en la lista →" })
+            Tooltip = "Va al pickup de un arma seleccionada, la agarra (op12 ReceiveTool) y restaura tu posición. Persiste en muerte. Elegí las armas en la lista →" })
+        aw1:AddToggle("AWPosSpoof", { Text = "Pos Spoof", Default = true,
+            Tooltip = "ON = desync (server te ve en el pickup, tu cuerpo REAL se queda = menos riesgo de arresto). OFF = teletransporta el cuerpo real (más visible)." })
         aw1:AddButton("Grab Now", function()
             local wl = Lib.Options.WeaponList
             if wl then AutoWeapons.nextRun = 0; AutoWeapons.tick(wl:GetValue()) end

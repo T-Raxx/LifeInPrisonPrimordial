@@ -486,7 +486,8 @@ return function(require, LIP, Lib)
     end
 
     function Spoof.camToLocal(cam, realCF)
-        if LIP.camAnchor then pcall(function() LIP.camAnchor.CFrame = realCF; cam.CameraSubject = LIP.camAnchor end) end
+        -- ancla la cámara a la pos REAL, subida un poco (+2.5 studs) → mejor visión durante el pos spoof.
+        if LIP.camAnchor then pcall(function() LIP.camAnchor.CFrame = realCF + Vector3.new(0, 2.5, 0); cam.CameraSubject = LIP.camAnchor end) end
     end
     function Spoof.camToChar(cam)
         local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
@@ -910,6 +911,7 @@ return function(require, LIP, Lib)
         if not (autoOn or rapidOn) then LIP.fireAccum = 0; lastTick = 0; return end
         local now = os.clock()
         if LIP.reloading then LIP.fireAccum = 0; lastTick = now; return end
+        if LIP.attackHold then LIP.fireAccum = 0; lastTick = now; return end   -- FF/dead: no disparar
         -- VOID SPAM: pausar disparo mientras estás IN void (solo disparar OUT del void)
         if LIP.voidSpamOn and LIP.voidShootOut and not LIP.voidShootOk then LIP.fireAccum = 0; lastTick = now; return end
         -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server.
@@ -1198,27 +1200,44 @@ return function(require, LIP, Lib)
         return best, bestD
     end
 
-    -- GRAB: teleport rápido al pickup (server te ve ahí = pasa el check ≤8) + op12 + restore. Cámara
-    -- anclada a la pos real. Devuelve true si el pickup desapareció (o el arma entró al inventario).
-    function AutoWeapons.grab(model)
+    -- GRAB: el server te tiene que ver ≤8 studs del pickup. Dos modos:
+    --  · posSpoof (desync): server te ve en el pickup, tu cuerpo REAL se queda (restaurado cada frame por
+    --    el loop de Spoof). NO teletransporta el cuerpo → menos riesgo de arresto. Cámara anclada (subida).
+    --  · teleport (posSpoof=false): mueve el cuerpo real al pickup unos frames (más visible).
+    -- Devuelve true si el pickup desapareció (o el arma entró al inventario).
+    function AutoWeapons.grab(model, posSpoof)
         local root = myRoot(); if not (root and model and model.PrimaryPart) then return false end
         local cam = Workspace.CurrentCamera
         Spoof.ensureParts()
         local realCF = Spoof.trueCF(root)
-        local goPos  = model.PrimaryPart.Position + Vector3.new(0, 3, 0)
+        local goCF   = CFrame.new(model.PrimaryPart.Position + Vector3.new(0, 3, 0))
         local name   = model.Name
-        -- cámara a la pos real (la vista no salta al pickup)
-        Spoof.camToLocal(cam, realCF)
-        -- mantené el cuerpo (server-side) en el pickup unos frames para que replique la posición
+        Spoof.camToLocal(cam, realCF)            -- cámara a la pos real (subida un poco)
+        -- DESYNC (pos spoof, VERIFICADO): escribí el pickup cada Heartbeat + marcá el restore → el loop de
+        -- Spoof devuelve tu cuerpo real cada frame. El server te ve en el pickup (pasa el check ≤8), tu
+        -- cuerpo NO teleporta de verdad = menos riesgo de arresto. (El connection weld NO sirve para el
+        -- check del pickup; el desync sí.) Sin pos spoof = teleport crudo del cuerpo.
         local hold = RunService.Heartbeat:Connect(function()
-            pcall(function() root.CFrame = CFrame.new(goPos); root.AssemblyLinearVelocity = Vector3.zero end)
+            if posSpoof then
+                pcall(function()
+                    LIP.cachedRoot = root; LIP.spoofRealCF = realCF; LIP.spoofOn = true
+                    LIP.spoofRestore = realCF; LIP.spoofVel = Vector3.zero
+                    root.CFrame = goCF
+                end)
+            else
+                pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
+            end
         end)
-        task.wait(0.22)                          -- el server registra la nueva pos
+        task.wait(0.22)                          -- el server registra la pos del pickup
         pcall(function() LIP.fire(12, model) end) -- ReceiveTool(Model) = grab
         task.wait(0.18)
         hold:Disconnect()
-        pcall(function() root.CFrame = realCF; root.AssemblyLinearVelocity = Vector3.zero end)
-        Spoof.camToChar(cam)                     -- cámara de vuelta al personaje
+        if posSpoof then
+            Spoof.stop(cam)                      -- limpia el desync + restaura cuerpo + cámara
+        else
+            pcall(function() root.CFrame = realCF; root.AssemblyLinearVelocity = Vector3.zero end)
+            Spoof.camToChar(cam)
+        end
         task.wait(0.15)
         return (model.Parent == nil) or (AutoWeapons.have({ name }) ~= nil)
     end
@@ -1235,7 +1254,7 @@ return function(require, LIP, Lib)
     -- DRIVER (llamado por main con throttle). Si no tengo ninguna seleccionada, busco pickup y lo agarro.
     AutoWeapons.busy = false
     AutoWeapons.nextRun = 0
-    function AutoWeapons.tick(names)
+    function AutoWeapons.tick(names, posSpoof)
         if AutoWeapons.busy or not names or #names == 0 then return end
         local now = os.clock()
         if now < AutoWeapons.nextRun then return end
@@ -1249,7 +1268,7 @@ return function(require, LIP, Lib)
         AutoWeapons.busy = true
         task.spawn(function()
             local nm = model.Name
-            local ok = AutoWeapons.grab(model)
+            local ok = AutoWeapons.grab(model, posSpoof)
             notify("grab", "Auto Weapons", ok and ("Equipada: " .. nm) or ("Falló grab: " .. nm), 0.5)
             AutoWeapons.nextRun = os.clock() + 0.8
             AutoWeapons.busy = false
@@ -1887,6 +1906,8 @@ return function(require, LIP, Lib)
             Tooltip = "Origin del lado del target de la pared = LOS garantizada (atraviesa paredes)" })
         c1:AddToggle("TeamCheck", { Text = "Team Check", Default = true })
         c1:AddToggle("FriendCheck", { Text = "Friend Check", Default = true })
+        c1:AddToggle("FFCheck", { Text = "ForceField Check", Default = true,
+            Tooltip = "Si el target tiene ForceField (spawn protection) o murió → te escondés (idle) y no disparás hasta que respawnee / se le quite el FF. Ignore temporal." })
 
         local rp = RS:AddPanel("Resolver", { Column = 1 })
         rp:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
@@ -2037,7 +2058,9 @@ return function(require, LIP, Lib)
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })
         local aw1 = AW:AddPanel("Auto Weapons", { Column = 1 })
         aw1:AddToggle("AutoWeapons", { Text = "Auto Weapons", Default = false,
-            Tooltip = "Teleporta al pickup de un arma seleccionada, la agarra (op12 ReceiveTool) y restaura tu posición. Persiste en muerte. Elegí las armas en la lista →" })
+            Tooltip = "Va al pickup de un arma seleccionada, la agarra (op12 ReceiveTool) y restaura tu posición. Persiste en muerte. Elegí las armas en la lista →" })
+        aw1:AddToggle("AWPosSpoof", { Text = "Pos Spoof", Default = true,
+            Tooltip = "ON = desync (server te ve en el pickup, tu cuerpo REAL se queda = menos riesgo de arresto). OFF = teletransporta el cuerpo real (más visible)." })
         aw1:AddButton("Grab Now", function()
             local wl = Lib.Options.WeaponList
             if wl then AutoWeapons.nextRun = 0; AutoWeapons.tick(wl:GetValue()) end
@@ -2218,12 +2241,28 @@ return function(require, LIP, Lib)
         resolveTarget(filters, needAim)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
+        -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
+        -- (idle) y NO atacar hasta que respawnee / se le quite el FF. Ignore TEMPORAL (no prende Idle State).
+        local holdIdle = false
+        if T.FFCheck and T.FFCheck.Value and LIP.target then
+            local tc = LIP.target.Character
+            local th = tc and tc:FindFirstChildOfClass("Humanoid")
+            if (tc and tc:FindFirstChildOfClass("ForceField")) or not (th and th.Health > 0) then holdIdle = true end
+        end
+        LIP.attackHold = holdIdle
+        if holdIdle then LIP.cachedHitPart = nil; LIP.cachedHitPos = nil end
+
         -- ── POSICIÓN: Godmode > Strafe (+VoidSpam) > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
         local connExp  = T.ConnExploit and T.ConnExploit.Value
         if godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
+        elseif holdIdle then
+            -- target protegido/muerto → esconderse temporal (idle anti-aim), sin atacar
+            if LIP.godBase then Godmode.stop() end
+            Void.tick({ dist = O.IdleDist.Value, pattern = O.IdlePattern:GetValue(),
+                        posSpoof = posSpoof, connExploit = connExp })
         elseif strafeOn then
             if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
@@ -2281,7 +2320,7 @@ return function(require, LIP, Lib)
 
         -- auto weapons: recoge armas sueltas del mapa (teleport+grab, pos real restaurada)
         if T.AutoWeapons and T.AutoWeapons.Value and O.WeaponList then
-            AutoWeapons.tick(O.WeaponList:GetValue())
+            AutoWeapons.tick(O.WeaponList:GetValue(), T.AWPosSpoof and T.AWPosSpoof.Value)
         end
 
         -- permanent ragdoll (si no está godmode, que ya maneja el ragdoll)

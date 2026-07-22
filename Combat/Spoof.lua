@@ -138,7 +138,8 @@ return function(require, LIP, Lib)
     end
 
     function Spoof.camToLocal(cam, realCF)
-        if LIP.camAnchor then pcall(function() LIP.camAnchor.CFrame = realCF; cam.CameraSubject = LIP.camAnchor end) end
+        -- ancla la cámara a la pos REAL, subida un poco (+2.5 studs) → mejor visión durante el pos spoof.
+        if LIP.camAnchor then pcall(function() LIP.camAnchor.CFrame = realCF + Vector3.new(0, 2.5, 0); cam.CameraSubject = LIP.camAnchor end) end
     end
     function Spoof.camToChar(cam)
         local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")

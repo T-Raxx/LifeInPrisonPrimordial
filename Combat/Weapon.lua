@@ -153,6 +153,7 @@ return function(require, LIP, Lib)
         if not (autoOn or rapidOn) then LIP.fireAccum = 0; lastTick = 0; return end
         local now = os.clock()
         if LIP.reloading then LIP.fireAccum = 0; lastTick = now; return end
+        if LIP.attackHold then LIP.fireAccum = 0; lastTick = now; return end   -- FF/dead: no disparar
         -- VOID SPAM: pausar disparo mientras estás IN void (solo disparar OUT del void)
         if LIP.voidSpamOn and LIP.voidShootOut and not LIP.voidShootOk then LIP.fireAccum = 0; lastTick = now; return end
         -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server.

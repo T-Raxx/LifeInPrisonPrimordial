@@ -49,27 +49,44 @@ return function(require, LIP, Lib)
         return best, bestD
     end
 
-    -- GRAB: teleport rápido al pickup (server te ve ahí = pasa el check ≤8) + op12 + restore. Cámara
-    -- anclada a la pos real. Devuelve true si el pickup desapareció (o el arma entró al inventario).
-    function AutoWeapons.grab(model)
+    -- GRAB: el server te tiene que ver ≤8 studs del pickup. Dos modos:
+    --  · posSpoof (desync): server te ve en el pickup, tu cuerpo REAL se queda (restaurado cada frame por
+    --    el loop de Spoof). NO teletransporta el cuerpo → menos riesgo de arresto. Cámara anclada (subida).
+    --  · teleport (posSpoof=false): mueve el cuerpo real al pickup unos frames (más visible).
+    -- Devuelve true si el pickup desapareció (o el arma entró al inventario).
+    function AutoWeapons.grab(model, posSpoof)
         local root = myRoot(); if not (root and model and model.PrimaryPart) then return false end
         local cam = Workspace.CurrentCamera
         Spoof.ensureParts()
         local realCF = Spoof.trueCF(root)
-        local goPos  = model.PrimaryPart.Position + Vector3.new(0, 3, 0)
+        local goCF   = CFrame.new(model.PrimaryPart.Position + Vector3.new(0, 3, 0))
         local name   = model.Name
-        -- cámara a la pos real (la vista no salta al pickup)
-        Spoof.camToLocal(cam, realCF)
-        -- mantené el cuerpo (server-side) en el pickup unos frames para que replique la posición
+        Spoof.camToLocal(cam, realCF)            -- cámara a la pos real (subida un poco)
+        -- DESYNC (pos spoof, VERIFICADO): escribí el pickup cada Heartbeat + marcá el restore → el loop de
+        -- Spoof devuelve tu cuerpo real cada frame. El server te ve en el pickup (pasa el check ≤8), tu
+        -- cuerpo NO teleporta de verdad = menos riesgo de arresto. (El connection weld NO sirve para el
+        -- check del pickup; el desync sí.) Sin pos spoof = teleport crudo del cuerpo.
         local hold = RunService.Heartbeat:Connect(function()
-            pcall(function() root.CFrame = CFrame.new(goPos); root.AssemblyLinearVelocity = Vector3.zero end)
+            if posSpoof then
+                pcall(function()
+                    LIP.cachedRoot = root; LIP.spoofRealCF = realCF; LIP.spoofOn = true
+                    LIP.spoofRestore = realCF; LIP.spoofVel = Vector3.zero
+                    root.CFrame = goCF
+                end)
+            else
+                pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
+            end
         end)
-        task.wait(0.22)                          -- el server registra la nueva pos
+        task.wait(0.22)                          -- el server registra la pos del pickup
         pcall(function() LIP.fire(12, model) end) -- ReceiveTool(Model) = grab
         task.wait(0.18)
         hold:Disconnect()
-        pcall(function() root.CFrame = realCF; root.AssemblyLinearVelocity = Vector3.zero end)
-        Spoof.camToChar(cam)                     -- cámara de vuelta al personaje
+        if posSpoof then
+            Spoof.stop(cam)                      -- limpia el desync + restaura cuerpo + cámara
+        else
+            pcall(function() root.CFrame = realCF; root.AssemblyLinearVelocity = Vector3.zero end)
+            Spoof.camToChar(cam)
+        end
         task.wait(0.15)
         return (model.Parent == nil) or (AutoWeapons.have({ name }) ~= nil)
     end
@@ -86,7 +103,7 @@ return function(require, LIP, Lib)
     -- DRIVER (llamado por main con throttle). Si no tengo ninguna seleccionada, busco pickup y lo agarro.
     AutoWeapons.busy = false
     AutoWeapons.nextRun = 0
-    function AutoWeapons.tick(names)
+    function AutoWeapons.tick(names, posSpoof)
         if AutoWeapons.busy or not names or #names == 0 then return end
         local now = os.clock()
         if now < AutoWeapons.nextRun then return end
@@ -100,7 +117,7 @@ return function(require, LIP, Lib)
         AutoWeapons.busy = true
         task.spawn(function()
             local nm = model.Name
-            local ok = AutoWeapons.grab(model)
+            local ok = AutoWeapons.grab(model, posSpoof)
             notify("grab", "Auto Weapons", ok and ("Equipada: " .. nm) or ("Falló grab: " .. nm), 0.5)
             AutoWeapons.nextRun = os.clock() + 0.8
             AutoWeapons.busy = false

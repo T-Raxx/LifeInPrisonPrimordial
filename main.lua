@@ -132,12 +132,28 @@ return function(require, LIP, Lib)
         resolveTarget(filters, needAim)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
+        -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
+        -- (idle) y NO atacar hasta que respawnee / se le quite el FF. Ignore TEMPORAL (no prende Idle State).
+        local holdIdle = false
+        if T.FFCheck and T.FFCheck.Value and LIP.target then
+            local tc = LIP.target.Character
+            local th = tc and tc:FindFirstChildOfClass("Humanoid")
+            if (tc and tc:FindFirstChildOfClass("ForceField")) or not (th and th.Health > 0) then holdIdle = true end
+        end
+        LIP.attackHold = holdIdle
+        if holdIdle then LIP.cachedHitPart = nil; LIP.cachedHitPos = nil end
+
         -- ── POSICIÓN: Godmode > Strafe (+VoidSpam) > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
         local connExp  = T.ConnExploit and T.ConnExploit.Value
         if godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
+        elseif holdIdle then
+            -- target protegido/muerto → esconderse temporal (idle anti-aim), sin atacar
+            if LIP.godBase then Godmode.stop() end
+            Void.tick({ dist = O.IdleDist.Value, pattern = O.IdlePattern:GetValue(),
+                        posSpoof = posSpoof, connExploit = connExp })
         elseif strafeOn then
             if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
@@ -195,7 +211,7 @@ return function(require, LIP, Lib)
 
         -- auto weapons: recoge armas sueltas del mapa (teleport+grab, pos real restaurada)
         if T.AutoWeapons and T.AutoWeapons.Value and O.WeaponList then
-            AutoWeapons.tick(O.WeaponList:GetValue())
+            AutoWeapons.tick(O.WeaponList:GetValue(), T.AWPosSpoof and T.AWPosSpoof.Value)
         end
 
         -- permanent ragdoll (si no está godmode, que ya maneja el ragdoll)
