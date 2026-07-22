@@ -53,8 +53,8 @@ return function(require, LIP, Lib)
             Tooltip = "Stream de op14 mientras mantenés mouse1, CAPEADO al firerate del arma (exceder = unequip). El daño extra viene del Bullet Multiplier, no de disparar más rápido." })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
             Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON. Capeado al firerate." })
-        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 1, Max = 120, Default = 12, Suffix = "/s",
-            Tooltip = "Tope de disparos/s (se capea SIEMPRE al firerate real del arma). El DPS lo da el Bullet Multiplier." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate Cap", Min = 1, Max = 120, Default = 120, Suffix = "/s",
+            Tooltip = "TOPE manual opcional. El autofire ya obedece el firerate REAL del arma (mantené mouse1 1 vez para calibrarlo). Bajá esto solo si querés disparar más lento. El DPS lo da el Bullet Multiplier." })
         c2:AddToggle("AutoReload", { Text = "Auto Reload", Default = true,
             Tooltip = "Recarga sola al agotar el cargador (op42→espera ReloadTime→op40, timing real). Solo en Auto Fire." })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })

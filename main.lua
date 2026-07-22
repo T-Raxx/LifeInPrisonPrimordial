@@ -111,6 +111,12 @@ return function(require, LIP, Lib)
         LIP.wallbang  = T.Wallbang and T.Wallbang.Value or false
         -- bullet multiplier: N pellets por disparo (el Net hook padea el array del op14 del juego/nuestro)
         LIP.bulletMult = (T.MultiFire and T.MultiFire.Value and O.BulletMult and O.BulletMult.Value) or 1
+        -- al CAMBIAR de arma: reset del firerate observado + contador → el autofire re-aprende el firerate nuevo
+        do
+            local et = LP.Character and LP.Character:FindFirstChildOfClass("Tool")
+            local en = et and et.Name
+            if en ~= LIP.curWeapon then LIP.curWeapon = en; LIP.observedFirerate = nil; LIP.shotsFired = 0 end
+        end
         local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
         local cam = Workspace.CurrentCamera
 

@@ -172,11 +172,16 @@ return function(require, LIP, Lib)
         if autoOn and T("AutoReload") ~= false and not LIP.voidSpamOn and (LIP.shotsFired or 0) >= magSize() then
             Weapon.reload(); LIP.fireAccum = 0; lastTick = now; return
         end
-        -- CAP al firerate REAL del arma (exceder = unequip). observedFirerate = seg/disparo (de tus disparos
-        -- manuales); sin calibrar = cap conservador 9/s. El multiplier compensa el rate bajo con más pellets.
-        local userRate = math.clamp(O("AutoFireRate") or 12, 1, 120)
-        local capRate  = LIP.observedFirerate and (1 / LIP.observedFirerate) or 9
-        local rate = math.min(userRate, capRate)
+        -- OBEDECE el firerate REAL del arma equipada. observedFirerate = seg/disparo, aprendido en Net de
+        -- los disparos del JUEGO (mantené mouse1 1 vez para calibrar). Disparamos AL firerate con 3% de
+        -- margen (nunca exceder = no unequip). Sin calibrar = rate seguro 8/s. AutoFireRate = tope manual.
+        local rate
+        if LIP.observedFirerate and LIP.observedFirerate > 0.01 then
+            rate = 1 / (LIP.observedFirerate * 1.03)
+        else
+            rate = 8
+        end
+        rate = math.min(rate, O("AutoFireRate") or 120)
         local dt = (lastTick > 0) and math.min(now - lastTick, 0.1) or 0
         lastTick = now
         LIP.fireAccum = (LIP.fireAccum or 0) + dt * rate

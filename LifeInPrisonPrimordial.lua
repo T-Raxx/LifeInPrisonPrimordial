@@ -930,11 +930,16 @@ return function(require, LIP, Lib)
         if autoOn and T("AutoReload") ~= false and not LIP.voidSpamOn and (LIP.shotsFired or 0) >= magSize() then
             Weapon.reload(); LIP.fireAccum = 0; lastTick = now; return
         end
-        -- CAP al firerate REAL del arma (exceder = unequip). observedFirerate = seg/disparo (de tus disparos
-        -- manuales); sin calibrar = cap conservador 9/s. El multiplier compensa el rate bajo con más pellets.
-        local userRate = math.clamp(O("AutoFireRate") or 12, 1, 120)
-        local capRate  = LIP.observedFirerate and (1 / LIP.observedFirerate) or 9
-        local rate = math.min(userRate, capRate)
+        -- OBEDECE el firerate REAL del arma equipada. observedFirerate = seg/disparo, aprendido en Net de
+        -- los disparos del JUEGO (mantené mouse1 1 vez para calibrar). Disparamos AL firerate con 3% de
+        -- margen (nunca exceder = no unequip). Sin calibrar = rate seguro 8/s. AutoFireRate = tope manual.
+        local rate
+        if LIP.observedFirerate and LIP.observedFirerate > 0.01 then
+            rate = 1 / (LIP.observedFirerate * 1.03)
+        else
+            rate = 8
+        end
+        rate = math.min(rate, O("AutoFireRate") or 120)
         local dt = (lastTick > 0) and math.min(now - lastTick, 0.1) or 0
         lastTick = now
         LIP.fireAccum = (LIP.fireAccum or 0) + dt * rate
@@ -1932,8 +1937,8 @@ return function(require, LIP, Lib)
             Tooltip = "Stream de op14 mientras mantenés mouse1, CAPEADO al firerate del arma (exceder = unequip). El daño extra viene del Bullet Multiplier, no de disparar más rápido." })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
             Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON. Capeado al firerate." })
-        c2:AddSlider("AutoFireRate", { Text = "Fire Rate", Min = 1, Max = 120, Default = 12, Suffix = "/s",
-            Tooltip = "Tope de disparos/s (se capea SIEMPRE al firerate real del arma). El DPS lo da el Bullet Multiplier." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate Cap", Min = 1, Max = 120, Default = 120, Suffix = "/s",
+            Tooltip = "TOPE manual opcional. El autofire ya obedece el firerate REAL del arma (mantené mouse1 1 vez para calibrarlo). Bajá esto solo si querés disparar más lento. El DPS lo da el Bullet Multiplier." })
         c2:AddToggle("AutoReload", { Text = "Auto Reload", Default = true,
             Tooltip = "Recarga sola al agotar el cargador (op42→espera ReloadTime→op40, timing real). Solo en Auto Fire." })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })
@@ -2223,6 +2228,12 @@ return function(require, LIP, Lib)
         LIP.wallbang  = T.Wallbang and T.Wallbang.Value or false
         -- bullet multiplier: N pellets por disparo (el Net hook padea el array del op14 del juego/nuestro)
         LIP.bulletMult = (T.MultiFire and T.MultiFire.Value and O.BulletMult and O.BulletMult.Value) or 1
+        -- al CAMBIAR de arma: reset del firerate observado + contador → el autofire re-aprende el firerate nuevo
+        do
+            local et = LP.Character and LP.Character:FindFirstChildOfClass("Tool")
+            local en = et and et.Name
+            if en ~= LIP.curWeapon then LIP.curWeapon = en; LIP.observedFirerate = nil; LIP.shotsFired = 0 end
+        end
         local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
         local cam = Workspace.CurrentCamera
 
