@@ -108,21 +108,36 @@ return function(require, LIP, Lib)
         -- HIT/KILL por CORRELACIÓN (como Overkill): TU disparo (LIP.lastShotT, seteado en Net por cada op14)
         -- + el enemigo pierde vida / muere en la ventana → hit/kill. El hitmarker del server (op36 entrante)
         -- es un broadcast global de TODOS los jugadores, no aislable; esto es robusto y solo tuyo.
+        -- ¿le estoy pegando YO? = es mi target de silent aim/autofire, o le estoy apuntando (mira <12°).
+        -- Filtra los falsos positivos del daño que le hacen OTROS jugadores al mismo enemigo.
+        local function aimingAt(char)
+            if LIP.target and LIP.target.Character == char then return true end
+            local part = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+            if not part then return false end
+            local cam = Workspace.CurrentCamera
+            local dir = part.Position - cam.CFrame.Position
+            if dir.Magnitude < 2 then return true end
+            local ang = math.deg(math.acos(math.clamp(cam.CFrame.LookVector:Dot(dir.Unit), -1, 1)))
+            return ang < 12
+        end
         local function hookChar(plr, char)
             local h = char and char:FindFirstChildOfClass("Humanoid")
             if not h then return end
             local last = h.Health
-            local function enemy() return not (LP.Team and plr.Team == LP.Team) end
+            local function mine() return not (LP.Team and plr.Team == LP.Team)
+                and LIP.lastShotT and (os.clock() - LIP.lastShotT) < 0.3 and aimingAt(char) end
             LIP.track(h.HealthChanged:Connect(function(hp)
                 local dropped = hp < (last - 0.5)
                 last = hp
-                if dropped and enemy() and LIP.lastShotT and (os.clock() - LIP.lastShotT) < 0.6 then
+                if dropped and mine() then
                     local part = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
                     HE.hit(part and part.Position or nil)
                 end
             end))
             LIP.track(h.Died:Connect(function()
-                if enemy() and LIP.lastShotT and (os.clock() - LIP.lastShotT) < 1.5 then HE.kill() end
+                -- kill: enemigo muere apuntándole vos con un disparo reciente (ventana un toque más amplia)
+                if not (LP.Team and plr.Team == LP.Team) and LIP.lastShotT
+                   and (os.clock() - LIP.lastShotT) < 1.0 and aimingAt(char) then HE.kill() end
             end))
         end
         local function watch(plr)

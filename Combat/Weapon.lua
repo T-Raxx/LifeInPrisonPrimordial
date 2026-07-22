@@ -175,9 +175,12 @@ return function(require, LIP, Lib)
         -- OBEDECE el firerate REAL del arma equipada. observedFirerate = seg/disparo, aprendido en Net de
         -- los disparos del JUEGO (mantené mouse1 1 vez para calibrar). Disparamos AL firerate con 3% de
         -- margen (nunca exceder = no unequip). Sin calibrar = rate seguro 8/s. AutoFireRate = tope manual.
+        -- AUTOFIRE: NO disparar sin un target válido cacheado → si no, buildBullet raycastea la cámara y
+        -- salen balas al vacío (tracers rojos = no registran). RapidFire (mouse1) sí dispara a la mira.
+        if autoOn and not rapidOn and not LIP.cachedHitPart then LIP.fireAccum = 0; lastTick = now; return end
         local rate
         if LIP.observedFirerate and LIP.observedFirerate > 0.01 then
-            rate = 1 / (LIP.observedFirerate * 1.03)
+            rate = 1 / (LIP.observedFirerate * 0.99)
         else
             rate = 8
         end
