@@ -72,7 +72,9 @@ return function(require, LIP, Lib)
         if LIP.reloading then return end
         local tool = firearm(); if not tool then return end
         local mag = magSize()
-        local rt  = O("ReloadTime") or 1.2
+        -- duración REAL de la anim de recarga (observada del reload del juego en Net) → el op40 matchea =
+        -- el server rellena la munición (si es muy temprano/tarde, rechaza = balas rojas después). Fallback slider.
+        local rt  = LIP.observedReloadTime or O("ReloadTime") or 1.2
         LIP.reloading = true
         LIP._selfReload = true               -- Net NO captura magammo de nuestros op40
         LIP._lastReloadReal = os.clock()
@@ -91,7 +93,9 @@ return function(require, LIP, Lib)
                 local t2 = firearm() or tool
                 pcall(function() LIP.fire(40, t2, mag, GST()) end)
             end
-            LIP._selfReload = false; LIP.shotsFired = 0; LIP.reloading = false
+            LIP._selfReload = false; LIP.shotsFired = 0
+            task.wait(0.12)          -- que el op40 registre server-side antes de reanudar (evita balas rojas)
+            LIP.reloading = false
         end)
     end
     Weapon.instantReload = Weapon.reload   -- alias UI (botón "Force Reload")

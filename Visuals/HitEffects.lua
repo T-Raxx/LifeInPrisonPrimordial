@@ -34,18 +34,33 @@ return function(require, LIP, Lib)
         return tbl[O(nameFlag) or ""] or fallback
     end
 
+    -- cache de Sounds base (precargados, parented a SoundService) → clonar + Play = suena instantáneo y
+    -- confiable (PlayLocalSound puede estar bloqueado/silenciado en algunos executors).
+    local soundCache = {}
+    local function getBase(id)
+        if soundCache[id] then return soundCache[id] end
+        local s = Instance.new("Sound")
+        s.SoundId = id:find("rbxassetid") and id or ("rbxassetid://" .. id)
+        s.Parent = SoundService
+        soundCache[id] = s
+        return s
+    end
     local function playSound(id, vol, pitch)
         id = tostring(id or "")
         if id == "" or id == "0" then return end
-        local s = Instance.new("Sound")
-        s.SoundId    = id:find("rbxassetid") and id or ("rbxassetid://" .. id)
-        s.Volume     = vol or 2
+        local base = getBase(id)
+        local s = base:Clone()
+        s.Volume = vol or 3
         s.PlaybackSpeed = pitch or 1
-        s.Parent     = SoundService
-        local ok = pcall(function() SoundService:PlayLocalSound(s) end)
-        if not ok then pcall(function() s.Parent = LP:FindFirstChildOfClass("PlayerGui") or Workspace; s:Play() end) end
-        Debris:AddItem(s, 5)
+        s.Parent = SoundService
+        pcall(function() s:Play() end)
+        pcall(function() SoundService:PlayLocalSound(s) end)   -- fallback por si el Play parented no suena
+        Debris:AddItem(s, 6)
     end
+    HE.playSound = playSound
+    -- test: reproduce el hitsound seleccionado (para aislar sonido de detección)
+    function HE.testHit() playSound(resolveId("HitSoundId", "HitSoundName", HE.HITSOUNDS, "139452805868562"), O("HitVol") or 3, O("HitPitch") or 1) end
+    function HE.testKill() playSound(resolveId("KillSoundId", "KillSoundName", HE.KILLSOUNDS, "75221171330522"), O("KillVol") or 3, O("KillPitch") or 1) end
 
     -- ── HITMARKER (pool de X de 4 líneas Drawing, fade) ──
     local FADE = 0.45

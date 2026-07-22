@@ -39,12 +39,20 @@ return function(require, LIP, Lib)
                         end
                         D._lastRealShot = now
                     end
-                    -- DETECCIÓN de cargador: capturamos magammo del op40 del reload REAL del juego (no el nuestro)
+                    -- DETECCIÓN de cargador + TIEMPO DE RELOAD del juego (op42 MagDrop → op40 OnReload):
+                    -- el delta = la duración real de la anim de recarga → la usamos para que nuestro auto-reload
+                    -- matchee (op40 muy temprano/tarde = server rechaza = munición no se rellena = balas rojas).
+                    if op == 42 and not D._selfReload then D._magDropT = os.clock() end
                     if op == 40 and not D._selfReload then
                         local mag, wtool = p[3], p[2]
                         if type(mag) == "number" and mag >= 2 and mag <= 200 and typeof(wtool) == "Instance" then
                             D.magByWeapon = D.magByWeapon or {}
                             D.magByWeapon[wtool.Name] = mag
+                        end
+                        if D._magDropT then
+                            local rt = os.clock() - D._magDropT
+                            if rt > 0.3 and rt < 6 then D.observedReloadTime = rt end
+                            D._magDropT = nil
                         end
                     end
                     -- op14: SILENT AIM (redirige al target) + BULLET MULTIPLIER (padea el array a N pellets).

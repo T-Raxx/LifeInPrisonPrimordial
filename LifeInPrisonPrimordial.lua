@@ -100,12 +100,20 @@ return function(require, LIP, Lib)
                         end
                         D._lastRealShot = now
                     end
-                    -- DETECCIÓN de cargador: capturamos magammo del op40 del reload REAL del juego (no el nuestro)
+                    -- DETECCIÓN de cargador + TIEMPO DE RELOAD del juego (op42 MagDrop → op40 OnReload):
+                    -- el delta = la duración real de la anim de recarga → la usamos para que nuestro auto-reload
+                    -- matchee (op40 muy temprano/tarde = server rechaza = munición no se rellena = balas rojas).
+                    if op == 42 and not D._selfReload then D._magDropT = os.clock() end
                     if op == 40 and not D._selfReload then
                         local mag, wtool = p[3], p[2]
                         if type(mag) == "number" and mag >= 2 and mag <= 200 and typeof(wtool) == "Instance" then
                             D.magByWeapon = D.magByWeapon or {}
                             D.magByWeapon[wtool.Name] = mag
+                        end
+                        if D._magDropT then
+                            local rt = os.clock() - D._magDropT
+                            if rt > 0.3 and rt < 6 then D.observedReloadTime = rt end
+                            D._magDropT = nil
                         end
                     end
                     -- op14: SILENT AIM (redirige al target) + BULLET MULTIPLIER (padea el array a N pellets).
@@ -833,7 +841,9 @@ return function(require, LIP, Lib)
         if LIP.reloading then return end
         local tool = firearm(); if not tool then return end
         local mag = magSize()
-        local rt  = O("ReloadTime") or 1.2
+        -- duración REAL de la anim de recarga (observada del reload del juego en Net) → el op40 matchea =
+        -- el server rellena la munición (si es muy temprano/tarde, rechaza = balas rojas después). Fallback slider.
+        local rt  = LIP.observedReloadTime or O("ReloadTime") or 1.2
         LIP.reloading = true
         LIP._selfReload = true               -- Net NO captura magammo de nuestros op40
         LIP._lastReloadReal = os.clock()
@@ -852,7 +862,9 @@ return function(require, LIP, Lib)
                 local t2 = firearm() or tool
                 pcall(function() LIP.fire(40, t2, mag, GST()) end)
             end
-            LIP._selfReload = false; LIP.shotsFired = 0; LIP.reloading = false
+            LIP._selfReload = false; LIP.shotsFired = 0
+            task.wait(0.12)          -- que el op40 registre server-side antes de reanudar (evita balas rojas)
+            LIP.reloading = false
         end)
     end
     Weapon.instantReload = Weapon.reload   -- alias UI (botón "Force Reload")
@@ -1977,18 +1989,33 @@ return function(require, LIP, Lib)
         return tbl[O(nameFlag) or ""] or fallback
     end
 
+    -- cache de Sounds base (precargados, parented a SoundService) → clonar + Play = suena instantáneo y
+    -- confiable (PlayLocalSound puede estar bloqueado/silenciado en algunos executors).
+    local soundCache = {}
+    local function getBase(id)
+        if soundCache[id] then return soundCache[id] end
+        local s = Instance.new("Sound")
+        s.SoundId = id:find("rbxassetid") and id or ("rbxassetid://" .. id)
+        s.Parent = SoundService
+        soundCache[id] = s
+        return s
+    end
     local function playSound(id, vol, pitch)
         id = tostring(id or "")
         if id == "" or id == "0" then return end
-        local s = Instance.new("Sound")
-        s.SoundId    = id:find("rbxassetid") and id or ("rbxassetid://" .. id)
-        s.Volume     = vol or 2
+        local base = getBase(id)
+        local s = base:Clone()
+        s.Volume = vol or 3
         s.PlaybackSpeed = pitch or 1
-        s.Parent     = SoundService
-        local ok = pcall(function() SoundService:PlayLocalSound(s) end)
-        if not ok then pcall(function() s.Parent = LP:FindFirstChildOfClass("PlayerGui") or Workspace; s:Play() end) end
-        Debris:AddItem(s, 5)
+        s.Parent = SoundService
+        pcall(function() s:Play() end)
+        pcall(function() SoundService:PlayLocalSound(s) end)   -- fallback por si el Play parented no suena
+        Debris:AddItem(s, 6)
     end
+    HE.playSound = playSound
+    -- test: reproduce el hitsound seleccionado (para aislar sonido de detección)
+    function HE.testHit() playSound(resolveId("HitSoundId", "HitSoundName", HE.HITSOUNDS, "139452805868562"), O("HitVol") or 3, O("HitPitch") or 1) end
+    function HE.testKill() playSound(resolveId("KillSoundId", "KillSoundName", HE.KILLSOUNDS, "75221171330522"), O("KillVol") or 3, O("KillPitch") or 1) end
 
     -- ── HITMARKER (pool de X de 4 líneas Drawing, fade) ──
     local FADE = 0.45
@@ -2345,6 +2372,9 @@ return function(require, LIP, Lib)
         hf1:AddTextBox("KillSoundId", { Text = "Custom ID (opcional)", Default = "", Numeric = true })
         hf1:AddSlider("KillVol", { Text = "Kill Volume", Min = 0.1, Max = 10, Default = 3, Decimals = 1 })
         hf1:AddSlider("KillPitch", { Text = "Kill Pitch", Min = 0.5, Max = 3, Default = 1, Decimals = 2 })
+        hf1:AddDivider()
+        hf1:AddButton("Test Hit", function() HitFX.testHit() end)
+        hf1:AddButton("Test Kill", function() HitFX.testKill() end)
         local hf2 = HFX:AddPanel("Hitmarker", { Column = 2 })
         hf2:AddToggle("HitMarker", { Text = "Hitmarker (X)", Default = false, Tooltip = "X en el punto del hit, se desvanece." })
             :AddColorPicker("HitMarkColor", { Default = Color3.fromRGB(255, 255, 255) })
