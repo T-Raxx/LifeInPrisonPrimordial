@@ -1664,20 +1664,56 @@ return function(require, LIP, Lib)
         if tracer then tracer.Visible = false end
         if dot then dot.Visible = false end
     end
+    -- ── SIMULACIÓN DE REPLICACIÓN (puramente visual) ──────────────────────────
+    -- El indicador NO muestra la pos spoofeada cruda, sino cómo la VEN los demás: demorada por tu ping y
+    -- refrescada a ~16hz (como replica Roblox los characters), con suavizado (lerp). Así el icono/tracer
+    -- reflejan la posición real que percibe el server/enemigos, no la instantánea.
+    local vizHist = {}          -- { {t=clock, pos=V3}, ... }
+    local vizShown              -- pos mostrada (suavizada)
+    local vizNext16, vizTarget = 0, nil
+    local function delayedPos(now, delay)
+        local tt = now - delay
+        for i = #vizHist, 2, -1 do
+            if vizHist[i-1].t <= tt then
+                local a, b = vizHist[i-1], vizHist[i]
+                local span = b.t - a.t
+                local f = (span > 0) and math.clamp((tt - a.t) / span, 0, 1) or 0
+                return a.pos:Lerp(b.pos, f)
+            end
+        end
+        return vizHist[1] and vizHist[1].pos
+    end
     local function updateViz()
         -- viz cuando hay pos spoofeada por CUALQUIER método (desync spoofOn o connection weld connRep)
-        if not (T("VoidViz") and (LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos) then return hideViz() end
+        if not (T("VoidViz") and (LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos) then
+            vizHist = {}; vizShown = nil; vizTarget = nil; return hideViz()
+        end
         ensureViz()
+        local now = os.clock()
+        -- 1) samplear la pos spoofeada real al historial (~2s)
+        vizHist[#vizHist+1] = { t = now, pos = LIP.spoofFakePos }
+        while #vizHist > 140 do table.remove(vizHist, 1) end
+        -- 2) ping actual = delay de replicación
+        local ping = 0.1
+        pcall(function() ping = math.clamp(game:GetService("Players").LocalPlayer:GetNetworkPing(), 0, 0.6) end)
+        -- 3) update rate ~16hz: cada 1/16s tomá la pos DEMORADA por el ping
+        if now >= vizNext16 then
+            vizNext16 = now + (1/16)
+            vizTarget = delayedPos(now, ping) or LIP.spoofFakePos
+        end
+        vizTarget = vizTarget or LIP.spoofFakePos
+        -- 4) suavizado hacia el target
+        vizShown = vizShown and vizShown:Lerp(vizTarget, 0.28) or vizTarget
+        -- render
         local c = O("VizColor") or Color3.fromRGB(202,151,161)
-        local pos = LIP.spoofFakePos
-        vizPart.Transparency = 0.3; vizPart.Position = pos; vizPart.Color = c; vizBillboard.Enabled = true
+        vizPart.Transparency = 0.3; vizPart.Position = vizShown; vizPart.Color = c; vizBillboard.Enabled = true
         if vizBillboard:FindFirstChildOfClass("TextLabel") then vizBillboard:FindFirstChildOfClass("TextLabel").TextColor3 = c end
         tracer.Color = c; dot.Color = c
         local cam = Workspace.CurrentCamera
-        local sp, on = cam:WorldToViewportPoint(pos)
+        local sp, on = cam:WorldToViewportPoint(vizShown)
         if on then
             local vp = cam.ViewportSize
-            tracer.From = Vector2.new(vp.X/2, vp.Y); tracer.To = Vector2.new(sp.X, sp.Y); tracer.Visible = true
+            tracer.From = Vector2.new(vp.X/2, vp.Y/2); tracer.To = Vector2.new(sp.X, sp.Y); tracer.Visible = true   -- desde el CENTRO
             dot.Position = Vector2.new(sp.X, sp.Y); dot.Visible = true
         else tracer.Visible = false; dot.Visible = false end
     end
