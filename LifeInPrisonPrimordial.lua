@@ -912,6 +912,7 @@ return function(require, LIP, Lib)
         local now = os.clock()
         if LIP.reloading then LIP.fireAccum = 0; lastTick = now; return end
         if LIP.attackHold then LIP.fireAccum = 0; lastTick = now; return end   -- FF/dead: no disparar
+        if LIP.awGrabbing then LIP.fireAccum = 0; lastTick = now; return end   -- AutoWeapons grabbing: pausar
         -- VOID SPAM: pausar disparo mientras estás IN void (solo disparar OUT del void)
         if LIP.voidSpamOn and LIP.voidShootOut and not LIP.voidShootOk then LIP.fireAccum = 0; lastTick = now; return end
         -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server.
@@ -1208,6 +1209,7 @@ return function(require, LIP, Lib)
     function AutoWeapons.grab(model, posSpoof)
         local root = myRoot(); if not (root and model and model.PrimaryPart) then return false end
         local cam = Workspace.CurrentCamera
+        LIP.awGrabbing = true    -- pausa el position chain + fire del main (no pisar el desync del grab)
         Spoof.ensureParts()
         local realCF = Spoof.trueCF(root)
         local goCF   = CFrame.new(model.PrimaryPart.Position + Vector3.new(0, 3, 0))
@@ -1238,6 +1240,7 @@ return function(require, LIP, Lib)
             pcall(function() root.CFrame = realCF; root.AssemblyLinearVelocity = Vector3.zero end)
             Spoof.camToChar(cam)
         end
+        LIP.awGrabbing = false
         task.wait(0.15)
         return (model.Parent == nil) or (AutoWeapons.have({ name }) ~= nil)
     end
@@ -2242,9 +2245,10 @@ return function(require, LIP, Lib)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
         -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
-        -- (idle) y NO atacar hasta que respawnee / se le quite el FF. Ignore TEMPORAL (no prende Idle State).
+        -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO en combate activo (strafe/autofire)
+        -- → al apagar Target Strafe el idle se quita. Ignore TEMPORAL (no prende Idle State).
         local holdIdle = false
-        if T.FFCheck and T.FFCheck.Value and LIP.target then
+        if T.FFCheck and T.FFCheck.Value and (strafeOn or autoOn) and LIP.target then
             local tc = LIP.target.Character
             local th = tc and tc:FindFirstChildOfClass("Humanoid")
             if (tc and tc:FindFirstChildOfClass("ForceField")) or not (th and th.Health > 0) then holdIdle = true end
@@ -2255,7 +2259,9 @@ return function(require, LIP, Lib)
         -- ── POSICIÓN: Godmode > Strafe (+VoidSpam) > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
         local connExp  = T.ConnExploit and T.ConnExploit.Value
-        if godOn then
+        if LIP.awGrabbing then
+            -- AutoWeapons está agarrando (controla su propio desync) → no tocar la posición ni disparar
+        elseif godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
         elseif holdIdle then

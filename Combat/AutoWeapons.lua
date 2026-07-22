@@ -57,6 +57,7 @@ return function(require, LIP, Lib)
     function AutoWeapons.grab(model, posSpoof)
         local root = myRoot(); if not (root and model and model.PrimaryPart) then return false end
         local cam = Workspace.CurrentCamera
+        LIP.awGrabbing = true    -- pausa el position chain + fire del main (no pisar el desync del grab)
         Spoof.ensureParts()
         local realCF = Spoof.trueCF(root)
         local goCF   = CFrame.new(model.PrimaryPart.Position + Vector3.new(0, 3, 0))
@@ -87,6 +88,7 @@ return function(require, LIP, Lib)
             pcall(function() root.CFrame = realCF; root.AssemblyLinearVelocity = Vector3.zero end)
             Spoof.camToChar(cam)
         end
+        LIP.awGrabbing = false
         task.wait(0.15)
         return (model.Parent == nil) or (AutoWeapons.have({ name }) ~= nil)
     end

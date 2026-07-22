@@ -133,9 +133,10 @@ return function(require, LIP, Lib)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
         -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
-        -- (idle) y NO atacar hasta que respawnee / se le quite el FF. Ignore TEMPORAL (no prende Idle State).
+        -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO en combate activo (strafe/autofire)
+        -- → al apagar Target Strafe el idle se quita. Ignore TEMPORAL (no prende Idle State).
         local holdIdle = false
-        if T.FFCheck and T.FFCheck.Value and LIP.target then
+        if T.FFCheck and T.FFCheck.Value and (strafeOn or autoOn) and LIP.target then
             local tc = LIP.target.Character
             local th = tc and tc:FindFirstChildOfClass("Humanoid")
             if (tc and tc:FindFirstChildOfClass("ForceField")) or not (th and th.Health > 0) then holdIdle = true end
@@ -146,7 +147,9 @@ return function(require, LIP, Lib)
         -- ── POSICIÓN: Godmode > Strafe (+VoidSpam) > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
         local connExp  = T.ConnExploit and T.ConnExploit.Value
-        if godOn then
+        if LIP.awGrabbing then
+            -- AutoWeapons está agarrando (controla su propio desync) → no tocar la posición ni disparar
+        elseif godOn then
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
             Godmode.tick()
         elseif holdIdle then
