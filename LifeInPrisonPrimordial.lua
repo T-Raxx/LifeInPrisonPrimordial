@@ -86,6 +86,9 @@ return function(require, LIP, Lib)
                 if D and self == D.RE and getncm() == "FireServer" then
                     local p = table.pack(...)
                     local op = p[1]
+                    -- marca del último disparo (juego O nuestro) → HitEffects correlaciona con la pérdida
+                    -- de vida del enemigo para detectar hits/kills.
+                    if op == 14 then D.lastShotT = os.clock() end
                     -- OBSERVA FIRERATE REAL (op14 del juego, no nuestro autofire) → no sobre-disparar.
                     -- (El conteo de balas para el reload vive en Weapon.fireOne, NO acá: este hook
                     --  persiste entre reloads y no se puede actualizar sin rejoin limpio.)
@@ -2042,26 +2045,30 @@ return function(require, LIP, Lib)
     end
 
     function HE.init()
-        LIP.RE = LIP.RE or (LIP.Events and LIP.Events:FindFirstChild("RemoteEvent"))
-        -- HITS: op46 Hitmarker del server (confirma tu hit; arg2 = pos 3D del impacto)
-        if LIP.RE then
-            LIP.track(LIP.RE.OnClientEvent:Connect(function(op, a)
-                if op == 46 then HE.hit(typeof(a) == "Vector3" and a or nil) end
-            end))
-        end
-        -- KILLS: enemigo muere con un hit tuyo reciente (<2.5s)
+        -- HIT/KILL por CORRELACIÓN (como Overkill): TU disparo (LIP.lastShotT, seteado en Net por cada op14)
+        -- + el enemigo pierde vida / muere en la ventana → hit/kill. El hitmarker del server (op36 entrante)
+        -- es un broadcast global de TODOS los jugadores, no aislable; esto es robusto y solo tuyo.
         local function hookChar(plr, char)
             local h = char and char:FindFirstChildOfClass("Humanoid")
             if not h then return end
+            local last = h.Health
+            local function enemy() return not (LP.Team and plr.Team == LP.Team) end
+            LIP.track(h.HealthChanged:Connect(function(hp)
+                local dropped = hp < (last - 0.5)
+                last = hp
+                if dropped and enemy() and LIP.lastShotT and (os.clock() - LIP.lastShotT) < 0.6 then
+                    local part = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+                    HE.hit(part and part.Position or nil)
+                end
+            end))
             LIP.track(h.Died:Connect(function()
-                if LP.Team and plr.Team == LP.Team then return end
-                if LIP.lastHitT and (os.clock() - LIP.lastHitT) < 2.5 then HE.kill() end
+                if enemy() and LIP.lastShotT and (os.clock() - LIP.lastShotT) < 1.5 then HE.kill() end
             end))
         end
         local function watch(plr)
             if plr == LP then return end
             if plr.Character then hookChar(plr, plr.Character) end
-            LIP.track(plr.CharacterAdded:Connect(function(c) hookChar(plr, c) end))
+            LIP.track(plr.CharacterAdded:Connect(function(c) task.wait(0.3); hookChar(plr, c) end))
         end
         for _, p in ipairs(Players:GetPlayers()) do watch(p) end
         LIP.track(Players.PlayerAdded:Connect(watch))

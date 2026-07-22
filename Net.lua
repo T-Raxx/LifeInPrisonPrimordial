@@ -25,6 +25,9 @@ return function(require, LIP, Lib)
                 if D and self == D.RE and getncm() == "FireServer" then
                     local p = table.pack(...)
                     local op = p[1]
+                    -- marca del último disparo (juego O nuestro) → HitEffects correlaciona con la pérdida
+                    -- de vida del enemigo para detectar hits/kills.
+                    if op == 14 then D.lastShotT = os.clock() end
                     -- OBSERVA FIRERATE REAL (op14 del juego, no nuestro autofire) → no sobre-disparar.
                     -- (El conteo de balas para el reload vive en Weapon.fireOne, NO acá: este hook
                     --  persiste entre reloads y no se puede actualizar sin rejoin limpio.)
