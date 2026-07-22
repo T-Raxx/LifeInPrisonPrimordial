@@ -139,10 +139,10 @@ return function(require, LIP, Lib)
         if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
 
         -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
-        -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO en combate activo (strafe/autofire)
-        -- → al apagar Target Strafe el idle se quita. Ignore TEMPORAL (no prende Idle State).
+        -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO con Target Strafe activo (AutoFire
+        -- ya requiere strafe) → al apagar Target Strafe el idle se quita SIEMPRE. Ignore TEMPORAL.
         local holdIdle = false
-        if T.FFCheck and T.FFCheck.Value and (strafeOn or autoOn) and LIP.target then
+        if T.FFCheck and T.FFCheck.Value and strafeOn and LIP.target then
             local tc = LIP.target.Character
             local th = tc and tc:FindFirstChildOfClass("Humanoid")
             if (tc and tc:FindFirstChildOfClass("ForceField")) or not (th and th.Health > 0) then holdIdle = true end
