@@ -165,8 +165,18 @@ return function(require, LIP, Lib)
     -- refrescada a ~16hz (como replica Roblox los characters), con suavizado (lerp). Así el icono/tracer
     -- reflejan la posición real que percibe el server/enemigos, no la instantánea.
     local vizHist = {}          -- { {t=clock, pos=V3}, ... }
-    local vizShown              -- pos mostrada (suavizada)
-    local vizNext16, vizTarget = 0, nil
+    local vizShown              -- pos mostrada (interpolada)
+    local vizNext16 = 0
+    local segStart, segTarget, segT0 = nil, nil, 0   -- segmento de interpolación actual
+    -- ease InOutExpo (lo que MÁS se parece a la interpolación de characters de Roblox: casi lineal/snappy
+    -- en el medio, suave en los bordes). Se corre "demasiado rápido" (segDur < intervalo) + re-ancla al
+    -- punto actual en cada update → CORTA CAMINOS en cambios bruscos (como Roblox).
+    local function easeInOutExpo(t)
+        if t <= 0 then return 0 end
+        if t >= 1 then return 1 end
+        if t < 0.5 then return 0.5 * 2 ^ (20 * t - 10) end
+        return 1 - 0.5 * 2 ^ (-20 * t + 10)
+    end
     local function delayedPos(now, delay)
         local tt = now - delay
         for i = #vizHist, 2, -1 do
@@ -182,7 +192,7 @@ return function(require, LIP, Lib)
     local function updateViz()
         -- viz cuando hay pos spoofeada por CUALQUIER método (desync spoofOn o connection weld connRep)
         if not (T("VoidViz") and (LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos) then
-            vizHist = {}; vizShown = nil; vizTarget = nil; return hideViz()
+            vizHist = {}; vizShown = nil; segStart = nil; segTarget = nil; return hideViz()
         end
         ensureViz()
         local now = os.clock()
@@ -192,14 +202,20 @@ return function(require, LIP, Lib)
         -- 2) ping actual = delay de replicación
         local ping = 0.1
         pcall(function() ping = math.clamp(game:GetService("Players").LocalPlayer:GetNetworkPing(), 0, 0.6) end)
-        -- 3) update rate ~16hz: cada 1/16s tomá la pos DEMORADA por el ping
+        -- 3) update ~16hz: NUEVO segmento eased desde donde ESTAMOS (corta caminos) → pos demorada por ping
         if now >= vizNext16 then
             vizNext16 = now + (1/16)
-            vizTarget = delayedPos(now, ping) or LIP.spoofFakePos
+            local tgt = delayedPos(now, ping) or LIP.spoofFakePos
+            segStart = vizShown or tgt
+            segTarget = tgt
+            segT0 = now
         end
-        vizTarget = vizTarget or LIP.spoofFakePos
-        -- 4) suavizado hacia el target
-        vizShown = vizShown and vizShown:Lerp(vizTarget, 0.28) or vizTarget
+        segTarget = segTarget or LIP.spoofFakePos
+        segStart  = segStart or segTarget
+        -- 4) InOutExpo "demasiado rápido": segDur < intervalo (16hz) → llega antes del próximo update, y en
+        --    cambios bruscos el re-anclado + la curva snappy = shortcut casi lineal (interpolación Roblox).
+        local a = math.clamp((now - segT0) / ((1/16) * 0.7), 0, 1)
+        vizShown = segStart:Lerp(segTarget, easeInOutExpo(a))
         -- render
         local c = O("VizColor") or Color3.fromRGB(202,151,161)
         vizPart.Transparency = 0.3; vizPart.Position = vizShown; vizPart.Color = c; vizBillboard.Enabled = true
