@@ -22,6 +22,10 @@ return function(require, LIP, Lib)
         Spoof.install()
         if getgenv().__LIP_RESTORE then return end
         getgenv().__LIP_RESTORE = true
+        -- FIX freeze-tras-reload: el restore loop está tracked (se DESCONECTA en Unload), pero el guard
+        -- getgenv persistía → en el re-load Spoof.init hacía return y NO recreaba el loop → sin restore el
+        -- cuerpo queda pegado a la fakePos y la cámara se congela raro. Limpiar el guard en cleanup lo recrea.
+        LIP.onCleanup(function() getgenv().__LIP_RESTORE = nil end)
         LIP.track(RunService.RenderStepped:Connect(function(dt)
             local D = getgenv().LIP
             if not D then return end
@@ -189,11 +193,16 @@ return function(require, LIP, Lib)
 
     function Spoof.camToLocal(cam, realCF)
         -- ancla la cámara a la pos REAL, subida un poco (+2.5 studs) → mejor visión durante el pos spoof.
-        if LIP.camAnchor then pcall(function() LIP.camAnchor.CFrame = realCF + Vector3.new(0, 2.5, 0); cam.CameraSubject = LIP.camAnchor end) end
+        -- CameraSubject solo se escribe si CAMBIÓ (setearlo cada frame resetea el estado de la cámara default
+        -- y al alternar con el humanoid = churn = freeze raro).
+        if LIP.camAnchor then pcall(function()
+            LIP.camAnchor.CFrame = realCF + Vector3.new(0, 2.5, 0)
+            if cam.CameraSubject ~= LIP.camAnchor then cam.CameraSubject = LIP.camAnchor end
+        end) end
     end
     function Spoof.camToChar(cam)
         local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-        if hum then pcall(function() cam.CameraSubject = hum end) end
+        if hum then pcall(function() if cam.CameraSubject ~= hum then cam.CameraSubject = hum end end) end
     end
 
     -- corta cualquier spoof/weld y restaura cámara + cuerpo a la pos real
