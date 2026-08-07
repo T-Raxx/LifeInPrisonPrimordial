@@ -445,10 +445,17 @@ return function(require, LIP, Lib)
     -- el orbit corren en RENDER contra la CFrame SUAVE del target (cero jitter, no depende del Heartbeat).
     -- `orbit` = tabla {radius,speed,height,mode} (orbit smooth por-frame) o Vector3 (offset fijo). Coexiste
     -- con pos spoof (harmonía): el cuerpo real NUNCA se escribe → sin fling, sin pausa clientside.
-    -- CONNECTION WELD (WeldMenu-style, VERIFICADO en LiP): mové el cuerpo REAL a target.CFrame * offsetCF
-    -- (espacio LOCAL → seguís posición Y rotación del target) + PhysicsRepRootPart = HRP REAL del target
-    -- (parte de su assembly → el server te replica pegado a él SIN delay ni flicker; un part anclado FUERA
-    -- del assembly no replicaba = no movía a nadie). Se llama cada Heartbeat. radius nunca 0 → sin fling.
+    -- SOLO la CONEXIÓN: PhysicsRepRootPart = HRP REAL del target (parte de su assembly → el server te replica
+    -- adherido a él SIN delay; un part anclado FUERA del assembly no replicaba). Como el Connection Exploit de
+    -- symbol: NO escribe tu CFrame → la posición la maneja el desync (spoof, cuerpo quieto) o el real-move.
+    function Spoof.setPhysRep(targetHRP)
+        local r = myRoot()
+        if not (r and targetHRP and targetHRP.Parent) then return end
+        if sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", targetHRP) end) end
+        LIP.connRep = true
+        LIP.connTargetHRP = targetHRP
+    end
+    -- WELD que MUEVE el cuerpo real al target.CFrame*offsetCF (WeldMenu-style, para weld SIN spoof) + la conexión.
     function Spoof.weldToTarget(targetHRP, offsetCF)
         local r = myRoot()
         if not (r and targetHRP and targetHRP.Parent) then return end
@@ -457,9 +464,7 @@ return function(require, LIP, Lib)
             r.AssemblyLinearVelocity  = Vector3.zero
             r.AssemblyAngularVelocity = Vector3.zero
         end)
-        if sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", targetHRP) end) end
-        LIP.connRep = true
-        LIP.connTargetHRP = targetHRP
+        Spoof.setPhysRep(targetHRP)
     end
     -- SOLDAR A UNA POS FIJA (void spam / bait: sin target, pos absoluta). El render mantiene connPart ahí.
     function Spoof.weldToPos(pos)
@@ -842,17 +847,31 @@ return function(require, LIP, Lib)
         end
 
         if opts.connExploit then
-            -- CONNECTION WELD real (WeldMenu-style, VERIFICADO en LiP): mové tu cuerpo REAL a target.CFrame*offset
-            -- (espacio local → seguís posición Y rotación del target) + PhysicsRepRootPart = HRP REAL del target
-            -- (parte de su assembly → el server te replica pegado a él SIN delay ni flicker; un part anclado NO
-            -- replicaba). radius nunca 0 → nunca adentro del HRP = sin fling. NO usa desync; ES el posicionamiento
-            -- (ignora Pos Spoof). Cámara sigue tu cuerpo real (estás pegado al target → te ves ahí, sin delay).
-            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
-            local offCF = weldOrbitOffset(opts)
-            Spoof.weldToTarget(tRoot, offCF)
-            LIP.spoofFakePos = (tRoot.CFrame * offCF).Position   -- origin del disparo + viz
+            -- CONNECTION WELD (WeldMenu-style): pos = target.CFrame*offset (local → sigue pos+rotación del target)
+            -- + PhysicsRepRootPart = HRP REAL del target (su assembly → replica SIN delay ni flicker; un part
+            -- anclado no replicaba). radius nunca 0 → sin fling. Composición con Pos Spoof (como symbol):
+            local offCF  = weldOrbitOffset(opts)
+            local weldCF = tRoot.CFrame * offCF
+            LIP.spoofFakePos = weldCF.Position   -- origin del disparo + viz
             LIP.tightFollow = true
-            Spoof.camToChar(cam)
+            if opts.posSpoof then
+                -- WELD + SPOOF: el server te ve en el weld (PhysicsRepRootPart=target), pero tu cuerpo real queda
+                -- QUIETO en pantalla → escribimos weldCF (desync) y el RenderStepped lo restaura a tu pos real.
+                local realCF = Spoof.captureReal(root)
+                LIP.cachedRoot   = root
+                LIP.spoofRealCF  = realCF
+                LIP.spoofOn      = true
+                LIP.spoofVel     = root.AssemblyLinearVelocity
+                LIP.spoofRestore = realCF
+                Spoof.camToLocal(cam, realCF)
+                pcall(function() root.CFrame = weldCF end)
+                Spoof.setPhysRep(tRoot)
+            else
+                -- WELD solo: mové tu cuerpo real al target (te ves ahí) + PhysicsRepRootPart=target.
+                if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
+                Spoof.weldToTarget(tRoot, offCF)
+                Spoof.camToChar(cam)
+            end
         elseif opts.posSpoof then
             LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
             LIP.tightFollow = false
