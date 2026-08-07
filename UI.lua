@@ -206,27 +206,13 @@ return function(require, LIP, Lib)
         weaponList = aw2:AddList("WeaponList", { Values = AutoWeapons.WEAPONS, Multi = true, Height = 150 })
 
         --========================= VISUALS =========================--
+        -- Categoría "Visuals": Hit Effects (LiP) + suite World Visuals (GUIVisuals: World/ESP/SelfFX/Preview),
+        -- montada en main via Visuals.Attach que REUSA esta categoría por Window.__visualsCat. El ESP viejo
+        -- de LiP lo reemplaza el ESP de GUIVisuals (box/health/skeleton/headdot/tracer/offscreen/chams/object).
         local Vis  = Window:AddCategory("Visuals", "eye")
-        local VSec = Vis:AddSection("ESP", "Player ESP (R6, client-side) · todo coloreable", { Columns = 2 })
-        local vp = VSec:AddPanel("Elements", { Column = 1 })
-        vp:AddToggle("ESP", { Text = "Enabled", Default = false })
-        vp:AddToggle("ESPBox", { Text = "Box (LOS color)" })
-            :AddColorPicker("ESPVisibleColor", { Default = Color3.fromRGB(80, 255, 120) })
-            :AddColorPicker("ESPHiddenColor",  { Default = Color3.fromRGB(255, 80, 80) })
-        vp:AddToggle("ESPName", { Text = "Name" }):AddColorPicker("ESPNameColor", { Default = Color3.fromRGB(255, 255, 255) })
-        vp:AddToggle("ESPDistance", { Text = "Distance" }):AddColorPicker("ESPDistColor", { Default = Color3.fromRGB(220, 220, 220) })
-        vp:AddToggle("ESPHealth", { Text = "Health bar" })
-        vp:AddToggle("ESPTracer", { Text = "Tracer" }):AddColorPicker("ESPTracerColor", { Default = Color3.fromRGB(255, 255, 255) })
-        vp:AddToggle("ESPSkeleton", { Text = "Skeleton" }):AddColorPicker("ESPSkeletonColor", { Default = Color3.fromRGB(255, 255, 255) })
-        vp:AddToggle("ESPChams", { Text = "Chams (through walls)" }):AddColorPicker("ESPChamsOutline", { Default = Color3.fromRGB(255, 255, 255) })
-        local vp2 = VSec:AddPanel("Filters", { Column = 2 })
-        vp2:AddDropdown("TracerOrigin", { Text = "Tracer origin", Values = { "Bottom", "Center", "Top" }, Default = "Bottom" })
-        vp2:AddSlider("ESPMaxDist", { Text = "Max distance", Min = 0, Max = 5000, Default = 0, Suffix = "m",
-            Tooltip = "0 = SIN LÍMITE" })
-        vp2:AddToggle("ESPTeamCheck",   { Text = "Team Check", Default = true })
-        vp2:AddToggle("ESPFriendCheck", { Text = "Friend Check", Default = false })
+        Window.__visualsCat = Vis
 
-        -- Hit Effects: hitsounds + killsounds + hitmarker (op46 = hit confirmado por el server)
+        -- Hit Effects: hitsounds + killsounds + hitmarker (detección por correlación con tu disparo)
         local HFX = Vis:AddSection("Hit Effects", "Hit/Kill sounds + hitmarker", { Columns = 2 })
         local hf1 = HFX:AddPanel("Sounds", { Column = 1 })
         hf1:AddToggle("HitSound", { Text = "Hit Sound", Default = false, Tooltip = "Suena al confirmar un hit (op46 del server)." })

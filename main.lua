@@ -18,19 +18,25 @@ return function(require, LIP, Lib)
     local Move    = require("Movement.Movement")
     local Vehicle = require("Movement.Vehicle")
     local Void    = require("Movement.Void")
-    local ESP     = require("Visuals.ESP")
     local HitFX   = require("Visuals.HitEffects")
     local UI      = require("UI")
 
     local Window = Lib:CreateWindow({ Title = "life in prison", Size = Vector2.new(834, 586) })
     LIP.Library = Lib
     UI.build(Window)
+    -- Suite World Visuals (GUIVisuals) → categoría "Visuals" (World/ESP/SelfFX). Reemplaza el ESP viejo de
+    -- LiP. Reusa la categoría "Visuals" que UI.build ya creó (Window.__visualsCat). Genérico (sin profile):
+    -- ESP enumera Players (R6), SelfFX = Camera.FOV/crosshair/HUD, World = Lighting. Guarded por si falta.
+    if LIP.Visuals and LIP.Visuals.Attach then
+        pcall(function()
+            LIP.Visuals.Attach(Lib, Window, { adapter = "primordial", modules = { "world", "esp", "selffx" } })
+        end)
+    end
     Net.install()    -- __namecall silent aim op14 + melee aura op16
     Move.init()      -- fly/noclip/speed/jump
     Vehicle.init()   -- vehicle speed
     Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
-    ESP.init()       -- Visuals
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
 
     -- ANTI-SLEEP (keep-alive del replicador): Roblox pausa la replicación de posición si el assembly
