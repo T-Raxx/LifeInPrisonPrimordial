@@ -79,10 +79,17 @@ return function(require, LIP, Lib)
     -- el orbit corren en RENDER contra la CFrame SUAVE del target (cero jitter, no depende del Heartbeat).
     -- `orbit` = tabla {radius,speed,height,mode} (orbit smooth por-frame) o Vector3 (offset fijo). Coexiste
     -- con pos spoof (harmonía): el cuerpo real NUNCA se escribe → sin fling, sin pausa clientside.
-    -- CONNECTION WELD (WeldMenu-style, VERIFICADO en LiP): mové el cuerpo REAL a target.CFrame * offsetCF
-    -- (espacio LOCAL → seguís posición Y rotación del target) + PhysicsRepRootPart = HRP REAL del target
-    -- (parte de su assembly → el server te replica pegado a él SIN delay ni flicker; un part anclado FUERA
-    -- del assembly no replicaba = no movía a nadie). Se llama cada Heartbeat. radius nunca 0 → sin fling.
+    -- SOLO la CONEXIÓN: PhysicsRepRootPart = HRP REAL del target (parte de su assembly → el server te replica
+    -- adherido a él SIN delay; un part anclado FUERA del assembly no replicaba). Como el Connection Exploit de
+    -- symbol: NO escribe tu CFrame → la posición la maneja el desync (spoof, cuerpo quieto) o el real-move.
+    function Spoof.setPhysRep(targetHRP)
+        local r = myRoot()
+        if not (r and targetHRP and targetHRP.Parent) then return end
+        if sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", targetHRP) end) end
+        LIP.connRep = true
+        LIP.connTargetHRP = targetHRP
+    end
+    -- WELD que MUEVE el cuerpo real al target.CFrame*offsetCF (WeldMenu-style, para weld SIN spoof) + la conexión.
     function Spoof.weldToTarget(targetHRP, offsetCF)
         local r = myRoot()
         if not (r and targetHRP and targetHRP.Parent) then return end
@@ -91,9 +98,7 @@ return function(require, LIP, Lib)
             r.AssemblyLinearVelocity  = Vector3.zero
             r.AssemblyAngularVelocity = Vector3.zero
         end)
-        if sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", targetHRP) end) end
-        LIP.connRep = true
-        LIP.connTargetHRP = targetHRP
+        Spoof.setPhysRep(targetHRP)
     end
     -- SOLDAR A UNA POS FIJA (void spam / bait: sin target, pos absoluta). El render mantiene connPart ahí.
     function Spoof.weldToPos(pos)
