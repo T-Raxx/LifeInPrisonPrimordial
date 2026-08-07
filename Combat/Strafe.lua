@@ -79,6 +79,25 @@ return function(require, LIP, Lib)
         local dt = math.max(h.t[n] - h.t[n-1], 1/240)
         return (h.s[n] - h.s[n-1]) / dt
     end
+    -- CONFIANZA del resolver (0.000–1.000) para el HUD. Mide qué tan PREDECIBLE se mueve el target: residual
+    -- promedio de las muestras respecto al modelo lineal (última pos − vel·edad). Residual chico = movimiento
+    -- limpio/consistente = alto (1.000 = full resuelto, tiro seguro). Residual grande = jitter/teleport/spoof
+    -- = bajo (0.000 = tiro difícil, resolver profundo). Pocas muestras = confianza parcial (aún calibrando).
+    function Strafe.confidence(plr)
+        local h = hist[plr]; local n = h and #h.s or 0
+        if n < 4 then return math.clamp(n / 4 * 0.5, 0, 0.5) end
+        local k = math.min(n, 8)
+        local vel = Strafe.targetVel(plr)
+        local base, tN = h.s[n], h.t[n]
+        local resid, cnt = 0, 0
+        for i = n - k + 1, n - 1 do
+            local pred = base - vel * (tN - h.t[i])     -- dónde DEBERÍA estar si se moviera lineal
+            resid = resid + (h.s[i] - pred).Magnitude
+            cnt = cnt + 1
+        end
+        local avg = cnt > 0 and resid / cnt or 0
+        return math.clamp(math.exp(-avg / 4), 0, 1)     -- ~4 studs de residual → ~0.37
+    end
     -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
     function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
         local h = hist[plr]; local n = h and #h.s or 0

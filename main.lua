@@ -19,6 +19,7 @@ return function(require, LIP, Lib)
     local Vehicle = require("Movement.Vehicle")
     local Void    = require("Movement.Void")
     local HitFX   = require("Visuals.HitEffects")
+    local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
 
     local Window = Lib:CreateWindow({ Title = "life in prison", Size = Vector2.new(834, 586) })
@@ -38,6 +39,7 @@ return function(require, LIP, Lib)
     Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
+    CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 
     -- ANTI-SLEEP (keep-alive del replicador): Roblox pausa la replicación de posición si el assembly
     -- "duerme" (velocity < ~0.05 studs/s) → rompe el desync/spoof. La velocity vieja (0.003) estaba POR
@@ -160,6 +162,36 @@ return function(require, LIP, Lib)
         end
         LIP.attackHold = holdIdle
         if holdIdle then LIP.cachedHitPart = nil; LIP.cachedHitPos = nil end
+
+        -- ── HUD del crosshair: estado del ragebot (base + overrides) ──
+        do
+            local eng = strafeOn or autoOn
+            LIP.hudTargetName = (eng and LIP.target) and LIP.target.Name or nil
+            LIP.hudResolved   = LIP.target and Strafe.confidence(LIP.target) or 0
+            LIP.hudReloadVoid = (LIP.reloading and LIP.voidPhase == "in") or false
+            -- killed-wait: armá el watch mientras enganchás un focus VIVO; al morir → "waiting for HRP"
+            -- hasta que respawnee vivo + sin ForceField (o se vaya del server).
+            if strafeOn and LIP.target and LIP.target.Character then
+                local h = LIP.target.Character:FindFirstChildOfClass("Humanoid")
+                if h and h.Health > 0 then LIP._killWatchUid = LIP.target.UserId; LIP._killWatchName = LIP.target.Name end
+            end
+            if LIP._killWatchUid then
+                local wp
+                for _, p in ipairs(Players:GetPlayers()) do if p.UserId == LIP._killWatchUid then wp = p; break end end
+                if not wp then
+                    LIP.killedWait, LIP._killWatchUid, LIP._killWatchName = nil, nil, nil        -- salió del server
+                else
+                    local wc  = wp.Character
+                    local wh  = wc and wc:FindFirstChildOfClass("Humanoid")
+                    local wff = wc and wc:FindFirstChildOfClass("ForceField")
+                    if not (wh and wh.Health > 0) then
+                        LIP.killedWait = LIP._killWatchName                                       -- muerto → esperando HRP
+                    elseif not wff then
+                        LIP.killedWait, LIP._killWatchUid, LIP._killWatchName = nil, nil, nil     -- respawn + FF off → limpiar
+                    end
+                end
+            end
+        end
 
         -- ── POSICIÓN: Godmode > Strafe (+VoidSpam) > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value

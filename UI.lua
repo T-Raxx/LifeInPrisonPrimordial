@@ -115,6 +115,18 @@ return function(require, LIP, Lib)
         idl:AddList("IdlePattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
         idl:AddSlider("IdleDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
 
+        local hud = RS:AddPanel("Crosshair HUD", { Column = 3 })
+        hud:AddToggle("CrossHUD", { Text = "Crosshair HUD", Default = true,
+            Tooltip = "Labels de estado del ragebot abajo del crosshair (killing: user | Resolved: x.xyz; overrides: Reloading In Void / Killed waiting). Font del watermark. 1.000=full resuelto (tiro seguro), 0.000=tiro difícil." })
+            :AddColorPicker("CrossHUDColor", { Default = Color3.fromRGB(202, 151, 161) })
+        hud:AddToggle("CrossHUDFade", { Text = "Smooth Fade", Default = true,
+            Tooltip = "Crossfade suave entre cambios de estado/override (fade-out del viejo → fade-in del nuevo)." })
+        hud:AddSlider("CrossHUDFadeSpeed", { Text = "Fade Speed", Min = 1, Max = 20, Default = 6, Decimals = 1,
+            Tooltip = "Velocidad del fade (más alto = más rápido)." })
+        hud:AddSlider("CrossHUDSize", { Text = "Text Size", Min = 10, Max = 28, Default = 16 })
+        hud:AddSlider("CrossHUDOffset", { Text = "Y Offset", Min = 10, Max = 120, Default = 34, Suffix = "px",
+            Tooltip = "Distancia abajo del centro del crosshair." })
+
         --========================= LEGIT =========================--
         local Legit = Window:AddCategory("Legit", "target")
         local LS = Legit:AddSection("Legit", "Melee · Fists", { Columns = 2 })

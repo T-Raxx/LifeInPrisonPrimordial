@@ -660,6 +660,25 @@ return function(require, LIP, Lib)
         local dt = math.max(h.t[n] - h.t[n-1], 1/240)
         return (h.s[n] - h.s[n-1]) / dt
     end
+    -- CONFIANZA del resolver (0.000–1.000) para el HUD. Mide qué tan PREDECIBLE se mueve el target: residual
+    -- promedio de las muestras respecto al modelo lineal (última pos − vel·edad). Residual chico = movimiento
+    -- limpio/consistente = alto (1.000 = full resuelto, tiro seguro). Residual grande = jitter/teleport/spoof
+    -- = bajo (0.000 = tiro difícil, resolver profundo). Pocas muestras = confianza parcial (aún calibrando).
+    function Strafe.confidence(plr)
+        local h = hist[plr]; local n = h and #h.s or 0
+        if n < 4 then return math.clamp(n / 4 * 0.5, 0, 0.5) end
+        local k = math.min(n, 8)
+        local vel = Strafe.targetVel(plr)
+        local base, tN = h.s[n], h.t[n]
+        local resid, cnt = 0, 0
+        for i = n - k + 1, n - 1 do
+            local pred = base - vel * (tN - h.t[i])     -- dónde DEBERÍA estar si se moviera lineal
+            resid = resid + (h.s[i] - pred).Magnitude
+            cnt = cnt + 1
+        end
+        local avg = cnt > 0 and resid / cnt or 0
+        return math.clamp(math.exp(-avg / 4), 0, 1)     -- ~4 studs de residual → ~0.37
+    end
     -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
     function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
         local h = hist[plr]; local n = h and #h.s or 0
@@ -2031,6 +2050,106 @@ return function(require, LIP, Lib)
 end
 
 end)()
+_MODS["Visuals.CrosshairHUD"] = (function()
+-- Visuals/CrosshairHUD.lua — FACTORY. Labels de estado del ragebot abajo del crosshair central.
+-- Una línea, prioridad de overrides:
+--   killedWait  → "Killed: <user>, waiting for HRP..."   (limpia al respawn del user + ForceField off)
+--   reloadVoid  → "Reloading In Void..."                 (limpia al terminar la recarga)
+--   base        → "killing: <user> | Resolved: x.xyz"    (x.xyz = confianza del resolver 0.000–1.000)
+-- Font = el del watermark (GothamBold). Fade CONFIGURABLE + crossfade suave entre cambios de override
+-- (fade-out del texto viejo → swap → fade-in del nuevo). Todo lo consume de flags LIP (los setea main).
+return function(require, LIP, Lib)
+    local Players    = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local CrossHUD = {}
+
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+
+    -- parent seguro (gethui si existe, si no CoreGui) — sobrevive respawn
+    local function guiParent()
+        local ok, h = pcall(function() return gethui and gethui() end)
+        if ok and h then return h end
+        return game:GetService("CoreGui")
+    end
+    -- font idéntico al watermark si está creado, si no GothamBold (= T.FontBold del theme)
+    local function wmFont()
+        local wm = Lib._wm
+        local ok, f = pcall(function() return wm and wm.T and wm.T.Font end)
+        return (ok and f) or Enum.Font.GothamBold
+    end
+
+    local sg, lbl
+    local function ensure()
+        if sg and sg.Parent and lbl and lbl.Parent then return end
+        sg = Instance.new("ScreenGui")
+        sg.Name = "LIP_XHUD"; sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true
+        sg.DisplayOrder = 999; sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        pcall(function() sg.Parent = guiParent() end)
+        lbl = Instance.new("TextLabel")
+        lbl.Name = "L"; lbl.BackgroundTransparency = 1
+        lbl.AnchorPoint = Vector2.new(0.5, 0)          -- centrado horizontal, crece simétrico desde el centro
+        lbl.AutomaticSize = Enum.AutomaticSize.XY
+        lbl.Size = UDim2.fromOffset(0, 0)
+        lbl.TextXAlignment = Enum.TextXAlignment.Center
+        lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)  -- outline para legibilidad sobre cualquier fondo
+        lbl.Text = ""; lbl.Visible = false
+        lbl.Parent = sg
+    end
+
+    -- línea activa según prioridad (killed > reloadVoid > base). "" = nada que mostrar.
+    local function activeLine()
+        if LIP.killedWait then
+            return ("Killed: %s, waiting for HRP..."):format(LIP.killedWait)
+        elseif LIP.hudReloadVoid then
+            return "Reloading In Void..."
+        elseif LIP.hudTargetName then
+            return ("killing: %s | Resolved: %.3f"):format(LIP.hudTargetName, LIP.hudResolved or 0)
+        end
+        return ""
+    end
+
+    -- máquina de fade: alpha 0→1, phase "in"/"out". Un cambio de línea fuerza "out" (fade-out completo)
+    -- antes de swappear el texto y hacer "in" → crossfade suave entre overrides.
+    local shown, alpha, phase = "", 0, "in"
+    local function update(dt)
+        if not T("CrossHUD") then if lbl then lbl.Visible = false end return end
+        ensure()
+        local want = activeLine()
+        if T("CrossHUDFade") then
+            local spd = O("CrossHUDFadeSpeed") or 6
+            if phase == "in" and want ~= shown then phase = "out" end
+            if phase == "out" then
+                alpha = math.max(0, alpha - dt * spd)
+                if alpha <= 0.001 then shown = want; phase = "in" end
+            else
+                local goal = (shown ~= "") and 1 or 0
+                if alpha < goal then alpha = math.min(goal, alpha + dt * spd)
+                elseif alpha > goal then alpha = math.max(goal, alpha - dt * spd) end
+            end
+        else
+            shown = want; alpha = (shown ~= "") and 1 or 0
+        end
+        local col = O("CrossHUDColor") or Color3.fromRGB(202, 151, 161)
+        lbl.Text = shown
+        lbl.Font = wmFont()
+        lbl.TextSize = O("CrossHUDSize") or 16
+        lbl.TextColor3 = col
+        lbl.TextTransparency = 1 - alpha
+        lbl.TextStrokeTransparency = 1 - alpha * 0.5
+        lbl.Position = UDim2.new(0.5, 0, 0.5, O("CrossHUDOffset") or 34)   -- centro de pantalla + offset abajo
+        lbl.Visible = shown ~= "" and alpha > 0.01
+    end
+
+    function CrossHUD.init()
+        LIP.track(RunService.RenderStepped:Connect(function(dt) pcall(update, dt) end))
+        LIP.onCleanup(function() if sg then pcall(function() sg:Destroy() end) end end)
+    end
+
+    return CrossHUD
+end
+
+end)()
 _MODS["UI"] = (function()
 -- UI.lua — FACTORY. Categorías Rage / Legit / Misc / Visuals. Paneles separados por función.
 -- Flags en Lib.Toggles / Lib.Options.
@@ -2148,6 +2267,18 @@ return function(require, LIP, Lib)
             Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando. (Antes se llamaba Void Spam.)" })
         idl:AddList("IdlePattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
         idl:AddSlider("IdleDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
+
+        local hud = RS:AddPanel("Crosshair HUD", { Column = 3 })
+        hud:AddToggle("CrossHUD", { Text = "Crosshair HUD", Default = true,
+            Tooltip = "Labels de estado del ragebot abajo del crosshair (killing: user | Resolved: x.xyz; overrides: Reloading In Void / Killed waiting). Font del watermark. 1.000=full resuelto (tiro seguro), 0.000=tiro difícil." })
+            :AddColorPicker("CrossHUDColor", { Default = Color3.fromRGB(202, 151, 161) })
+        hud:AddToggle("CrossHUDFade", { Text = "Smooth Fade", Default = true,
+            Tooltip = "Crossfade suave entre cambios de estado/override (fade-out del viejo → fade-in del nuevo)." })
+        hud:AddSlider("CrossHUDFadeSpeed", { Text = "Fade Speed", Min = 1, Max = 20, Default = 6, Decimals = 1,
+            Tooltip = "Velocidad del fade (más alto = más rápido)." })
+        hud:AddSlider("CrossHUDSize", { Text = "Text Size", Min = 10, Max = 28, Default = 16 })
+        hud:AddSlider("CrossHUDOffset", { Text = "Y Offset", Min = 10, Max = 120, Default = 34, Suffix = "px",
+            Tooltip = "Distancia abajo del centro del crosshair." })
 
         --========================= LEGIT =========================--
         local Legit = Window:AddCategory("Legit", "target")
@@ -2298,6 +2429,7 @@ return function(require, LIP, Lib)
     local Vehicle = require("Movement.Vehicle")
     local Void    = require("Movement.Void")
     local HitFX   = require("Visuals.HitEffects")
+    local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
 
     local Window = Lib:CreateWindow({ Title = "life in prison", Size = Vector2.new(834, 586) })
@@ -2317,6 +2449,7 @@ return function(require, LIP, Lib)
     Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
+    CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 
     -- ANTI-SLEEP (keep-alive del replicador): Roblox pausa la replicación de posición si el assembly
     -- "duerme" (velocity < ~0.05 studs/s) → rompe el desync/spoof. La velocity vieja (0.003) estaba POR
@@ -2439,6 +2572,36 @@ return function(require, LIP, Lib)
         end
         LIP.attackHold = holdIdle
         if holdIdle then LIP.cachedHitPart = nil; LIP.cachedHitPos = nil end
+
+        -- ── HUD del crosshair: estado del ragebot (base + overrides) ──
+        do
+            local eng = strafeOn or autoOn
+            LIP.hudTargetName = (eng and LIP.target) and LIP.target.Name or nil
+            LIP.hudResolved   = LIP.target and Strafe.confidence(LIP.target) or 0
+            LIP.hudReloadVoid = (LIP.reloading and LIP.voidPhase == "in") or false
+            -- killed-wait: armá el watch mientras enganchás un focus VIVO; al morir → "waiting for HRP"
+            -- hasta que respawnee vivo + sin ForceField (o se vaya del server).
+            if strafeOn and LIP.target and LIP.target.Character then
+                local h = LIP.target.Character:FindFirstChildOfClass("Humanoid")
+                if h and h.Health > 0 then LIP._killWatchUid = LIP.target.UserId; LIP._killWatchName = LIP.target.Name end
+            end
+            if LIP._killWatchUid then
+                local wp
+                for _, p in ipairs(Players:GetPlayers()) do if p.UserId == LIP._killWatchUid then wp = p; break end end
+                if not wp then
+                    LIP.killedWait, LIP._killWatchUid, LIP._killWatchName = nil, nil, nil        -- salió del server
+                else
+                    local wc  = wp.Character
+                    local wh  = wc and wc:FindFirstChildOfClass("Humanoid")
+                    local wff = wc and wc:FindFirstChildOfClass("ForceField")
+                    if not (wh and wh.Health > 0) then
+                        LIP.killedWait = LIP._killWatchName                                       -- muerto → esperando HRP
+                    elseif not wff then
+                        LIP.killedWait, LIP._killWatchUid, LIP._killWatchName = nil, nil, nil     -- respawn + FF off → limpiar
+                    end
+                end
+            end
+        end
 
         -- ── POSICIÓN: Godmode > Strafe (+VoidSpam) > IdleState (EXCLUYENTES). ConnExploit = master de método. ──
         local posSpoof = T.PosSpoof and T.PosSpoof.Value
