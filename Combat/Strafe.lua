@@ -217,7 +217,7 @@ return function(require, LIP, Lib)
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
-            local realCF = Spoof.trueCF(root)
+            local realCF = Spoof.captureReal(root)
             LIP.cachedRoot   = root
             LIP.spoofRealCF  = realCF
             LIP.spoofOn      = true

@@ -59,7 +59,7 @@ return function(require, LIP, Lib)
         local cam = Workspace.CurrentCamera
         LIP.awGrabbing = true    -- pausa el position chain + fire del main (no pisar el desync del grab)
         Spoof.ensureParts()
-        local realCF = Spoof.trueCF(root)
+        local realCF = Spoof.captureReal(root)
         local goCF   = CFrame.new(model.PrimaryPart.Position + Vector3.new(0, 3, 0))
         local name   = model.Name
         Spoof.camToLocal(cam, realCF)            -- cámara a la pos real (subida un poco)

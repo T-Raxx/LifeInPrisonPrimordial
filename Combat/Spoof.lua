@@ -137,6 +137,22 @@ return function(require, LIP, Lib)
         return (o and o(root, "CFrame")) or root.CFrame
     end
 
+    -- captura la CF real para arrancar/mantener el desync, con guard anti-corrupción.
+    -- BUG que arregla: si un frame se pierde el restore (RenderStepped no corrió / cuerpo quedó en la fakePos),
+    -- trueCF leería la fakePos como "real" → spoofRealCF se corrompe → el teleport final (stop) te manda a la
+    -- pos spoofeada (quedás 5000 studs fuera del mapa). Pasa raro pero es fatal.
+    -- Defensa: mid-desync, si el trueCF (a) saltó >400 studs vs el último real bueno, o (b) cae pegado a la
+    -- fakePos actual → estamos leyendo la fakePos, no la real → devolver el último real bueno (nunca corromper).
+    function Spoof.captureReal(root)
+        local tc = Spoof.trueCF(root)
+        if LIP.spoofOn and LIP.spoofRealCF then
+            local last = LIP.spoofRealCF
+            if (tc.Position - last.Position).Magnitude > 400 then return last end
+            if LIP.spoofFakePos and (tc.Position - LIP.spoofFakePos).Magnitude < 30 then return last end
+        end
+        return tc
+    end
+
     function Spoof.camToLocal(cam, realCF)
         -- ancla la cámara a la pos REAL, subida un poco (+2.5 studs) → mejor visión durante el pos spoof.
         if LIP.camAnchor then pcall(function() LIP.camAnchor.CFrame = realCF + Vector3.new(0, 2.5, 0); cam.CameraSubject = LIP.camAnchor end) end

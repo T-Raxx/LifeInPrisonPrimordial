@@ -71,7 +71,7 @@ return function(require, LIP, Lib)
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
-            local realCF = Spoof.trueCF(root)
+            local realCF = Spoof.captureReal(root)
             LIP.cachedRoot   = root
             LIP.spoofRealCF  = realCF
             LIP.spoofOn      = true
@@ -97,7 +97,7 @@ return function(require, LIP, Lib)
             Spoof.weldToPos(goCF.Position)
         else
             if LIP.connRep then Spoof.unweld() end
-            local realCF = Spoof.trueCF(root)
+            local realCF = Spoof.captureReal(root)
             LIP.cachedRoot = root; LIP.spoofRealCF = realCF; LIP.spoofOn = true
             LIP.spoofVel = root.AssemblyLinearVelocity; LIP.spoofRestore = realCF
             Spoof.camToLocal(cam, realCF)
