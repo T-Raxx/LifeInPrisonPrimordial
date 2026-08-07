@@ -206,7 +206,9 @@ return function(require, LIP, Lib)
         -- CENTRO: pos RESUELTA del target (resolver, contra jitter/spoof enemigo, con predicción por
         -- velocidad para compensar el delay de replicación) o cruda + predicción manual.
         local center
-        if opts.resolve then
+        if opts.connExploit then
+            center = tRoot.Position          -- WELD: seguí PEGADO al target real (crudo, sin resolver → ceñido)
+        elseif opts.resolve then
             center = Strafe.resolvePos(target, tRoot.Position, opts.resolveMethod, opts.samples, opts.predict)
         else
             center = tRoot.Position
@@ -236,31 +238,15 @@ return function(require, LIP, Lib)
         end
 
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
+        LIP.tightFollow  = opts.connExploit and true or false   -- weld = seguí pegado (viz sin delay artificial)
 
-        if opts.connExploit then
-            -- CONNECTION WELD: el server te ve orbitando el target (radius/speed/height/mode), trackeado +
-            -- orbitado en RENDER contra la pos SUAVE del target → cero jitter, SIN seguir la rotación del char
-            -- (el weld ya sigue al target por posición). Cuerpo REAL LIBRE = sin fling, sin pausa clientside.
-            -- Offsets de strafing normales (nunca offset 0 = adentro del HRP = fling). BAIT: weld a spot fijo.
-            if baiting then
-                Spoof.weldToPos(LIP.baitJitterPos or LIP.baitPos)
-            else
-                Spoof.weldToTarget(tRoot, { radius = opts.radius, speed = opts.speed,
-                                            height = opts.height, mode = opts.mode })
-            end
-            LIP.spoofFakePos = (LIP.connPart and LIP.connPart.Position) or goCF.Position
-            -- HARMONÍA con Pos Spoof: si además está ON, anclá la cámara a tu pos REAL (vista quieta, cuerpo
-            -- libre, como symbol.lua). Si está OFF, cámara normal + corta cualquier desync viejo.
-            if opts.posSpoof then
-                Spoof.camToLocal(cam, Spoof.captureReal(root))
-                LIP.spoofOn = false; LIP.spoofRestore = nil; LIP.spoofVel = nil
-            else
-                if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
-                Spoof.camToChar(cam)   -- standalone conn: cámara sigue el cuerpo real libre (no dejar anchor viejo pegado)
-            end
-        elseif opts.posSpoof then
+        -- APLICACIÓN de la posición. El connection weld YA NO usa PhysicsRepRootPart: con un connPart anclado
+        -- (fuera del assembly) NO replica → no movía a nadie. Se aplica por root.CFrame (único que replica acá):
+        --   Pos Spoof ON  → DESYNC (server ve goCF, cuerpo/cámara reales quietos) = mueve al jugador SPOOFEADO.
+        --   Pos Spoof OFF → TELEPORT real (movés tu cuerpo a goCF) = mueve al jugador REAL. NO es spoof.
+        -- El connExploit solo cambia el CENTRO (pegado al target real, sin resolver); la aplicación es la misma.
+        if opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
-            -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
             local realCF = Spoof.captureReal(root)
             LIP.cachedRoot   = root
             LIP.spoofRealCF  = realCF
@@ -270,7 +256,7 @@ return function(require, LIP, Lib)
             Spoof.camToLocal(cam, realCF)
             pcall(function() root.CFrame = goCF end)
         else
-            -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear+angular (no acumula momentum).
+            -- mueve el cuerpo real. Zero de velocidad linear+angular (no acumula momentum).
             if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function()
                 root.CFrame = goCF

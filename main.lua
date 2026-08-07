@@ -165,7 +165,7 @@ return function(require, LIP, Lib)
 
         -- ── HUD del crosshair: estado del ragebot (base + overrides) ──
         do
-            local eng = strafeOn or autoOn
+            local eng = strafeOn and autoOn   -- label base solo con Target Strafe + Auto Fire AMBOS activos
             LIP.hudTargetName = (eng and LIP.target) and LIP.target.Name or nil
             LIP.hudResolved   = LIP.target and Strafe.confidence(LIP.target) or 0
             LIP.hudReloadVoid = (LIP.reloading and LIP.voidPhase == "in") or false

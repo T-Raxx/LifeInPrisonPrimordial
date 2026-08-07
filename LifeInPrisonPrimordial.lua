@@ -806,7 +806,9 @@ return function(require, LIP, Lib)
         -- CENTRO: pos RESUELTA del target (resolver, contra jitter/spoof enemigo, con predicción por
         -- velocidad para compensar el delay de replicación) o cruda + predicción manual.
         local center
-        if opts.resolve then
+        if opts.connExploit then
+            center = tRoot.Position          -- WELD: seguí PEGADO al target real (crudo, sin resolver → ceñido)
+        elseif opts.resolve then
             center = Strafe.resolvePos(target, tRoot.Position, opts.resolveMethod, opts.samples, opts.predict)
         else
             center = tRoot.Position
@@ -836,31 +838,15 @@ return function(require, LIP, Lib)
         end
 
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
+        LIP.tightFollow  = opts.connExploit and true or false   -- weld = seguí pegado (viz sin delay artificial)
 
-        if opts.connExploit then
-            -- CONNECTION WELD: el server te ve orbitando el target (radius/speed/height/mode), trackeado +
-            -- orbitado en RENDER contra la pos SUAVE del target → cero jitter, SIN seguir la rotación del char
-            -- (el weld ya sigue al target por posición). Cuerpo REAL LIBRE = sin fling, sin pausa clientside.
-            -- Offsets de strafing normales (nunca offset 0 = adentro del HRP = fling). BAIT: weld a spot fijo.
-            if baiting then
-                Spoof.weldToPos(LIP.baitJitterPos or LIP.baitPos)
-            else
-                Spoof.weldToTarget(tRoot, { radius = opts.radius, speed = opts.speed,
-                                            height = opts.height, mode = opts.mode })
-            end
-            LIP.spoofFakePos = (LIP.connPart and LIP.connPart.Position) or goCF.Position
-            -- HARMONÍA con Pos Spoof: si además está ON, anclá la cámara a tu pos REAL (vista quieta, cuerpo
-            -- libre, como symbol.lua). Si está OFF, cámara normal + corta cualquier desync viejo.
-            if opts.posSpoof then
-                Spoof.camToLocal(cam, Spoof.captureReal(root))
-                LIP.spoofOn = false; LIP.spoofRestore = nil; LIP.spoofVel = nil
-            else
-                if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
-                Spoof.camToChar(cam)   -- standalone conn: cámara sigue el cuerpo real libre (no dejar anchor viejo pegado)
-            end
-        elseif opts.posSpoof then
+        -- APLICACIÓN de la posición. El connection weld YA NO usa PhysicsRepRootPart: con un connPart anclado
+        -- (fuera del assembly) NO replica → no movía a nadie. Se aplica por root.CFrame (único que replica acá):
+        --   Pos Spoof ON  → DESYNC (server ve goCF, cuerpo/cámara reales quietos) = mueve al jugador SPOOFEADO.
+        --   Pos Spoof OFF → TELEPORT real (movés tu cuerpo a goCF) = mueve al jugador REAL. NO es spoof.
+        -- El connExploit solo cambia el CENTRO (pegado al target real, sin resolver); la aplicación es la misma.
+        if opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
-            -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
             local realCF = Spoof.captureReal(root)
             LIP.cachedRoot   = root
             LIP.spoofRealCF  = realCF
@@ -870,7 +856,7 @@ return function(require, LIP, Lib)
             Spoof.camToLocal(cam, realCF)
             pcall(function() root.CFrame = goCF end)
         else
-            -- SIN spoof: mueve el cuerpo real. Zero de velocidad linear+angular (no acumula momentum).
+            -- mueve el cuerpo real. Zero de velocidad linear+angular (no acumula momentum).
             if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function()
                 root.CFrame = goCF
@@ -1708,16 +1694,12 @@ return function(require, LIP, Lib)
         local goCF = patternCF(dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
-        if opts.connExploit then
-            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta desync, mantiene el weld
-            Spoof.weldToPos(goCF.Position)   -- void: sin target → pos absoluta lejana; cuerpo real libre
-            -- CÁMARA: la rama connExploit debe manejar la cámara SIEMPRE, si no deja el camAnchor viejo pegado
-            -- como CameraSubject sin actualizar (viniendo de un harmony-strafe) = FREEZE. Con posSpoof (harmony)
-            -- anclar a la pos real (vista consistente OUT↔IN); sin posSpoof seguir el cuerpo real libre.
-            if opts.posSpoof then Spoof.camToLocal(cam, Spoof.captureReal(root)) else Spoof.camToChar(cam) end
-        elseif opts.posSpoof then
+        LIP.tightFollow = false
+        -- Void no tiene target → connExploit no aplica acá. Pos Spoof decide: ON = DESYNC (server te ve lejos,
+        -- cuerpo/cámara reales quietos), OFF = teleport crudo del cuerpo real (riesgoso). El weld PhysicsRep se
+        -- eliminó (con connPart anclado no replicaba → no movía nada).
+        if opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
-            -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
             local realCF = Spoof.captureReal(root)
             LIP.cachedRoot   = root
             LIP.spoofRealCF  = realCF
@@ -1727,7 +1709,6 @@ return function(require, LIP, Lib)
             Spoof.camToLocal(cam, realCF)
             pcall(function() root.CFrame = goCF end)
         else
-            -- SIN spoof: mueve el cuerpo real (teleport crudo, riesgoso)
             if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
         end
@@ -1738,12 +1719,11 @@ return function(require, LIP, Lib)
     -- VOID (server te ve en tu pos REAL → disparás). El salto constante rompe el resolver de PREDICCIÓN
     -- de otros cheaters (tu pos aparece/desaparece = no te predicen). Sliders In/Out (0.1-2s). Gate de
     -- disparo = LIP.voidShootOk (Weapon.tickAuto lo respeta si voidShootOut). Usa el pattern seleccionado.
-    local function spoofTo(root, cam, goCF, connExploit, posSpoof)
-        if connExploit then
-            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
-            Spoof.weldToPos(goCF.Position)
-            -- cámara consistente en el void IN (si no, freeze por camAnchor viejo colgado tras el OUT harmony)
-            if posSpoof then Spoof.camToLocal(cam, Spoof.captureReal(root)) else Spoof.camToChar(cam) end
+    local function spoofTo(root, cam, goCF, posSpoof)
+        if posSpoof == false then
+            -- teleport crudo del cuerpo real (raro en void; respeta Pos Spoof OFF)
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
+            pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
         else
             if LIP.connRep then Spoof.unweld() end
             local realCF = Spoof.captureReal(root)
@@ -1781,7 +1761,8 @@ return function(require, LIP, Lib)
         if not root then return end
         local goCF = patternCF(opts.dist or 1000, opts.pattern)
         LIP.spoofFakePos = goCF.Position
-        spoofTo(root, cam, goCF, opts.connExploit, opts.posSpoof)
+        LIP.tightFollow = false
+        spoofTo(root, cam, goCF, opts.posSpoof)
     end
 
     -- ── VISUALIZADOR ──────────────────────────────────────────────────────────
@@ -1839,15 +1820,15 @@ return function(require, LIP, Lib)
         return vizHist[1] and vizHist[1].pos
     end
     local function updateViz()
-        -- viz cuando hay pos spoofeada por CUALQUIER método (desync spoofOn o connection weld connRep)
-        if not (T("VoidViz") and (LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos) then
+        -- viz cuando hay desync activo (spoofOn) con pos spoofeada
+        if not (T("VoidViz") and LIP.spoofOn and LIP.spoofFakePos) then
             vizHist = {}; vizShown = nil; segStart = nil; segTarget = nil; return hideViz()
         end
         ensureViz()
         local now = os.clock()
-        if LIP.connRep and LIP.connTargetHRP then
-            -- CONNECTION WELD a un target: estás sincronizado REAL-TIME con su HRP → el indicador NO lleva
-            -- delay artificial (la pos que ve el server ES tu weld, en vivo). Mostralo crudo, sin ping-sim.
+        if LIP.tightFollow then
+            -- CONNECTION WELD (seguí pegado al target real): el server te ve donde te desyncás en vivo con él
+            -- → el indicador NO lleva delay artificial. Mostralo crudo, sin ping-sim.
             vizShown = LIP.spoofFakePos
             vizHist = {}; segStart = nil; segTarget = nil
         else
@@ -2105,7 +2086,7 @@ return function(require, LIP, Lib)
         return (ok and f) or Enum.Font.GothamBold
     end
 
-    local sg, lbl
+    local sg, lbl, grad
     local function ensure()
         if sg and sg.Parent and lbl and lbl.Parent then return end
         sg = Instance.new("ScreenGui")
@@ -2121,6 +2102,10 @@ return function(require, LIP, Lib)
         lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)  -- outline para legibilidad sobre cualquier fondo
         lbl.Text = ""; lbl.Visible = false
         lbl.Parent = sg
+        -- UIGradient para la OLA DE COLOR (recorre las letras). Enabled solo con el toggle de wave.
+        grad = Instance.new("UIGradient")
+        grad.Enabled = false
+        grad.Parent = lbl
     end
 
     -- línea activa según prioridad (killed > reloadVoid > base). "" = nada que mostrar.
@@ -2135,36 +2120,38 @@ return function(require, LIP, Lib)
         return ""
     end
 
-    -- máquina de fade: alpha 0→1, phase "in"/"out". Un cambio de línea fuerza "out" (fade-out completo)
-    -- antes de swappear el texto y hacer "in" → crossfade suave entre overrides.
-    local shown, alpha, phase = "", 0, "in"
+    -- Smooth Fade = OLA DE COLOR (no fade alpha): una banda de color/brillo recorre las letras via UIGradient
+    -- animado. El texto se muestra sólido al instante; en cambios de override sólo se swappea (la ola sigue).
     local function update(dt)
         if not T("CrossHUD") then if lbl then lbl.Visible = false end return end
         ensure()
-        local want = activeLine()
-        if T("CrossHUDFade") then
-            local spd = O("CrossHUDFadeSpeed") or 6
-            if phase == "in" and want ~= shown then phase = "out" end
-            if phase == "out" then
-                alpha = math.max(0, alpha - dt * spd)
-                if alpha <= 0.001 then shown = want; phase = "in" end
-            else
-                local goal = (shown ~= "") and 1 or 0
-                if alpha < goal then alpha = math.min(goal, alpha + dt * spd)
-                elseif alpha > goal then alpha = math.max(goal, alpha - dt * spd) end
-            end
-        else
-            shown = want; alpha = (shown ~= "") and 1 or 0
-        end
+        local shown = activeLine()
+        if shown == "" then lbl.Visible = false; return end
         local col = O("CrossHUDColor") or Color3.fromRGB(202, 151, 161)
         lbl.Text = shown
         lbl.Font = wmFont()
         lbl.TextSize = O("CrossHUDSize") or 16
         lbl.TextColor3 = col
-        lbl.TextTransparency = 1 - alpha
-        lbl.TextStrokeTransparency = 1 - alpha * 0.5
+        lbl.TextTransparency = 0
+        lbl.TextStrokeTransparency = 0.5
         lbl.Position = UDim2.new(0.5, 0, 0.5, O("CrossHUDOffset") or 34)   -- centro de pantalla + offset abajo
-        lbl.Visible = shown ~= "" and alpha > 0.01
+        lbl.Visible = true
+        -- OLA DE COLOR: banda brillante que barre las letras de izq→der (UIGradient con offset animado).
+        if T("CrossHUDFade") then
+            local hi = col:Lerp(Color3.new(1, 1, 1), 0.75)   -- pico de la ola = color base aclarado
+            grad.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0.0, col),
+                ColorSequenceKeypoint.new(0.4, col),
+                ColorSequenceKeypoint.new(0.5, hi),
+                ColorSequenceKeypoint.new(0.6, col),
+                ColorSequenceKeypoint.new(1.0, col),
+            })
+            local spd = O("CrossHUDFadeSpeed") or 6
+            grad.Offset = Vector2.new(((os.clock() * spd * 0.15) % 1.4) - 0.7, 0)   -- barrido continuo
+            grad.Enabled = true
+        else
+            grad.Enabled = false
+        end
     end
 
     function CrossHUD.init()
@@ -2284,7 +2271,7 @@ return function(require, LIP, Lib)
         sp:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
             Tooltip = "ON = desync (cuerpo real quieto). Con Connection Weld ON = ancla la cámara a tu pos real (vista estable, harmonía). OFF (solo desync) = mueve el cuerpo real." })
         sp:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
-            Tooltip = "PhysicsRepRootPart weld al target + orbit de strafing (radius/speed/height/mode), trackeado en render = cero jitter, sin fling, cuerpo REAL libre (sin pausa clientside). Coexiste con Pos Spoof." })
+            Tooltip = "Seguí PEGADO al target real (centro crudo, sin resolver). Con Pos Spoof ON = desync a esa pos (mueve al jugador spoofeado). Con Pos Spoof OFF = teleport real (mueve tu cuerpo, NO es spoof)." })
         sp:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" })
             :AddColorPicker("VizColor", { Default = Color3.fromRGB(202, 151, 161) })
 
@@ -2298,10 +2285,10 @@ return function(require, LIP, Lib)
         hud:AddToggle("CrossHUD", { Text = "Crosshair HUD", Default = true,
             Tooltip = "Labels de estado del ragebot abajo del crosshair (killing: user | Resolved: x.xyz; overrides: Reloading In Void / Killed waiting). Font del watermark. 1.000=full resuelto (tiro seguro), 0.000=tiro difícil." })
             :AddColorPicker("CrossHUDColor", { Default = Color3.fromRGB(202, 151, 161) })
-        hud:AddToggle("CrossHUDFade", { Text = "Smooth Fade", Default = true,
-            Tooltip = "Crossfade suave entre cambios de estado/override (fade-out del viejo → fade-in del nuevo)." })
-        hud:AddSlider("CrossHUDFadeSpeed", { Text = "Fade Speed", Min = 1, Max = 20, Default = 6, Decimals = 1,
-            Tooltip = "Velocidad del fade (más alto = más rápido)." })
+        hud:AddToggle("CrossHUDFade", { Text = "Color Wave", Default = true,
+            Tooltip = "Ola de color: una banda de brillo recorre las letras (en vez de fade de transparencia alpha)." })
+        hud:AddSlider("CrossHUDFadeSpeed", { Text = "Wave Speed", Min = 1, Max = 20, Default = 6, Decimals = 1,
+            Tooltip = "Velocidad de la ola de color." })
         hud:AddSlider("CrossHUDSize", { Text = "Text Size", Min = 10, Max = 28, Default = 16 })
         hud:AddSlider("CrossHUDOffset", { Text = "Y Offset", Min = 10, Max = 120, Default = 34, Suffix = "px",
             Tooltip = "Distancia abajo del centro del crosshair." })
@@ -2601,7 +2588,7 @@ return function(require, LIP, Lib)
 
         -- ── HUD del crosshair: estado del ragebot (base + overrides) ──
         do
-            local eng = strafeOn or autoOn
+            local eng = strafeOn and autoOn   -- label base solo con Target Strafe + Auto Fire AMBOS activos
             LIP.hudTargetName = (eng and LIP.target) and LIP.target.Name or nil
             LIP.hudResolved   = LIP.target and Strafe.confidence(LIP.target) or 0
             LIP.hudReloadVoid = (LIP.reloading and LIP.voidPhase == "in") or false

@@ -26,7 +26,7 @@ return function(require, LIP, Lib)
         return (ok and f) or Enum.Font.GothamBold
     end
 
-    local sg, lbl
+    local sg, lbl, grad
     local function ensure()
         if sg and sg.Parent and lbl and lbl.Parent then return end
         sg = Instance.new("ScreenGui")
@@ -42,6 +42,10 @@ return function(require, LIP, Lib)
         lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)  -- outline para legibilidad sobre cualquier fondo
         lbl.Text = ""; lbl.Visible = false
         lbl.Parent = sg
+        -- UIGradient para la OLA DE COLOR (recorre las letras). Enabled solo con el toggle de wave.
+        grad = Instance.new("UIGradient")
+        grad.Enabled = false
+        grad.Parent = lbl
     end
 
     -- línea activa según prioridad (killed > reloadVoid > base). "" = nada que mostrar.
@@ -56,36 +60,38 @@ return function(require, LIP, Lib)
         return ""
     end
 
-    -- máquina de fade: alpha 0→1, phase "in"/"out". Un cambio de línea fuerza "out" (fade-out completo)
-    -- antes de swappear el texto y hacer "in" → crossfade suave entre overrides.
-    local shown, alpha, phase = "", 0, "in"
+    -- Smooth Fade = OLA DE COLOR (no fade alpha): una banda de color/brillo recorre las letras via UIGradient
+    -- animado. El texto se muestra sólido al instante; en cambios de override sólo se swappea (la ola sigue).
     local function update(dt)
         if not T("CrossHUD") then if lbl then lbl.Visible = false end return end
         ensure()
-        local want = activeLine()
-        if T("CrossHUDFade") then
-            local spd = O("CrossHUDFadeSpeed") or 6
-            if phase == "in" and want ~= shown then phase = "out" end
-            if phase == "out" then
-                alpha = math.max(0, alpha - dt * spd)
-                if alpha <= 0.001 then shown = want; phase = "in" end
-            else
-                local goal = (shown ~= "") and 1 or 0
-                if alpha < goal then alpha = math.min(goal, alpha + dt * spd)
-                elseif alpha > goal then alpha = math.max(goal, alpha - dt * spd) end
-            end
-        else
-            shown = want; alpha = (shown ~= "") and 1 or 0
-        end
+        local shown = activeLine()
+        if shown == "" then lbl.Visible = false; return end
         local col = O("CrossHUDColor") or Color3.fromRGB(202, 151, 161)
         lbl.Text = shown
         lbl.Font = wmFont()
         lbl.TextSize = O("CrossHUDSize") or 16
         lbl.TextColor3 = col
-        lbl.TextTransparency = 1 - alpha
-        lbl.TextStrokeTransparency = 1 - alpha * 0.5
+        lbl.TextTransparency = 0
+        lbl.TextStrokeTransparency = 0.5
         lbl.Position = UDim2.new(0.5, 0, 0.5, O("CrossHUDOffset") or 34)   -- centro de pantalla + offset abajo
-        lbl.Visible = shown ~= "" and alpha > 0.01
+        lbl.Visible = true
+        -- OLA DE COLOR: banda brillante que barre las letras de izq→der (UIGradient con offset animado).
+        if T("CrossHUDFade") then
+            local hi = col:Lerp(Color3.new(1, 1, 1), 0.75)   -- pico de la ola = color base aclarado
+            grad.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0.0, col),
+                ColorSequenceKeypoint.new(0.4, col),
+                ColorSequenceKeypoint.new(0.5, hi),
+                ColorSequenceKeypoint.new(0.6, col),
+                ColorSequenceKeypoint.new(1.0, col),
+            })
+            local spd = O("CrossHUDFadeSpeed") or 6
+            grad.Offset = Vector2.new(((os.clock() * spd * 0.15) % 1.4) - 0.7, 0)   -- barrido continuo
+            grad.Enabled = true
+        else
+            grad.Enabled = false
+        end
     end
 
     function CrossHUD.init()

@@ -105,7 +105,7 @@ return function(require, LIP, Lib)
         sp:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
             Tooltip = "ON = desync (cuerpo real quieto). Con Connection Weld ON = ancla la cámara a tu pos real (vista estable, harmonía). OFF (solo desync) = mueve el cuerpo real." })
         sp:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
-            Tooltip = "PhysicsRepRootPart weld al target + orbit de strafing (radius/speed/height/mode), trackeado en render = cero jitter, sin fling, cuerpo REAL libre (sin pausa clientside). Coexiste con Pos Spoof." })
+            Tooltip = "Seguí PEGADO al target real (centro crudo, sin resolver). Con Pos Spoof ON = desync a esa pos (mueve al jugador spoofeado). Con Pos Spoof OFF = teleport real (mueve tu cuerpo, NO es spoof)." })
         sp:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" })
             :AddColorPicker("VizColor", { Default = Color3.fromRGB(202, 151, 161) })
 
@@ -119,10 +119,10 @@ return function(require, LIP, Lib)
         hud:AddToggle("CrossHUD", { Text = "Crosshair HUD", Default = true,
             Tooltip = "Labels de estado del ragebot abajo del crosshair (killing: user | Resolved: x.xyz; overrides: Reloading In Void / Killed waiting). Font del watermark. 1.000=full resuelto (tiro seguro), 0.000=tiro difícil." })
             :AddColorPicker("CrossHUDColor", { Default = Color3.fromRGB(202, 151, 161) })
-        hud:AddToggle("CrossHUDFade", { Text = "Smooth Fade", Default = true,
-            Tooltip = "Crossfade suave entre cambios de estado/override (fade-out del viejo → fade-in del nuevo)." })
-        hud:AddSlider("CrossHUDFadeSpeed", { Text = "Fade Speed", Min = 1, Max = 20, Default = 6, Decimals = 1,
-            Tooltip = "Velocidad del fade (más alto = más rápido)." })
+        hud:AddToggle("CrossHUDFade", { Text = "Color Wave", Default = true,
+            Tooltip = "Ola de color: una banda de brillo recorre las letras (en vez de fade de transparencia alpha)." })
+        hud:AddSlider("CrossHUDFadeSpeed", { Text = "Wave Speed", Min = 1, Max = 20, Default = 6, Decimals = 1,
+            Tooltip = "Velocidad de la ola de color." })
         hud:AddSlider("CrossHUDSize", { Text = "Text Size", Min = 10, Max = 28, Default = 16 })
         hud:AddSlider("CrossHUDOffset", { Text = "Y Offset", Min = 10, Max = 120, Default = 34, Suffix = "px",
             Tooltip = "Distancia abajo del centro del crosshair." })

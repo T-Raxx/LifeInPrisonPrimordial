@@ -65,16 +65,12 @@ return function(require, LIP, Lib)
         local goCF = patternCF(dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
-        if opts.connExploit then
-            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta desync, mantiene el weld
-            Spoof.weldToPos(goCF.Position)   -- void: sin target → pos absoluta lejana; cuerpo real libre
-            -- CÁMARA: la rama connExploit debe manejar la cámara SIEMPRE, si no deja el camAnchor viejo pegado
-            -- como CameraSubject sin actualizar (viniendo de un harmony-strafe) = FREEZE. Con posSpoof (harmony)
-            -- anclar a la pos real (vista consistente OUT↔IN); sin posSpoof seguir el cuerpo real libre.
-            if opts.posSpoof then Spoof.camToLocal(cam, Spoof.captureReal(root)) else Spoof.camToChar(cam) end
-        elseif opts.posSpoof then
+        LIP.tightFollow = false
+        -- Void no tiene target → connExploit no aplica acá. Pos Spoof decide: ON = DESYNC (server te ve lejos,
+        -- cuerpo/cámara reales quietos), OFF = teleport crudo del cuerpo real (riesgoso). El weld PhysicsRep se
+        -- eliminó (con connPart anclado no replicaba → no movía nada).
+        if opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
-            -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
             local realCF = Spoof.captureReal(root)
             LIP.cachedRoot   = root
             LIP.spoofRealCF  = realCF
@@ -84,7 +80,6 @@ return function(require, LIP, Lib)
             Spoof.camToLocal(cam, realCF)
             pcall(function() root.CFrame = goCF end)
         else
-            -- SIN spoof: mueve el cuerpo real (teleport crudo, riesgoso)
             if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
         end
@@ -95,12 +90,11 @@ return function(require, LIP, Lib)
     -- VOID (server te ve en tu pos REAL → disparás). El salto constante rompe el resolver de PREDICCIÓN
     -- de otros cheaters (tu pos aparece/desaparece = no te predicen). Sliders In/Out (0.1-2s). Gate de
     -- disparo = LIP.voidShootOk (Weapon.tickAuto lo respeta si voidShootOut). Usa el pattern seleccionado.
-    local function spoofTo(root, cam, goCF, connExploit, posSpoof)
-        if connExploit then
-            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
-            Spoof.weldToPos(goCF.Position)
-            -- cámara consistente en el void IN (si no, freeze por camAnchor viejo colgado tras el OUT harmony)
-            if posSpoof then Spoof.camToLocal(cam, Spoof.captureReal(root)) else Spoof.camToChar(cam) end
+    local function spoofTo(root, cam, goCF, posSpoof)
+        if posSpoof == false then
+            -- teleport crudo del cuerpo real (raro en void; respeta Pos Spoof OFF)
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
+            pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
         else
             if LIP.connRep then Spoof.unweld() end
             local realCF = Spoof.captureReal(root)
@@ -138,7 +132,8 @@ return function(require, LIP, Lib)
         if not root then return end
         local goCF = patternCF(opts.dist or 1000, opts.pattern)
         LIP.spoofFakePos = goCF.Position
-        spoofTo(root, cam, goCF, opts.connExploit, opts.posSpoof)
+        LIP.tightFollow = false
+        spoofTo(root, cam, goCF, opts.posSpoof)
     end
 
     -- ── VISUALIZADOR ──────────────────────────────────────────────────────────
@@ -196,15 +191,15 @@ return function(require, LIP, Lib)
         return vizHist[1] and vizHist[1].pos
     end
     local function updateViz()
-        -- viz cuando hay pos spoofeada por CUALQUIER método (desync spoofOn o connection weld connRep)
-        if not (T("VoidViz") and (LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos) then
+        -- viz cuando hay desync activo (spoofOn) con pos spoofeada
+        if not (T("VoidViz") and LIP.spoofOn and LIP.spoofFakePos) then
             vizHist = {}; vizShown = nil; segStart = nil; segTarget = nil; return hideViz()
         end
         ensureViz()
         local now = os.clock()
-        if LIP.connRep and LIP.connTargetHRP then
-            -- CONNECTION WELD a un target: estás sincronizado REAL-TIME con su HRP → el indicador NO lleva
-            -- delay artificial (la pos que ve el server ES tu weld, en vivo). Mostralo crudo, sin ping-sim.
+        if LIP.tightFollow then
+            -- CONNECTION WELD (seguí pegado al target real): el server te ve donde te desyncás en vivo con él
+            -- → el indicador NO lleva delay artificial. Mostralo crudo, sin ping-sim.
             vizShown = LIP.spoofFakePos
             vizHist = {}; segStart = nil; segTarget = nil
         else
