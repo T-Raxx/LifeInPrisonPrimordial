@@ -197,6 +197,24 @@ return function(require, LIP, Lib)
     local brng = 987654321
     local function rnd() brng = (brng * 1103515245 + 12345) % 2147483648; return brng / 2147483648 end
 
+    -- OFFSET del connection weld en espacio LOCAL del target (se multiplica por target.CFrame → sigue su
+    -- posición Y rotación). +Z = ATRÁS del target (LookVector es -Z). radius nunca 0 → nunca adentro = sin fling.
+    local wseed = 0
+    local function weldOrbitOffset(opts)
+        local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
+        local mode = opts.mode or "Normal"
+        if mode == "Behind" then
+            return CFrame.new(0, h, R)                               -- fijo R atrás
+        elseif mode == "Spiral" then
+            wseed = wseed + spd * 0.03
+            local vAmp = (math.abs(h) > 0.1) and math.abs(h) or 6
+            return CFrame.new(math.cos(wseed) * R, math.sin(wseed * 0.5) * vAmp, math.sin(wseed) * R)
+        else -- Normal / Random: órbita circular en el plano local XZ del target
+            wseed = wseed + spd * 0.05
+            return CFrame.new(math.cos(wseed) * R, h, math.sin(wseed) * R)
+        end
+    end
+
     -- llamado por el driver cada Heartbeat con el target resuelto
     function Strafe.tick(target, opts)
         local root = myRoot(); local cam = Workspace.CurrentCamera
@@ -206,9 +224,7 @@ return function(require, LIP, Lib)
         -- CENTRO: pos RESUELTA del target (resolver, contra jitter/spoof enemigo, con predicción por
         -- velocidad para compensar el delay de replicación) o cruda + predicción manual.
         local center
-        if opts.connExploit then
-            center = tRoot.Position          -- WELD: seguí PEGADO al target real (crudo, sin resolver → ceñido)
-        elseif opts.resolve then
+        if opts.resolve then
             center = Strafe.resolvePos(target, tRoot.Position, opts.resolveMethod, opts.samples, opts.predict)
         else
             center = tRoot.Position
@@ -237,15 +253,22 @@ return function(require, LIP, Lib)
             end
         end
 
-        LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
-        LIP.tightFollow  = opts.connExploit and true or false   -- weld = seguí pegado (viz sin delay artificial)
-
-        -- APLICACIÓN de la posición. El connection weld YA NO usa PhysicsRepRootPart: con un connPart anclado
-        -- (fuera del assembly) NO replica → no movía a nadie. Se aplica por root.CFrame (único que replica acá):
-        --   Pos Spoof ON  → DESYNC (server ve goCF, cuerpo/cámara reales quietos) = mueve al jugador SPOOFEADO.
-        --   Pos Spoof OFF → TELEPORT real (movés tu cuerpo a goCF) = mueve al jugador REAL. NO es spoof.
-        -- El connExploit solo cambia el CENTRO (pegado al target real, sin resolver); la aplicación es la misma.
-        if opts.posSpoof then
+        if opts.connExploit then
+            -- CONNECTION WELD real (WeldMenu-style, VERIFICADO en LiP): mové tu cuerpo REAL a target.CFrame*offset
+            -- (espacio local → seguís posición Y rotación del target) + PhysicsRepRootPart = HRP REAL del target
+            -- (parte de su assembly → el server te replica pegado a él SIN delay ni flicker; un part anclado NO
+            -- replicaba). radius nunca 0 → nunca adentro del HRP = sin fling. NO usa desync; ES el posicionamiento
+            -- (ignora Pos Spoof). Cámara sigue tu cuerpo real (estás pegado al target → te ves ahí, sin delay).
+            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
+            local offCF = weldOrbitOffset(opts)
+            Spoof.weldToTarget(tRoot, offCF)
+            LIP.spoofFakePos = (tRoot.CFrame * offCF).Position   -- origin del disparo + viz
+            LIP.tightFollow = true
+            Spoof.camToChar(cam)
+        elseif opts.posSpoof then
+            LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
+            LIP.tightFollow = false
+            -- DESYNC: server ve goCF (órbita), cuerpo/cámara reales quietos = mueve al jugador SPOOFEADO.
             if LIP.connRep then Spoof.unweld() end
             local realCF = Spoof.captureReal(root)
             LIP.cachedRoot   = root
@@ -256,7 +279,9 @@ return function(require, LIP, Lib)
             Spoof.camToLocal(cam, realCF)
             pcall(function() root.CFrame = goCF end)
         else
-            -- mueve el cuerpo real. Zero de velocidad linear+angular (no acumula momentum).
+            LIP.spoofFakePos = goCF.Position
+            LIP.tightFollow = false
+            -- SIN spoof: mueve el cuerpo real a la órbita. Zero de velocidad (no acumula momentum).
             if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
             pcall(function()
                 root.CFrame = goCF

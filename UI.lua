@@ -105,7 +105,7 @@ return function(require, LIP, Lib)
         sp:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
             Tooltip = "ON = desync (cuerpo real quieto). Con Connection Weld ON = ancla la cámara a tu pos real (vista estable, harmonía). OFF (solo desync) = mueve el cuerpo real." })
         sp:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
-            Tooltip = "Seguí PEGADO al target real (centro crudo, sin resolver). Con Pos Spoof ON = desync a esa pos (mueve al jugador spoofeado). Con Pos Spoof OFF = teleport real (mueve tu cuerpo, NO es spoof)." })
+            Tooltip = "WELD real al target: tu cuerpo se pega a él (target.CFrame*offset, sigue rotación) + PhysicsRepRootPart = su HRP → replica SIN delay ni flicker. Es el método de posición (ignora Pos Spoof). Radius = distancia atrás/órbita (sin fling)." })
         sp:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" })
             :AddColorPicker("VizColor", { Default = Color3.fromRGB(202, 151, 161) })
 

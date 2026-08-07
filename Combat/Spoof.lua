@@ -38,20 +38,8 @@ return function(require, LIP, Lib)
                 end)
                 D.spoofRestore = nil
             end
-            -- (2) connection weld tracking (server te ve en connPart; cuerpo real NUNCA se escribe).
-            -- El ORBIT se computa AQUÍ (render, no Heartbeat) contra la pos SUAVE del target → cero jitter.
-            -- SIN rotación (identidad) → el weld ya sigue al target por posición; no doble-aplicamos rotación.
-            if D.connRep and D.connPart then
-                local tr = D.connTargetHRP
-                if tr and tr.Parent then
-                    local off = D.connOffsetVec
-                    if D.connOrbit then off = Spoof.orbitOffset(D.connOrbit, dt) end   -- orbit smooth por-frame
-                    pcall(function() D.connPart.CFrame = CFrame.new(tr.Position + (off or Vector3.zero)) end)
-                elseif D.connStaticPos then
-                    pcall(function() D.connPart.CFrame = CFrame.new(D.connStaticPos) end)
-                end
-                D.spoofFakePos = D.connPart.Position
-            end
+            -- (el connection weld ya NO se trackea acá: es WeldMenu-style, escribe el cuerpo real en Heartbeat
+            --  desde Strafe.tick + PhysicsRepRootPart=target. Ya no hay connPart anclado que seguir.)
         end))
     end
 
@@ -91,21 +79,21 @@ return function(require, LIP, Lib)
     -- el orbit corren en RENDER contra la CFrame SUAVE del target (cero jitter, no depende del Heartbeat).
     -- `orbit` = tabla {radius,speed,height,mode} (orbit smooth por-frame) o Vector3 (offset fijo). Coexiste
     -- con pos spoof (harmonía): el cuerpo real NUNCA se escribe → sin fling, sin pausa clientside.
-    function Spoof.weldToTarget(targetHRP, orbit)
-        if not (targetHRP and targetHRP.Parent) then return end
+    -- CONNECTION WELD (WeldMenu-style, VERIFICADO en LiP): mové el cuerpo REAL a target.CFrame * offsetCF
+    -- (espacio LOCAL → seguís posición Y rotación del target) + PhysicsRepRootPart = HRP REAL del target
+    -- (parte de su assembly → el server te replica pegado a él SIN delay ni flicker; un part anclado FUERA
+    -- del assembly no replicaba = no movía a nadie). Se llama cada Heartbeat. radius nunca 0 → sin fling.
+    function Spoof.weldToTarget(targetHRP, offsetCF)
+        local r = myRoot()
+        if not (r and targetHRP and targetHRP.Parent) then return end
+        pcall(function()
+            r.CFrame = targetHRP.CFrame * offsetCF
+            r.AssemblyLinearVelocity  = Vector3.zero
+            r.AssemblyAngularVelocity = Vector3.zero
+        end)
+        if sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", targetHRP) end) end
+        LIP.connRep = true
         LIP.connTargetHRP = targetHRP
-        LIP.connStaticPos = nil
-        if typeof(orbit) == "Vector3" then
-            LIP.connOrbit = nil; LIP.connOffsetVec = orbit
-        elseif type(orbit) == "table" then
-            LIP.connOrbit = orbit; LIP.connOffsetVec = nil
-        end
-        -- set inmediato (evita 1 frame de connPart viejo antes del render)
-        if LIP.connPart then
-            local off = LIP.connOffsetVec or (LIP.connOrbit and Spoof.orbitOffset(LIP.connOrbit, 0)) or Vector3.zero
-            pcall(function() LIP.connPart.CFrame = CFrame.new(targetHRP.Position + off) end)
-        end
-        armPhysRep()
     end
     -- SOLDAR A UNA POS FIJA (void spam / bait: sin target, pos absoluta). El render mantiene connPart ahí.
     function Spoof.weldToPos(pos)
