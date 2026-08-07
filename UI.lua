@@ -87,12 +87,12 @@ return function(require, LIP, Lib)
             Tooltip = "Desync: el server te ve orbitando; cuerpo/cámara reales quietos" })
         ts:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
             Callback = function(a) local t = Lib.Toggles.TargetStrafe; if t then t:SetValue(a) end end })
-        ts:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind" }, Default = "Normal",
+        ts:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind", "Spiral" }, Default = "Normal",
             Callback = function(v) Strafe.applyPreset(v) end })
-        ts:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind" }, Default = "Normal" })
-        ts:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 25, Default = 10, Decimals = 1, Suffix = "studs" })
+        ts:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind", "Spiral" }, Default = "Normal" })
+        ts:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 150, Default = 10, Decimals = 1, Suffix = "studs" })
         ts:AddSlider("StrafeSpeed",  { Text = "Speed", Min = 1, Max = 40, Default = 4 })
-        ts:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
+        ts:AddSlider("StrafeHeight", { Text = "Height", Min = -50, Max = 50, Default = 0 })
         ts:AddToggle("StrafeBait", { Text = "Bait", Default = false,
             Tooltip = "Cada 1-3s (random) salta a un spot random por 0.3s" })
         ts:AddDivider()
@@ -103,9 +103,9 @@ return function(require, LIP, Lib)
 
         local sp = RS:AddPanel("Server Position", { Column = 3 })
         sp:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
-            Tooltip = "Método master. ON = desync (cuerpo real quieto). OFF = mueve el cuerpo real." })
+            Tooltip = "ON = desync (cuerpo real quieto). Con Connection Weld ON = ancla la cámara a tu pos real (vista estable, harmonía). OFF (solo desync) = mueve el cuerpo real." })
         sp:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
-            Tooltip = "PhysicsRepRootPart weld (solo pos, sin rotación). Cuerpo REAL libre. Override de Pos Spoof." })
+            Tooltip = "PhysicsRepRootPart weld al target + orbit de strafing (radius/speed/height/mode), trackeado en render = cero jitter, sin fling, cuerpo REAL libre (sin pausa clientside). Coexiste con Pos Spoof." })
         sp:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" })
             :AddColorPicker("VizColor", { Default = Color3.fromRGB(202, 151, 161) })
 

@@ -106,6 +106,7 @@ return function(require, LIP, Lib)
         Normal = { mode = "Normal", radius = 10,   speed = 4,  height = 0 },
         Random = { mode = "Random", radius = 10.5, speed = 20, height = 0 },
         Behind = { mode = "Behind", radius = 8,    speed = 8,  height = 0 },
+        Spiral = { mode = "Spiral", radius = 12,   speed = 6,  height = 8 },
     }
     function Strafe.applyPreset(name)
         local p = Strafe.PRESETS[name]; if not p then return end
@@ -137,6 +138,13 @@ return function(require, LIP, Lib)
             seed = seed + spd * 0.02 + math.abs(math.sin(os.clock() * 91.7)) * 0.15
             local goPos = center + Vector3.new(rx, h + ry * 0.4, rz)
             return CFrame.new(goPos) * CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
+        elseif mode == "Spiral" then
+            -- ESPIRAL 3D (HvH): órbita circular X/Z + oscilación vertical Y a mitad de frecuencia = hélice
+            -- LENTA alrededor del target. La más difícil de resolver (te movés en 3 ejes suave y continuo).
+            seed = seed + spd * 0.03   -- lento
+            local vAmp = (math.abs(h) > 0.1) and math.abs(h) or 6
+            local off = Vector3.new(math.cos(seed) * R, math.sin(seed * 0.5) * vAmp, math.sin(seed) * R)
+            return CFrame.lookAt(center + off, center)
         else -- Normal: órbita circular
             seed = seed + spd * 0.05
             local off = Vector3.new(math.cos(seed) * R, h, math.sin(seed) * R)
@@ -188,17 +196,22 @@ return function(require, LIP, Lib)
 
         local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
 
-        -- BAIT: cada 1-3s (random) salta a un spot random lejano por 0.3s (baitea el aim enemigo)
+        -- BAIT: cada 1-3s salta a una pos random FIJA (dentro de 100 studs del target) por 0.5s, + jitter en
+        -- X de ±5 studs cada frame → el enemigo ve un ghost lejano temblando = rompe/baitea su aim.
+        local baiting = false
         if opts.bait then
             local now = os.clock()
             if not LIP.baitNext then LIP.baitNext = now + 1 + rnd() * 2 end
             if not LIP.baitUntil and now >= LIP.baitNext then
-                LIP.baitUntil = now + 0.3
-                local R = opts.radius or 10
-                LIP.baitPos = center + Vector3.new((rnd()-0.5) * R * 6, opts.height or 0, (rnd()-0.5) * R * 6)
+                LIP.baitUntil = now + 0.5                          -- pos FIJA por 0.5s
+                local ang, d = rnd() * 6.2831853, rnd() * 100       -- random dentro de 100 studs del centro
+                LIP.baitPos = center + Vector3.new(math.cos(ang) * d, opts.height or 0, math.sin(ang) * d)
             end
             if LIP.baitUntil then
-                if now < LIP.baitUntil then goCF = CFrame.new(LIP.baitPos)
+                if now < LIP.baitUntil then
+                    baiting = true
+                    LIP.baitJitterPos = LIP.baitPos + Vector3.new((rnd() - 0.5) * 10, 0, 0)  -- jitter X, rango 10
+                    goCF = CFrame.new(LIP.baitJitterPos)
                 else LIP.baitUntil = nil; LIP.baitNext = now + 1 + rnd() * 2 end
             end
         end
@@ -206,14 +219,25 @@ return function(require, LIP, Lib)
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
         if opts.connExploit then
-            -- CONNECTION WELD al TARGET: soldamos tu PhysicsRepRootPart pegado al HRP del objetivo + offset
-            -- (radius/height/mode) → el server te ve sincronizado PERFECTO con él, sin jitter (el tracking
-            -- corre en render contra la CFrame suave del target, NO usa resolver/predict). Cuerpo REAL libre.
-            -- Bypassa el orbit/goCF (resolver era la fuente de jitter). Coexiste con pos spoof (harmonía).
-            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta SOLO el desync, mantiene el weld
-            local off = Strafe.offsetVec(target, opts)
-            Spoof.weldToTarget(tRoot, off)
-            LIP.spoofFakePos = tRoot.Position + off
+            -- CONNECTION WELD: el server te ve orbitando el target (radius/speed/height/mode), trackeado +
+            -- orbitado en RENDER contra la pos SUAVE del target → cero jitter, SIN seguir la rotación del char
+            -- (el weld ya sigue al target por posición). Cuerpo REAL LIBRE = sin fling, sin pausa clientside.
+            -- Offsets de strafing normales (nunca offset 0 = adentro del HRP = fling). BAIT: weld a spot fijo.
+            if baiting then
+                Spoof.weldToPos(LIP.baitJitterPos or LIP.baitPos)
+            else
+                Spoof.weldToTarget(tRoot, { radius = opts.radius, speed = opts.speed,
+                                            height = opts.height, mode = opts.mode })
+            end
+            LIP.spoofFakePos = (LIP.connPart and LIP.connPart.Position) or goCF.Position
+            -- HARMONÍA con Pos Spoof: si además está ON, anclá la cámara a tu pos REAL (vista quieta, cuerpo
+            -- libre, como symbol.lua). Si está OFF, cámara normal + corta cualquier desync viejo.
+            if opts.posSpoof then
+                Spoof.camToLocal(cam, Spoof.captureReal(root))
+                LIP.spoofOn = false; LIP.spoofRestore = nil; LIP.spoofVel = nil
+            elseif LIP.spoofOn then
+                Spoof.stopDesyncOnly(cam)
+            end
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos

@@ -108,7 +108,7 @@ return function(require, LIP, Lib)
         if manual then LIP.target = manual; return end
         if needAim then
             Target.pick({ mode = O.SelMode.Value, fov = O.FOV.Value, wallcheck = T.Wallcheck.Value,
-                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         else
             LIP.target = nil
         end
@@ -127,7 +127,8 @@ return function(require, LIP, Lib)
             local en = et and et.Name
             if en ~= LIP.curWeapon then LIP.curWeapon = en; LIP.observedFirerate = nil; LIP.shotsFired = 0 end
         end
-        local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
+        local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value,
+                          ffCheck = T.FFCheck and T.FFCheck.Value }
         local cam = Workspace.CurrentCamera
 
         local strafeOn   = T.TargetStrafe and T.TargetStrafe.Value
@@ -176,7 +177,7 @@ return function(require, LIP, Lib)
         elseif strafeOn then
             if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
-                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
             if st then
                 local strafeOpts = { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
                                   speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
@@ -214,18 +215,18 @@ return function(require, LIP, Lib)
 
         -- melee aura / auto punch
         if LIP.meleeOn then
-            Melee.cacheMelee({ range = O.MeleeRange.Value, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            Melee.cacheMelee({ range = O.MeleeRange.Value, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         else LIP.meleePart = nil end
         if T.AutoPunch and T.AutoPunch.Value then
-            Melee.autoPunch({ range = O.PunchRange.Value, rate = 0.5, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            Melee.autoPunch({ range = O.PunchRange.Value, rate = 0.5, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         end
 
         -- niche autos (throw / arrest)
         if T.AutoThrow and T.AutoThrow.Value then
-            Niche.throwAt({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            Niche.throwAt({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         end
         if T.AutoArrest and T.AutoArrest.Value then
-            Niche.arrest({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            Niche.arrest({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         end
 
         -- auto weapons: recoge armas sueltas del mapa (teleport+grab, pos real restaurada)

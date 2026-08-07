@@ -196,26 +196,34 @@ return function(require, LIP, Lib)
         end
         ensureViz()
         local now = os.clock()
-        -- 1) samplear la pos spoofeada real al historial (~2s)
-        vizHist[#vizHist+1] = { t = now, pos = LIP.spoofFakePos }
-        while #vizHist > 140 do table.remove(vizHist, 1) end
-        -- 2) ping actual = delay de replicación
-        local ping = 0.1
-        pcall(function() ping = math.clamp(game:GetService("Players").LocalPlayer:GetNetworkPing(), 0, 0.6) end)
-        -- 3) update ~16hz: NUEVO segmento eased desde donde ESTAMOS (corta caminos) → pos demorada por ping
-        if now >= vizNext16 then
-            vizNext16 = now + (1/16)
-            local tgt = delayedPos(now, ping) or LIP.spoofFakePos
-            segStart = vizShown or tgt
-            segTarget = tgt
-            segT0 = now
+        if LIP.connRep and LIP.connTargetHRP then
+            -- CONNECTION WELD a un target: estás sincronizado REAL-TIME con su HRP → el indicador NO lleva
+            -- delay artificial (la pos que ve el server ES tu weld, en vivo). Mostralo crudo, sin ping-sim.
+            vizShown = LIP.spoofFakePos
+            vizHist = {}; segStart = nil; segTarget = nil
+        else
+            -- DESYNC (ghost): simular cómo lo ven los demás → demora por ping + refresh ~16hz + suavizado.
+            -- 1) samplear la pos spoofeada real al historial (~2s)
+            vizHist[#vizHist+1] = { t = now, pos = LIP.spoofFakePos }
+            while #vizHist > 140 do table.remove(vizHist, 1) end
+            -- 2) ping actual = delay de replicación
+            local ping = 0.1
+            pcall(function() ping = math.clamp(game:GetService("Players").LocalPlayer:GetNetworkPing(), 0, 0.6) end)
+            -- 3) update ~16hz: NUEVO segmento eased desde donde ESTAMOS (corta caminos) → pos demorada por ping
+            if now >= vizNext16 then
+                vizNext16 = now + (1/16)
+                local tgt = delayedPos(now, ping) or LIP.spoofFakePos
+                segStart = vizShown or tgt
+                segTarget = tgt
+                segT0 = now
+            end
+            segTarget = segTarget or LIP.spoofFakePos
+            segStart  = segStart or segTarget
+            -- 4) InOutExpo "demasiado rápido": segDur < intervalo (16hz) → llega antes del próximo update, y en
+            --    cambios bruscos el re-anclado + la curva snappy = shortcut casi lineal (interpolación Roblox).
+            local a = math.clamp((now - segT0) / ((1/16) * 0.7), 0, 1)
+            vizShown = segStart:Lerp(segTarget, easeInOutExpo(a))
         end
-        segTarget = segTarget or LIP.spoofFakePos
-        segStart  = segStart or segTarget
-        -- 4) InOutExpo "demasiado rápido": segDur < intervalo (16hz) → llega antes del próximo update, y en
-        --    cambios bruscos el re-anclado + la curva snappy = shortcut casi lineal (interpolación Roblox).
-        local a = math.clamp((now - segT0) / ((1/16) * 0.7), 0, 1)
-        vizShown = segStart:Lerp(segTarget, easeInOutExpo(a))
         -- render
         local c = O("VizColor") or Color3.fromRGB(202,151,161)
         vizPart.Transparency = 0.3; vizPart.Position = vizShown; vizPart.Color = c; vizBillboard.Enabled = true

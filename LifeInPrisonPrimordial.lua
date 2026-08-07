@@ -206,12 +206,19 @@ return function(require, LIP, Lib)
         local s, r = pcall(function() return LP:IsFriendsWith(plr.UserId) end)
         return s and r
     end
+    local function hasFF(char)   -- spawn protection (ForceField) → intocable
+        return char and char:FindFirstChildOfClass("ForceField") ~= nil
+    end
+    -- checks UNIVERSALES de target (team / friend / forcefield). El wallcheck (LOS) va aparte en cada
+    -- selector (usa la cámara). Los tres los comparten pick (silent aim) y nearestEnemy (melee/punch).
     local function isEnemy(plr, opts)
         if plr == LP then return false end
         if opts.teamCheck and LP.Team and plr.Team == LP.Team then return false end
         if opts.friendCheck and isFriend(plr) then return false end
+        if opts.ffCheck and hasFF(plr.Character) then return false end   -- no enfocar target con FF
         return true
     end
+    Target.hasFF = hasFF
 
     -- silent aim: elige el mejor target según modo. Setea LIP.target.
     function Target.pick(opts)
@@ -381,7 +388,7 @@ return function(require, LIP, Lib)
         Spoof.install()
         if getgenv().__LIP_RESTORE then return end
         getgenv().__LIP_RESTORE = true
-        LIP.track(RunService.RenderStepped:Connect(function()
+        LIP.track(RunService.RenderStepped:Connect(function(dt)
             local D = getgenv().LIP
             if not D then return end
             -- (1) desync restore
@@ -393,12 +400,15 @@ return function(require, LIP, Lib)
                 end)
                 D.spoofRestore = nil
             end
-            -- (2) connection weld tracking (server te ve en connPart; cuerpo real NUNCA se escribe)
+            -- (2) connection weld tracking (server te ve en connPart; cuerpo real NUNCA se escribe).
+            -- El ORBIT se computa AQUÍ (render, no Heartbeat) contra la pos SUAVE del target → cero jitter.
+            -- SIN rotación (identidad) → el weld ya sigue al target por posición; no doble-aplicamos rotación.
             if D.connRep and D.connPart then
                 local tr = D.connTargetHRP
                 if tr and tr.Parent then
-                    -- pos del target (suave) + offset de config (radius/height/mode). SIN rotación (identidad)
-                    pcall(function() D.connPart.CFrame = CFrame.new(tr.Position + (D.connOffsetVec or Vector3.zero)) end)
+                    local off = D.connOffsetVec
+                    if D.connOrbit then off = Spoof.orbitOffset(D.connOrbit, dt) end   -- orbit smooth por-frame
+                    pcall(function() D.connPart.CFrame = CFrame.new(tr.Position + (off or Vector3.zero)) end)
                 elseif D.connStaticPos then
                     pcall(function() D.connPart.CFrame = CFrame.new(D.connStaticPos) end)
                 end
@@ -439,20 +449,30 @@ return function(require, LIP, Lib)
             LIP.connRep = true
         end
     end
-    -- SOLDAR AL TARGET: el server te ve en target.Position + offsetVec (radius/height/mode). El tracking
-    -- real lo hace el loop de RENDER contra la CFrame SUAVE del target (cero jitter). Coexiste con pos spoof.
-    function Spoof.weldToTarget(targetHRP, offsetVec)
+    -- SOLDAR AL TARGET: el server te ve en target.Position + orbit (radius/speed/height/mode). El tracking +
+    -- el orbit corren en RENDER contra la CFrame SUAVE del target (cero jitter, no depende del Heartbeat).
+    -- `orbit` = tabla {radius,speed,height,mode} (orbit smooth por-frame) o Vector3 (offset fijo). Coexiste
+    -- con pos spoof (harmonía): el cuerpo real NUNCA se escribe → sin fling, sin pausa clientside.
+    function Spoof.weldToTarget(targetHRP, orbit)
         if not (targetHRP and targetHRP.Parent) then return end
         LIP.connTargetHRP = targetHRP
-        LIP.connOffsetVec = offsetVec or Vector3.zero
         LIP.connStaticPos = nil
+        if typeof(orbit) == "Vector3" then
+            LIP.connOrbit = nil; LIP.connOffsetVec = orbit
+        elseif type(orbit) == "table" then
+            LIP.connOrbit = orbit; LIP.connOffsetVec = nil
+        end
         -- set inmediato (evita 1 frame de connPart viejo antes del render)
-        if LIP.connPart then pcall(function() LIP.connPart.CFrame = CFrame.new(targetHRP.Position + LIP.connOffsetVec) end) end
+        if LIP.connPart then
+            local off = LIP.connOffsetVec or (LIP.connOrbit and Spoof.orbitOffset(LIP.connOrbit, 0)) or Vector3.zero
+            pcall(function() LIP.connPart.CFrame = CFrame.new(targetHRP.Position + off) end)
+        end
         armPhysRep()
     end
-    -- SOLDAR A UNA POS FIJA (void spam: sin target, pos absoluta lejana). El render mantiene connPart ahí.
+    -- SOLDAR A UNA POS FIJA (void spam / bait: sin target, pos absoluta). El render mantiene connPart ahí.
     function Spoof.weldToPos(pos)
         LIP.connTargetHRP = nil
+        LIP.connOrbit = nil
         LIP.connStaticPos = pos
         if LIP.connPart then pcall(function() LIP.connPart.CFrame = CFrame.new(pos) end) end
         armPhysRep()
@@ -460,7 +480,8 @@ return function(require, LIP, Lib)
     function Spoof.unweld()
         local r = myRoot()
         if r and sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", r) end) end
-        LIP.connRep = false; LIP.connTargetHRP = nil; LIP.connStaticPos = nil; LIP.connOffsetVec = nil
+        LIP.connRep = false; LIP.connTargetHRP = nil; LIP.connStaticPos = nil
+        LIP.connOffsetVec = nil; LIP.connOrbit = nil
     end
     -- corta SOLO el desync __index (restaura el cuerpo real) SIN tocar el connection weld → permite
     -- la transición desync→conn en el mismo target sin perder el weld (harmonía pedida por el usuario).
@@ -510,6 +531,26 @@ return function(require, LIP, Lib)
             if LIP.spoofFakePos and (tc.Position - LIP.spoofFakePos).Magnitude < 30 then return last end
         end
         return tc
+    end
+
+    -- OFFSET del orbit para el connection weld, computado por-FRAME en el render (ángulo continuo por dt →
+    -- suave, independiente del framerate/Heartbeat). WORLD-space (no sigue la rotación del target: el weld ya
+    -- lo sigue por posición). Normal=círculo, Spiral=hélice 3D (lento), Behind=world -Z fijo, Random=noise.
+    local connAng = 0
+    function Spoof.orbitOffset(o, dt)
+        dt = dt or (1/60)
+        connAng = connAng + (o.speed or 4) * dt * 0.9
+        local R, h, mode = o.radius or 10, o.height or 0, o.mode or "Normal"
+        if mode == "Spiral" then
+            local vAmp = (math.abs(h) > 0.1) and math.abs(h) or 6     -- amplitud vertical de la hélice
+            return Vector3.new(math.cos(connAng) * R, math.sin(connAng * 0.5) * vAmp, math.sin(connAng) * R)
+        elseif mode == "Behind" then
+            return Vector3.new(0, h, -R)                              -- detrás en world-space (sin jitter de rotación)
+        elseif mode == "Random" then
+            return Vector3.new(math.noise(connAng, 0) * R, h + math.noise(0, connAng) * R * 0.4, math.noise(connAng, connAng) * R)
+        else -- Normal: círculo
+            return Vector3.new(math.cos(connAng) * R, h, math.sin(connAng) * R)
+        end
     end
 
     function Spoof.camToLocal(cam, realCF)
@@ -646,6 +687,7 @@ return function(require, LIP, Lib)
         Normal = { mode = "Normal", radius = 10,   speed = 4,  height = 0 },
         Random = { mode = "Random", radius = 10.5, speed = 20, height = 0 },
         Behind = { mode = "Behind", radius = 8,    speed = 8,  height = 0 },
+        Spiral = { mode = "Spiral", radius = 12,   speed = 6,  height = 8 },
     }
     function Strafe.applyPreset(name)
         local p = Strafe.PRESETS[name]; if not p then return end
@@ -677,6 +719,13 @@ return function(require, LIP, Lib)
             seed = seed + spd * 0.02 + math.abs(math.sin(os.clock() * 91.7)) * 0.15
             local goPos = center + Vector3.new(rx, h + ry * 0.4, rz)
             return CFrame.new(goPos) * CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
+        elseif mode == "Spiral" then
+            -- ESPIRAL 3D (HvH): órbita circular X/Z + oscilación vertical Y a mitad de frecuencia = hélice
+            -- LENTA alrededor del target. La más difícil de resolver (te movés en 3 ejes suave y continuo).
+            seed = seed + spd * 0.03   -- lento
+            local vAmp = (math.abs(h) > 0.1) and math.abs(h) or 6
+            local off = Vector3.new(math.cos(seed) * R, math.sin(seed * 0.5) * vAmp, math.sin(seed) * R)
+            return CFrame.lookAt(center + off, center)
         else -- Normal: órbita circular
             seed = seed + spd * 0.05
             local off = Vector3.new(math.cos(seed) * R, h, math.sin(seed) * R)
@@ -728,17 +777,22 @@ return function(require, LIP, Lib)
 
         local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
 
-        -- BAIT: cada 1-3s (random) salta a un spot random lejano por 0.3s (baitea el aim enemigo)
+        -- BAIT: cada 1-3s salta a una pos random FIJA (dentro de 100 studs del target) por 0.5s, + jitter en
+        -- X de ±5 studs cada frame → el enemigo ve un ghost lejano temblando = rompe/baitea su aim.
+        local baiting = false
         if opts.bait then
             local now = os.clock()
             if not LIP.baitNext then LIP.baitNext = now + 1 + rnd() * 2 end
             if not LIP.baitUntil and now >= LIP.baitNext then
-                LIP.baitUntil = now + 0.3
-                local R = opts.radius or 10
-                LIP.baitPos = center + Vector3.new((rnd()-0.5) * R * 6, opts.height or 0, (rnd()-0.5) * R * 6)
+                LIP.baitUntil = now + 0.5                          -- pos FIJA por 0.5s
+                local ang, d = rnd() * 6.2831853, rnd() * 100       -- random dentro de 100 studs del centro
+                LIP.baitPos = center + Vector3.new(math.cos(ang) * d, opts.height or 0, math.sin(ang) * d)
             end
             if LIP.baitUntil then
-                if now < LIP.baitUntil then goCF = CFrame.new(LIP.baitPos)
+                if now < LIP.baitUntil then
+                    baiting = true
+                    LIP.baitJitterPos = LIP.baitPos + Vector3.new((rnd() - 0.5) * 10, 0, 0)  -- jitter X, rango 10
+                    goCF = CFrame.new(LIP.baitJitterPos)
                 else LIP.baitUntil = nil; LIP.baitNext = now + 1 + rnd() * 2 end
             end
         end
@@ -746,14 +800,25 @@ return function(require, LIP, Lib)
         LIP.spoofFakePos = goCF.Position   -- visualizador + origin del disparo
 
         if opts.connExploit then
-            -- CONNECTION WELD al TARGET: soldamos tu PhysicsRepRootPart pegado al HRP del objetivo + offset
-            -- (radius/height/mode) → el server te ve sincronizado PERFECTO con él, sin jitter (el tracking
-            -- corre en render contra la CFrame suave del target, NO usa resolver/predict). Cuerpo REAL libre.
-            -- Bypassa el orbit/goCF (resolver era la fuente de jitter). Coexiste con pos spoof (harmonía).
-            if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta SOLO el desync, mantiene el weld
-            local off = Strafe.offsetVec(target, opts)
-            Spoof.weldToTarget(tRoot, off)
-            LIP.spoofFakePos = tRoot.Position + off
+            -- CONNECTION WELD: el server te ve orbitando el target (radius/speed/height/mode), trackeado +
+            -- orbitado en RENDER contra la pos SUAVE del target → cero jitter, SIN seguir la rotación del char
+            -- (el weld ya sigue al target por posición). Cuerpo REAL LIBRE = sin fling, sin pausa clientside.
+            -- Offsets de strafing normales (nunca offset 0 = adentro del HRP = fling). BAIT: weld a spot fijo.
+            if baiting then
+                Spoof.weldToPos(LIP.baitJitterPos or LIP.baitPos)
+            else
+                Spoof.weldToTarget(tRoot, { radius = opts.radius, speed = opts.speed,
+                                            height = opts.height, mode = opts.mode })
+            end
+            LIP.spoofFakePos = (LIP.connPart and LIP.connPart.Position) or goCF.Position
+            -- HARMONÍA con Pos Spoof: si además está ON, anclá la cámara a tu pos REAL (vista quieta, cuerpo
+            -- libre, como symbol.lua). Si está OFF, cámara normal + corta cualquier desync viejo.
+            if opts.posSpoof then
+                Spoof.camToLocal(cam, Spoof.captureReal(root))
+                LIP.spoofOn = false; LIP.spoofRestore = nil; LIP.spoofVel = nil
+            elseif LIP.spoofOn then
+                Spoof.stopDesyncOnly(cam)
+            end
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve la órbita, cuerpo/cámara reales quietos
@@ -1735,26 +1800,34 @@ return function(require, LIP, Lib)
         end
         ensureViz()
         local now = os.clock()
-        -- 1) samplear la pos spoofeada real al historial (~2s)
-        vizHist[#vizHist+1] = { t = now, pos = LIP.spoofFakePos }
-        while #vizHist > 140 do table.remove(vizHist, 1) end
-        -- 2) ping actual = delay de replicación
-        local ping = 0.1
-        pcall(function() ping = math.clamp(game:GetService("Players").LocalPlayer:GetNetworkPing(), 0, 0.6) end)
-        -- 3) update ~16hz: NUEVO segmento eased desde donde ESTAMOS (corta caminos) → pos demorada por ping
-        if now >= vizNext16 then
-            vizNext16 = now + (1/16)
-            local tgt = delayedPos(now, ping) or LIP.spoofFakePos
-            segStart = vizShown or tgt
-            segTarget = tgt
-            segT0 = now
+        if LIP.connRep and LIP.connTargetHRP then
+            -- CONNECTION WELD a un target: estás sincronizado REAL-TIME con su HRP → el indicador NO lleva
+            -- delay artificial (la pos que ve el server ES tu weld, en vivo). Mostralo crudo, sin ping-sim.
+            vizShown = LIP.spoofFakePos
+            vizHist = {}; segStart = nil; segTarget = nil
+        else
+            -- DESYNC (ghost): simular cómo lo ven los demás → demora por ping + refresh ~16hz + suavizado.
+            -- 1) samplear la pos spoofeada real al historial (~2s)
+            vizHist[#vizHist+1] = { t = now, pos = LIP.spoofFakePos }
+            while #vizHist > 140 do table.remove(vizHist, 1) end
+            -- 2) ping actual = delay de replicación
+            local ping = 0.1
+            pcall(function() ping = math.clamp(game:GetService("Players").LocalPlayer:GetNetworkPing(), 0, 0.6) end)
+            -- 3) update ~16hz: NUEVO segmento eased desde donde ESTAMOS (corta caminos) → pos demorada por ping
+            if now >= vizNext16 then
+                vizNext16 = now + (1/16)
+                local tgt = delayedPos(now, ping) or LIP.spoofFakePos
+                segStart = vizShown or tgt
+                segTarget = tgt
+                segT0 = now
+            end
+            segTarget = segTarget or LIP.spoofFakePos
+            segStart  = segStart or segTarget
+            -- 4) InOutExpo "demasiado rápido": segDur < intervalo (16hz) → llega antes del próximo update, y en
+            --    cambios bruscos el re-anclado + la curva snappy = shortcut casi lineal (interpolación Roblox).
+            local a = math.clamp((now - segT0) / ((1/16) * 0.7), 0, 1)
+            vizShown = segStart:Lerp(segTarget, easeInOutExpo(a))
         end
-        segTarget = segTarget or LIP.spoofFakePos
-        segStart  = segStart or segTarget
-        -- 4) InOutExpo "demasiado rápido": segDur < intervalo (16hz) → llega antes del próximo update, y en
-        --    cambios bruscos el re-anclado + la curva snappy = shortcut casi lineal (interpolación Roblox).
-        local a = math.clamp((now - segT0) / ((1/16) * 0.7), 0, 1)
-        vizShown = segStart:Lerp(segTarget, easeInOutExpo(a))
         -- render
         local c = O("VizColor") or Color3.fromRGB(202,151,161)
         vizPart.Transparency = 0.3; vizPart.Position = vizShown; vizPart.Color = c; vizBillboard.Enabled = true
@@ -2048,12 +2121,12 @@ return function(require, LIP, Lib)
             Tooltip = "Desync: el server te ve orbitando; cuerpo/cámara reales quietos" })
         ts:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
             Callback = function(a) local t = Lib.Toggles.TargetStrafe; if t then t:SetValue(a) end end })
-        ts:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind" }, Default = "Normal",
+        ts:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind", "Spiral" }, Default = "Normal",
             Callback = function(v) Strafe.applyPreset(v) end })
-        ts:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind" }, Default = "Normal" })
-        ts:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 25, Default = 10, Decimals = 1, Suffix = "studs" })
+        ts:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind", "Spiral" }, Default = "Normal" })
+        ts:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 150, Default = 10, Decimals = 1, Suffix = "studs" })
         ts:AddSlider("StrafeSpeed",  { Text = "Speed", Min = 1, Max = 40, Default = 4 })
-        ts:AddSlider("StrafeHeight", { Text = "Height", Min = -10, Max = 10, Default = 0 })
+        ts:AddSlider("StrafeHeight", { Text = "Height", Min = -50, Max = 50, Default = 0 })
         ts:AddToggle("StrafeBait", { Text = "Bait", Default = false,
             Tooltip = "Cada 1-3s (random) salta a un spot random por 0.3s" })
         ts:AddDivider()
@@ -2064,9 +2137,9 @@ return function(require, LIP, Lib)
 
         local sp = RS:AddPanel("Server Position", { Column = 3 })
         sp:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
-            Tooltip = "Método master. ON = desync (cuerpo real quieto). OFF = mueve el cuerpo real." })
+            Tooltip = "ON = desync (cuerpo real quieto). Con Connection Weld ON = ancla la cámara a tu pos real (vista estable, harmonía). OFF (solo desync) = mueve el cuerpo real." })
         sp:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
-            Tooltip = "PhysicsRepRootPart weld (solo pos, sin rotación). Cuerpo REAL libre. Override de Pos Spoof." })
+            Tooltip = "PhysicsRepRootPart weld al target + orbit de strafing (radius/speed/height/mode), trackeado en render = cero jitter, sin fling, cuerpo REAL libre (sin pausa clientside). Coexiste con Pos Spoof." })
         sp:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" })
             :AddColorPicker("VizColor", { Default = Color3.fromRGB(202, 151, 161) })
 
@@ -2314,7 +2387,7 @@ return function(require, LIP, Lib)
         if manual then LIP.target = manual; return end
         if needAim then
             Target.pick({ mode = O.SelMode.Value, fov = O.FOV.Value, wallcheck = T.Wallcheck.Value,
-                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         else
             LIP.target = nil
         end
@@ -2333,7 +2406,8 @@ return function(require, LIP, Lib)
             local en = et and et.Name
             if en ~= LIP.curWeapon then LIP.curWeapon = en; LIP.observedFirerate = nil; LIP.shotsFired = 0 end
         end
-        local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value }
+        local filters = { teamCheck = T.TeamCheck.Value, friendCheck = T.FriendCheck.Value,
+                          ffCheck = T.FFCheck and T.FFCheck.Value }
         local cam = Workspace.CurrentCamera
 
         local strafeOn   = T.TargetStrafe and T.TargetStrafe.Value
@@ -2382,7 +2456,7 @@ return function(require, LIP, Lib)
         elseif strafeOn then
             if LIP.godBase then Godmode.stop() end
             local st = LIP.target or Target.nearestEnemy({ range = 200,
-                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+                          teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
             if st then
                 local strafeOpts = { mode = O.StrafeMode.Value, radius = O.StrafeRadius.Value,
                                   speed = O.StrafeSpeed.Value, height = O.StrafeHeight.Value,
@@ -2420,18 +2494,18 @@ return function(require, LIP, Lib)
 
         -- melee aura / auto punch
         if LIP.meleeOn then
-            Melee.cacheMelee({ range = O.MeleeRange.Value, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            Melee.cacheMelee({ range = O.MeleeRange.Value, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         else LIP.meleePart = nil end
         if T.AutoPunch and T.AutoPunch.Value then
-            Melee.autoPunch({ range = O.PunchRange.Value, rate = 0.5, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            Melee.autoPunch({ range = O.PunchRange.Value, rate = 0.5, teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         end
 
         -- niche autos (throw / arrest)
         if T.AutoThrow and T.AutoThrow.Value then
-            Niche.throwAt({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            Niche.throwAt({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         end
         if T.AutoArrest and T.AutoArrest.Value then
-            Niche.arrest({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck })
+            Niche.arrest({ teamCheck = filters.teamCheck, friendCheck = filters.friendCheck, ffCheck = filters.ffCheck })
         end
 
         -- auto weapons: recoge armas sueltas del mapa (teleport+grab, pos real restaurada)

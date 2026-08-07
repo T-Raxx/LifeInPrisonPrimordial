@@ -25,12 +25,19 @@ return function(require, LIP, Lib)
         local s, r = pcall(function() return LP:IsFriendsWith(plr.UserId) end)
         return s and r
     end
+    local function hasFF(char)   -- spawn protection (ForceField) → intocable
+        return char and char:FindFirstChildOfClass("ForceField") ~= nil
+    end
+    -- checks UNIVERSALES de target (team / friend / forcefield). El wallcheck (LOS) va aparte en cada
+    -- selector (usa la cámara). Los tres los comparten pick (silent aim) y nearestEnemy (melee/punch).
     local function isEnemy(plr, opts)
         if plr == LP then return false end
         if opts.teamCheck and LP.Team and plr.Team == LP.Team then return false end
         if opts.friendCheck and isFriend(plr) then return false end
+        if opts.ffCheck and hasFF(plr.Character) then return false end   -- no enfocar target con FF
         return true
     end
+    Target.hasFF = hasFF
 
     -- silent aim: elige el mejor target según modo. Setea LIP.target.
     function Target.pick(opts)
