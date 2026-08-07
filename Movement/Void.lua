@@ -68,6 +68,10 @@ return function(require, LIP, Lib)
         if opts.connExploit then
             if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta desync, mantiene el weld
             Spoof.weldToPos(goCF.Position)   -- void: sin target → pos absoluta lejana; cuerpo real libre
+            -- CÁMARA: la rama connExploit debe manejar la cámara SIEMPRE, si no deja el camAnchor viejo pegado
+            -- como CameraSubject sin actualizar (viniendo de un harmony-strafe) = FREEZE. Con posSpoof (harmony)
+            -- anclar a la pos real (vista consistente OUT↔IN); sin posSpoof seguir el cuerpo real libre.
+            if opts.posSpoof then Spoof.camToLocal(cam, Spoof.captureReal(root)) else Spoof.camToChar(cam) end
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
@@ -91,10 +95,12 @@ return function(require, LIP, Lib)
     -- VOID (server te ve en tu pos REAL → disparás). El salto constante rompe el resolver de PREDICCIÓN
     -- de otros cheaters (tu pos aparece/desaparece = no te predicen). Sliders In/Out (0.1-2s). Gate de
     -- disparo = LIP.voidShootOk (Weapon.tickAuto lo respeta si voidShootOut). Usa el pattern seleccionado.
-    local function spoofTo(root, cam, goCF, connExploit)
+    local function spoofTo(root, cam, goCF, connExploit, posSpoof)
         if connExploit then
             if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
             Spoof.weldToPos(goCF.Position)
+            -- cámara consistente en el void IN (si no, freeze por camAnchor viejo colgado tras el OUT harmony)
+            if posSpoof then Spoof.camToLocal(cam, Spoof.captureReal(root)) else Spoof.camToChar(cam) end
         else
             if LIP.connRep then Spoof.unweld() end
             local realCF = Spoof.captureReal(root)
@@ -132,7 +138,7 @@ return function(require, LIP, Lib)
         if not root then return end
         local goCF = patternCF(opts.dist or 1000, opts.pattern)
         LIP.spoofFakePos = goCF.Position
-        spoofTo(root, cam, goCF, opts.connExploit)
+        spoofTo(root, cam, goCF, opts.connExploit, opts.posSpoof)
     end
 
     -- ── VISUALIZADOR ──────────────────────────────────────────────────────────

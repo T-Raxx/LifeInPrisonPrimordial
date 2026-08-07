@@ -116,10 +116,20 @@ return function(require, LIP, Lib)
         armPhysRep()
     end
     function Spoof.unweld()
-        local r = myRoot()
-        if r and sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", r) end) end
+        -- cortar el tracking YA (el render deja de mover connPart)
         LIP.connRep = false; LIP.connTargetHRP = nil; LIP.connStaticPos = nil
         LIP.connOffsetVec = nil; LIP.connOrbit = nil
+        -- RESTAURAR el connection a vos mismo: un solo set de PhysicsRepRootPart puede NO pegar (timing de red)
+        -- → quedarías soldado al target tras terminar el strafe / untoggle. Pulso: reafirmar self varios frames.
+        if sethidden then
+            task.spawn(function()
+                for _ = 1, 10 do
+                    local rr = myRoot()
+                    if rr then pcall(function() sethidden(rr, "PhysicsRepRootPart", rr) end) end
+                    task.wait()
+                end
+            end)
+        end
     end
     -- corta SOLO el desync __index (restaura el cuerpo real) SIN tocar el connection weld → permite
     -- la transición desync→conn en el mismo target sin perder el weld (harmonía pedida por el usuario).

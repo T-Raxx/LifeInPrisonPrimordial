@@ -482,10 +482,20 @@ return function(require, LIP, Lib)
         armPhysRep()
     end
     function Spoof.unweld()
-        local r = myRoot()
-        if r and sethidden then pcall(function() sethidden(r, "PhysicsRepRootPart", r) end) end
+        -- cortar el tracking YA (el render deja de mover connPart)
         LIP.connRep = false; LIP.connTargetHRP = nil; LIP.connStaticPos = nil
         LIP.connOffsetVec = nil; LIP.connOrbit = nil
+        -- RESTAURAR el connection a vos mismo: un solo set de PhysicsRepRootPart puede NO pegar (timing de red)
+        -- → quedarías soldado al target tras terminar el strafe / untoggle. Pulso: reafirmar self varios frames.
+        if sethidden then
+            task.spawn(function()
+                for _ = 1, 10 do
+                    local rr = myRoot()
+                    if rr then pcall(function() sethidden(rr, "PhysicsRepRootPart", rr) end) end
+                    task.wait()
+                end
+            end)
+        end
     end
     -- corta SOLO el desync __index (restaura el cuerpo real) SIN tocar el connection weld → permite
     -- la transición desync→conn en el mismo target sin perder el weld (harmonía pedida por el usuario).
@@ -844,8 +854,9 @@ return function(require, LIP, Lib)
             if opts.posSpoof then
                 Spoof.camToLocal(cam, Spoof.captureReal(root))
                 LIP.spoofOn = false; LIP.spoofRestore = nil; LIP.spoofVel = nil
-            elseif LIP.spoofOn then
-                Spoof.stopDesyncOnly(cam)
+            else
+                if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
+                Spoof.camToChar(cam)   -- standalone conn: cámara sigue el cuerpo real libre (no dejar anchor viejo pegado)
             end
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
@@ -1700,6 +1711,10 @@ return function(require, LIP, Lib)
         if opts.connExploit then
             if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end   -- corta desync, mantiene el weld
             Spoof.weldToPos(goCF.Position)   -- void: sin target → pos absoluta lejana; cuerpo real libre
+            -- CÁMARA: la rama connExploit debe manejar la cámara SIEMPRE, si no deja el camAnchor viejo pegado
+            -- como CameraSubject sin actualizar (viniendo de un harmony-strafe) = FREEZE. Con posSpoof (harmony)
+            -- anclar a la pos real (vista consistente OUT↔IN); sin posSpoof seguir el cuerpo real libre.
+            if opts.posSpoof then Spoof.camToLocal(cam, Spoof.captureReal(root)) else Spoof.camToChar(cam) end
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end
             -- DESYNC: server ve las posiciones random lejanas, cuerpo/cámara reales quietos
@@ -1723,10 +1738,12 @@ return function(require, LIP, Lib)
     -- VOID (server te ve en tu pos REAL → disparás). El salto constante rompe el resolver de PREDICCIÓN
     -- de otros cheaters (tu pos aparece/desaparece = no te predicen). Sliders In/Out (0.1-2s). Gate de
     -- disparo = LIP.voidShootOk (Weapon.tickAuto lo respeta si voidShootOut). Usa el pattern seleccionado.
-    local function spoofTo(root, cam, goCF, connExploit)
+    local function spoofTo(root, cam, goCF, connExploit, posSpoof)
         if connExploit then
             if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
             Spoof.weldToPos(goCF.Position)
+            -- cámara consistente en el void IN (si no, freeze por camAnchor viejo colgado tras el OUT harmony)
+            if posSpoof then Spoof.camToLocal(cam, Spoof.captureReal(root)) else Spoof.camToChar(cam) end
         else
             if LIP.connRep then Spoof.unweld() end
             local realCF = Spoof.captureReal(root)
@@ -1764,7 +1781,7 @@ return function(require, LIP, Lib)
         if not root then return end
         local goCF = patternCF(opts.dist or 1000, opts.pattern)
         LIP.spoofFakePos = goCF.Position
-        spoofTo(root, cam, goCF, opts.connExploit)
+        spoofTo(root, cam, goCF, opts.connExploit, opts.posSpoof)
     end
 
     -- ── VISUALIZADOR ──────────────────────────────────────────────────────────
@@ -2643,7 +2660,7 @@ return function(require, LIP, Lib)
                     if phase == "out" then
                         Strafe.tick(st, strafeOpts)
                     else
-                        Void.tickVoidPos({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(), connExploit = connExp })
+                        Void.tickVoidPos({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(), connExploit = connExp, posSpoof = posSpoof })
                     end
                 else
                     Strafe.tick(st, strafeOpts)

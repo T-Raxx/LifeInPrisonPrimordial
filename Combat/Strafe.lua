@@ -254,8 +254,9 @@ return function(require, LIP, Lib)
             if opts.posSpoof then
                 Spoof.camToLocal(cam, Spoof.captureReal(root))
                 LIP.spoofOn = false; LIP.spoofRestore = nil; LIP.spoofVel = nil
-            elseif LIP.spoofOn then
-                Spoof.stopDesyncOnly(cam)
+            else
+                if LIP.spoofOn then Spoof.stopDesyncOnly(cam) end
+                Spoof.camToChar(cam)   -- standalone conn: cámara sigue el cuerpo real libre (no dejar anchor viejo pegado)
             end
         elseif opts.posSpoof then
             if LIP.connRep then Spoof.unweld() end

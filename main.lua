@@ -224,7 +224,7 @@ return function(require, LIP, Lib)
                     if phase == "out" then
                         Strafe.tick(st, strafeOpts)
                     else
-                        Void.tickVoidPos({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(), connExploit = connExp })
+                        Void.tickVoidPos({ dist = O.VoidDist.Value, pattern = O.VoidPattern:GetValue(), connExploit = connExp, posSpoof = posSpoof })
                     end
                 else
                     Strafe.tick(st, strafeOpts)
