@@ -43,6 +43,23 @@ return function(require, LIP, Lib)
             Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
         rp:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
             Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
+        -- Config del Cluster resolver (juju-style). Solo aplica con Method = Cluster.
+        local RP = Strafe.RParams
+        rp:AddLabel("Cluster Resolver", { Header = true })
+        rp:AddSlider("RRPosWeight", { Text = "Position Trust", Min = 0.1, Max = 5, Default = 1.5, Decimals = 2,
+            Callback = function(v) if RP then RP.posWeight = v end end })
+        rp:AddSlider("RRVoidWeight", { Text = "Void Trust", Min = 0.1, Max = 5, Default = 0.2, Decimals = 2,
+            Tooltip = "Confianza en posiciones void (magnitud enorme). Baja = ignora void spam",
+            Callback = function(v) if RP then RP.voidWeight = v end end })
+        rp:AddSlider("RRForget", { Text = "Forget Rate", Min = 0, Max = 1000, Default = 80, Suffix = "%",
+            Callback = function(v) if RP then RP.forget = v end end })
+        rp:AddSlider("RRDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 5, Default = 2, Decimals = 1, Suffix = "x",
+            Callback = function(v) if RP then RP.distPenalty = v end end })
+        rp:AddSlider("RRAccuracy", { Text = "Accuracy (gate)", Min = 0.4, Max = 3, Default = 1.35, Decimals = 2,
+            Tooltip = "Confianza mínima para lockear un cluster. Alto = más certeza, menos tiros",
+            Callback = function(v) if RP then RP.accuracy = v end end })
+        rp:AddSlider("RRLerp", { Text = "Lerp", Min = 0.1, Max = 1, Default = 0.1, Decimals = 2,
+            Callback = function(v) if RP then RP.lerp = v end end })
 
         --== Col 2: Firepower + Void Spam ==--
         local c2 = RS:AddPanel("Firepower", { Column = 2 })

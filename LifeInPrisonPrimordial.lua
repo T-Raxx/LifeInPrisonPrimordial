@@ -691,8 +691,54 @@ return function(require, LIP, Lib)
         local avg = cnt > 0 and resid / cnt or 0
         return math.clamp(math.exp(-avg / 4), 0, 1)     -- ~4 studs de residual → ~0.37
     end
+    -- RESOLVER CLUSTER (histograma ponderado, estilo juju/symbol v2): void spam (magnitud >=9e5) suma poco
+    -- y se dispersa -> nunca clusteriza; la pos REAL se re-visita -> gana peso*count -> cruza gate accuracy.
+    local clusters = {}
+    local RP = { posWeight = 1.5, voidWeight = 0.2, forget = 80, distPenalty = 2.0, accuracy = 1.35, lerp = 0.1 }
+    Strafe.RParams = RP
+    local function resolveCluster(plr, hitbox, now, localPos)
+        local t = clusters[plr]; if not t then t = { list = {} }; clusters[plr] = t end
+        local dist = (localPos - hitbox).Magnitude
+        local distPenalty = math.clamp(1 - (dist / 100) * (RP.distPenalty * 0.01), 0.25, 1)
+        local mergeR = math.clamp(200 - dist * 0.4, 80, 200)
+        local rate = RP.forget / 20
+        local speed = 0
+        if t.lastPos and t.lastT and (now - t.lastT) > 0 then speed = (hitbox - t.lastPos).Magnitude / (now - t.lastT) end
+        t.lastPos = hitbox; t.lastT = now
+        local lerpAmt = speed < 5 and math.clamp(RP.lerp * 3, RP.lerp, 0.6) or RP.lerp
+        local keep = {}
+        for _, c in ipairs(t.list) do
+            local dt = now - c.last
+            if dt > 0 then
+                local dm = (c.pos - hitbox).Magnitude > mergeR and 2.5 or 1
+                c.weight = c.weight - dt * rate * dm; c.last = now
+            end
+            if c.weight >= 0.1 then keep[#keep + 1] = c end
+        end
+        t.list = keep
+        local isVoid = hitbox.Magnitude >= 9e5
+        local addW = (isVoid and RP.voidWeight or RP.posWeight) * distPenalty
+        local merged = false
+        for _, c in ipairs(t.list) do
+            if (c.pos - hitbox).Magnitude <= mergeR then
+                c.pos = c.pos:Lerp(hitbox, lerpAmt); c.weight = math.clamp(c.weight + addW, -1, 18); c.count = c.count + 1; c.last = now; merged = true; break
+            end
+        end
+        if not merged then t.list[#t.list + 1] = { pos = hitbox, weight = addW, count = 1, last = now } end
+        local best, bestScore = nil, 0
+        for _, c in ipairs(t.list) do
+            local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
+            if s > bestScore then bestScore = s; best = c end
+        end
+        return (best and bestScore > RP.accuracy and best.pos) or hitbox
+    end
+
     -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
     function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
+        if method == "Cluster" then
+            local r = myRoot(); local loc = r and r.Position or rawPos
+            return resolveCluster(plr, rawPos, os.clock(), loc)
+        end
         local h = hist[plr]; local n = h and #h.s or 0
         if n < 3 then return rawPos end
         local k = math.clamp(samples or 8, 3, n)
@@ -2239,12 +2285,29 @@ return function(require, LIP, Lib)
         local rp = RS:AddPanel("Resolver", { Column = 1 })
         rp:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
             Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
-        rp:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Median", "Weighted", "Average", "Latest" }, Default = "Median" })
+        rp:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Median", "Weighted", "Average", "Latest" }, Default = "Cluster" })
         rp:AddSlider("ResolverSamples", { Text = "Samples", Min = 3, Max = 20, Default = 12 })
         rp:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
             Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
         rp:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
             Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
+        -- Config del Cluster resolver (juju-style). Solo aplica con Method = Cluster.
+        local RP = Strafe.RParams
+        rp:AddLabel("Cluster Resolver", { Header = true })
+        rp:AddSlider("RRPosWeight", { Text = "Position Trust", Min = 0.1, Max = 5, Default = 1.5, Decimals = 2,
+            Callback = function(v) if RP then RP.posWeight = v end end })
+        rp:AddSlider("RRVoidWeight", { Text = "Void Trust", Min = 0.1, Max = 5, Default = 0.2, Decimals = 2,
+            Tooltip = "Confianza en posiciones void (magnitud enorme). Baja = ignora void spam",
+            Callback = function(v) if RP then RP.voidWeight = v end end })
+        rp:AddSlider("RRForget", { Text = "Forget Rate", Min = 0, Max = 1000, Default = 80, Suffix = "%",
+            Callback = function(v) if RP then RP.forget = v end end })
+        rp:AddSlider("RRDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 5, Default = 2, Decimals = 1, Suffix = "x",
+            Callback = function(v) if RP then RP.distPenalty = v end end })
+        rp:AddSlider("RRAccuracy", { Text = "Accuracy (gate)", Min = 0.4, Max = 3, Default = 1.35, Decimals = 2,
+            Tooltip = "Confianza mínima para lockear un cluster. Alto = más certeza, menos tiros",
+            Callback = function(v) if RP then RP.accuracy = v end end })
+        rp:AddSlider("RRLerp", { Text = "Lerp", Min = 0.1, Max = 1, Default = 0.1, Decimals = 2,
+            Callback = function(v) if RP then RP.lerp = v end end })
 
         --== Col 2: Firepower + Void Spam ==--
         local c2 = RS:AddPanel("Firepower", { Column = 2 })
