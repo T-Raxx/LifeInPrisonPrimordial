@@ -141,6 +141,11 @@ return function(require, LIP, Lib)
         Spoof.init()   -- hook __index + restore RenderStepped (compartido con Void)
     end
 
+    -- LCG para random (Math.random bloqueado en el executor) — usado por bait Y el modo Random XYZ
+    local brng = 987654321
+    local function rnd() brng = (brng * 1103515245 + 12345) % 2147483648; return brng / 2147483648 end
+    local function rndS() return rnd() * 2 - 1 end   -- signed [-1,1]
+
     local seed = 0
     -- órbita alrededor de un CENTRO, mirando al centro. Normal/Random/Behind.
     local function orbitCF(center, tLook, opts)
@@ -151,12 +156,9 @@ return function(require, LIP, Lib)
             local goPos = center - look * R + Vector3.new(0, h, 0)
             return CFrame.lookAt(goPos, center)
         elseif mode == "Random" then
-            local rx = math.noise(seed, 0) * R
-            local ry = math.noise(0, seed) * R
-            local rz = math.noise(seed, seed) * R
-            seed = seed + spd * 0.02 + math.abs(math.sin(os.clock() * 91.7)) * 0.15
-            local goPos = center + Vector3.new(rx, h + ry * 0.4, rz)
-            return CFrame.new(goPos) * CFrame.Angles(math.noise(seed,1)*3, math.noise(1,seed)*3, math.noise(seed,seed)*3)
+            -- RANDOM XYZ: offset random en los 3 ejes cada frame, rango = radius (slider). Sin noise.
+            local goPos = center + Vector3.new(rndS() * R, h + rndS() * R, rndS() * R)
+            return CFrame.new(goPos)
         elseif mode == "Spiral" then
             -- ESPIRAL 3D (HvH): órbita circular X/Z + oscilación vertical Y a mitad de frecuencia = hélice
             -- LENTA alrededor del target. La más difícil de resolver (te movés en 3 ejes suave y continuo).
@@ -193,10 +195,6 @@ return function(require, LIP, Lib)
         end
     end
 
-    -- LCG para bait (Math.random bloqueado en el executor)
-    local brng = 987654321
-    local function rnd() brng = (brng * 1103515245 + 12345) % 2147483648; return brng / 2147483648 end
-
     -- OFFSET del connection weld en espacio LOCAL del target (se multiplica por target.CFrame → sigue su
     -- posición Y rotación). +Z = ATRÁS del target (LookVector es -Z). radius nunca 0 → nunca adentro = sin fling.
     local wseed = 0
@@ -209,7 +207,10 @@ return function(require, LIP, Lib)
             wseed = wseed + spd * 0.03
             local vAmp = (math.abs(h) > 0.1) and math.abs(h) or 6
             return CFrame.new(math.cos(wseed) * R, math.sin(wseed * 0.5) * vAmp, math.sin(wseed) * R)
-        else -- Normal / Random: órbita circular en el plano local XZ del target
+        elseif mode == "Random" then
+            -- RANDOM XYZ local: offset random en los 3 ejes cada frame, rango = radius (slider)
+            return CFrame.new(rndS() * R, h + rndS() * R, rndS() * R)
+        else -- Normal: órbita circular en el plano local XZ del target
             wseed = wseed + spd * 0.05
             return CFrame.new(math.cos(wseed) * R, h, math.sin(wseed) * R)
         end
