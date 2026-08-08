@@ -161,11 +161,14 @@ return function(require, LIP, Lib)
         if LIP.awGrabbing then LIP.fireAccum = 0; lastTick = now; return end   -- AutoWeapons grabbing: pausar
         -- VOID SPAM: pausar disparo mientras estás IN void (solo disparar OUT del void)
         if LIP.voidSpamOn and LIP.voidShootOut and not LIP.voidShootOk then LIP.fireAccum = 0; lastTick = now; return end
-        -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server.
+        -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server. SPOOF PRIMERO
+        -- (igual que el origin del disparo): spoofeado, el server te ve en spoofFakePos (weld/órbita, pegado al
+        -- target) → el rango se mide desde ahí. Wallbang solo cuenta si NO estás spoofeado; si no, el gate medía
+        -- desde tu cabeza REAL (lejos del target al spoofear) y NO disparaba hasta acercarte físicamente.
         if autoOn and LIP.cachedHitPos then
             local h = char() and char():FindFirstChild("Head")
-            local ref = (LIP.wallbang and LIP.cachedOrigin) or (LIP.spoofOn and LIP.spoofFakePos)
-                        or (LIP.connRep and LIP.spoofFakePos) or (h and h.Position)
+            local ref = ((LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos)
+                        or (LIP.wallbang and LIP.cachedOrigin) or (h and h.Position)
             if ref and (LIP.cachedHitPos - ref).Magnitude > (O("FireRange") or 200) then
                 LIP.fireAccum = 0; lastTick = now; return
             end
