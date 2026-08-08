@@ -37,7 +37,7 @@ return function(require, LIP, Lib)
         local rp = RS:AddPanel("Resolver", { Column = 1 })
         rp:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
             Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
-        rp:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Median", "Weighted", "Average", "Latest" }, Default = "Median" })
+        rp:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Median", "Weighted", "Average", "Latest" }, Default = "Cluster" })
         rp:AddSlider("ResolverSamples", { Text = "Samples", Min = 3, Max = 20, Default = 12 })
         rp:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
             Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
