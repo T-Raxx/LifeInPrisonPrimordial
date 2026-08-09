@@ -53,9 +53,17 @@ crudo esté en el void/lejos. **El gate de accuracy del resolver ES el gate de f
 ### 4. Void detection
 - Ya está: `hitbox.Magnitude >= 9e5` → suma `voidWeight 0.2` + se olvida; la pos real clusteriza y gana el score.
 
-### 5. HUD (Visuals/CrosshairHUD)
+### 5. HUD (Visuals/CrosshairHUD) — labels con MÁS INFO (estilo symbol)
 - "Resolved: x.xyz" = atar al **score/didDefensive del cluster** (confianza real del resolver: bestScore/accuracy
-  normalizado), reemplazar `Strafe.confidence` (residual lineal viejo) por esta métrica.
+  normalizado, clamp 0–1), reemplazar `Strafe.confidence` (residual lineal viejo) por esta métrica.
+- **Expandir el label base** con telemetría del resolver (Strafe expone `Strafe.resolverInfo(plr)`):
+  `killing: <user> | Resolved: x.xyz | <STATE> | clusters: N | HP: NN`
+  - `<STATE>` tags por prioridad: **LOCKED** (didDefensive, fire-ready) / **RESOLVING** (hay clusters pero score <
+    accuracy) / **VOID** (target en magnitud ≥9e5, spoofeando) / **NORMAL** (target quieto/predecible) /
+    **PREDICT +Xms** (lead activo).
+  - `clusters: N` = cantidad de clusters vivos en el histograma (más = target más errático/spameando).
+  - `HP: NN` = vida del target.
+- Overrides existentes intactos (Reloading In Void / Killed waiting). Color wave existente. Todo configurable.
 
 ### 6. UI (UI.lua)
 - Ya: sliders cluster (posWeight/voidWeight/forget/accuracy/lerp/distPenalty).
