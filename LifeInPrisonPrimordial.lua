@@ -2447,7 +2447,7 @@ return function(require, LIP, Lib)
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
             Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
         vd:AddList("VoidPattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
-        vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
+        vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 1000000, Default = 1000, Suffix = "studs" })
 
         --== Col 3: Target Strafe + Server Position ==--
         local ts = RS:AddPanel("Target Strafe", { Column = 3 })
@@ -2481,7 +2481,7 @@ return function(require, LIP, Lib)
         idl:AddToggle("IdleState", { Text = "Idle State", Default = false,
             Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando. (Antes se llamaba Void Spam.)" })
         idl:AddList("IdlePattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
-        idl:AddSlider("IdleDist", { Text = "Distance", Min = 100, Max = 5000, Default = 1000, Suffix = "studs" })
+        idl:AddSlider("IdleDist", { Text = "Distance", Min = 100, Max = 1000000, Default = 1000, Suffix = "studs" })
 
         local hud = RS:AddPanel("Crosshair HUD", { Column = 3 })
         hud:AddToggle("CrossHUD", { Text = "Crosshair HUD", Default = true,
