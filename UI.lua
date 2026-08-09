@@ -91,6 +91,8 @@ return function(require, LIP, Lib)
             Tooltip = "Cargador de tu arma (se auto-detecta si recargás con R 1 vez)" })
         c2:AddSlider("ReloadTime", { Text = "Reload Time", Min = 0.3, Max = 3, Default = 1.2, Decimals = 1, Suffix = "s" })
         c2:AddToggle("ShotgunReload", { Text = "Shotgun Reload", Default = false, Tooltip = "Escopeta: op40 por bala. Pistola/rifle = OFF." })
+        c2:AddSlider("ShotgunPellets", { Text = "Shotgun Pellets", Min = 1, Max = 16, Default = 8,
+            Tooltip = "Pellets por tiro para escopetas (SPAS/DB). El autofire manda N pellets = registra. Ajustá hasta que peguen (si el juego aprendió el count real, lo usa; si no, este slider)." })
 
         local vd = RS:AddPanel("Void Spam", { Column = 2 })
         vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,

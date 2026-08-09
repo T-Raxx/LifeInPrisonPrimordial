@@ -1153,9 +1153,17 @@ return function(require, LIP, Lib)
         local tool = firearm(); if not tool then return false end
         local bullet = buildBullet(hitPart, hitPos)
         if not bullet then return false end
-        -- ESCOPETAS: replicar el pellet-count del arma (aprendido en Net del op14 del juego). N pellets al MISMO
-        -- hit = N× daño al head. Armas de 1 bala = 1 pellet. El bulletMult del hook multiplica sobre esto.
-        local n = (tool and LIP.pelletsByWeapon and LIP.pelletsByWeapon[tool.Name]) or 1
+        -- ESCOPETAS: N pellets por tiro al MISMO hit = N× daño. Prioridad: count aprendido (Net, si reinició el
+        -- proceso) > slider ShotgunPellets (escopeta detectada por nombre) > 1 (arma normal). El bulletMult multiplica.
+        local n = 1
+        if tool then
+            local nm = tool.Name
+            if LIP.pelletsByWeapon and LIP.pelletsByWeapon[nm] then
+                n = LIP.pelletsByWeapon[nm]
+            elseif nm:find("SPAS") or nm:find("Shotgun") or nm:find("Pump") or nm:find("DB ") then
+                n = math.floor(O("ShotgunPellets") or 8)
+            end
+        end
         local bullets = { bullet }
         for i = 2, n do bullets[i] = { bullet[1], bullet[2], bullet[3], bullet[4], bullet[5], bullet[6] } end
         LIP._selfFiring = true
@@ -2415,6 +2423,8 @@ return function(require, LIP, Lib)
             Tooltip = "Cargador de tu arma (se auto-detecta si recargás con R 1 vez)" })
         c2:AddSlider("ReloadTime", { Text = "Reload Time", Min = 0.3, Max = 3, Default = 1.2, Decimals = 1, Suffix = "s" })
         c2:AddToggle("ShotgunReload", { Text = "Shotgun Reload", Default = false, Tooltip = "Escopeta: op40 por bala. Pistola/rifle = OFF." })
+        c2:AddSlider("ShotgunPellets", { Text = "Shotgun Pellets", Min = 1, Max = 16, Default = 8,
+            Tooltip = "Pellets por tiro para escopetas (SPAS/DB). El autofire manda N pellets = registra. Ajustá hasta que peguen (si el juego aprendió el count real, lo usa; si no, este slider)." })
 
         local vd = RS:AddPanel("Void Spam", { Column = 2 })
         vd:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,

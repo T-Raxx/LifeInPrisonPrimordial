@@ -138,9 +138,17 @@ return function(require, LIP, Lib)
         local tool = firearm(); if not tool then return false end
         local bullet = buildBullet(hitPart, hitPos)
         if not bullet then return false end
-        -- ESCOPETAS: replicar el pellet-count del arma (aprendido en Net del op14 del juego). N pellets al MISMO
-        -- hit = N× daño al head. Armas de 1 bala = 1 pellet. El bulletMult del hook multiplica sobre esto.
-        local n = (tool and LIP.pelletsByWeapon and LIP.pelletsByWeapon[tool.Name]) or 1
+        -- ESCOPETAS: N pellets por tiro al MISMO hit = N× daño. Prioridad: count aprendido (Net, si reinició el
+        -- proceso) > slider ShotgunPellets (escopeta detectada por nombre) > 1 (arma normal). El bulletMult multiplica.
+        local n = 1
+        if tool then
+            local nm = tool.Name
+            if LIP.pelletsByWeapon and LIP.pelletsByWeapon[nm] then
+                n = LIP.pelletsByWeapon[nm]
+            elseif nm:find("SPAS") or nm:find("Shotgun") or nm:find("Pump") or nm:find("DB ") then
+                n = math.floor(O("ShotgunPellets") or 8)
+            end
+        end
         local bullets = { bullet }
         for i = 2, n do bullets[i] = { bullet[1], bullet[2], bullet[3], bullet[4], bullet[5], bullet[6] } end
         LIP._selfFiring = true
