@@ -51,6 +51,9 @@ return function(require, LIP, Lib)
             Tooltip = "Lead manual (segundos de velocidad adelantada). Solo con Prediction = Manual." })
         rp:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "HARMONÍA: el autofire dispara a la pos RESUELTA (no al head crudo) cuando el resolver está confiado (didDefensive). RIESGO HBE (fuera del hitbox del ghost). OFF = HBE-safe." })
+        rp:AddToggle("ResolvedTracer", { Text = "Resolved Tracer", Default = false,
+            Tooltip = "Tracer del centro de pantalla a la pos RESUELTA por el cluster." })
+            :AddColorPicker("ResolvedTracerColor", { Default = Color3.fromRGB(255, 120, 120) })
         -- Config del Cluster resolver (juju-style). Solo aplica con Method = Cluster.
         local RP = Strafe.RParams
         rp:AddLabel("Cluster Resolver", { Header = true })

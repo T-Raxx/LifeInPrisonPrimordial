@@ -239,14 +239,38 @@ return function(require, LIP, Lib)
         else tracer.Visible = false; dot.Visible = false end
     end
 
+    -- ── Resolved Tracer: centro de pantalla → pos RESUELTA por el cluster ──────
+    -- Independiente del VoidViz. Lee Strafe.resolvedPeek (read-only, no ingesta muestras
+    -- → no perturba el resolver). Solo dibuja mientras el resolver tiene un cluster (o sea,
+    -- mientras estás strafeando/disparando al target y el histograma está poblado).
+    local resLine, _Strafe
+    local function updateResTracer()
+        if not (T("ResolvedTracer") and T("Resolver") and LIP.target and LIP.target.Character) then
+            if resLine then resLine.Visible = false end; return
+        end
+        _Strafe = _Strafe or require("Combat.Strafe")
+        local rp = _Strafe.resolvedPeek(LIP.target)
+        if not rp then if resLine then resLine.Visible = false end; return end
+        if not resLine then resLine = Drawing.new("Line"); resLine.Thickness = 1.5 end
+        local cam = Workspace.CurrentCamera
+        local sp, on = cam:WorldToViewportPoint(rp)
+        if on then
+            local vp = cam.ViewportSize
+            resLine.From = Vector2.new(vp.X/2, vp.Y/2); resLine.To = Vector2.new(sp.X, sp.Y)
+            resLine.Color = O("ResolvedTracerColor") or Color3.fromRGB(255, 120, 120); resLine.Visible = true
+        else resLine.Visible = false end
+    end
+
     function Void.init()
         Spoof.init()
         LIP.onCleanup(function()
             if vizPart then pcall(function() vizPart:Destroy() end) end
             if tracer then pcall(function() tracer:Remove() end) end
             if dot then pcall(function() dot:Remove() end) end
+            if resLine then pcall(function() resLine:Remove() end) end
         end)
         LIP.track(RunService.RenderStepped:Connect(function() pcall(updateViz) end))
+        LIP.track(RunService.RenderStepped:Connect(function() pcall(updateResTracer) end))
     end
 
     return Void

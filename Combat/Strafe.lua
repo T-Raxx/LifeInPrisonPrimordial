@@ -193,6 +193,31 @@ return function(require, LIP, Lib)
         return { score = score, state = state, clusters = n }
     end
 
+    -- LECTOR PURO (para el tracer): pos del cluster ganador + lead, SIN ingestar una muestra
+    -- (no llama resolveCluster/resolvedVel → no perturba el histograma). nil si no hay cluster.
+    function Strafe.resolvedPeek(plr)
+        local t = clusters[plr]; if not t or #t.list == 0 then return nil end
+        local best, bestScore = nil, 0
+        for _, c in ipairs(t.list) do
+            local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
+            if s > bestScore then bestScore = s; best = c end
+        end
+        if not best then return nil end
+        local pos = best.pos
+        local v = velState[plr]
+        if v and v.vel and v.vel.Magnitude <= 200 then
+            local lead
+            if (O("PredMode") or "Auto") == "Auto" then
+                local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
+                lead = ping * 2
+            else
+                lead = O("PredLead") or 0.12
+            end
+            pos = pos + v.vel * lead
+        end
+        return pos
+    end
+
     -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
     function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
         if method == "Cluster" then
