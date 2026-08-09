@@ -692,8 +692,9 @@ return function(require, LIP, Lib)
         return math.clamp(math.exp(-avg / 4), 0, 1)     -- ~4 studs de residual → ~0.37
     end
     -- RESOLVER CLUSTER (histograma ponderado, estilo juju/symbol v2): void spam (magnitud >=9e5) suma poco
-    -- y se dispersa -> nunca clusteriza; la pos REAL se re-visita -> gana peso*count -> cruza gate accuracy.
-    local clusters = {}
+    -- y se dispersa -> nunca clusteriza; la pos REAL se re-visita -> gana peso*count -> cruza el gate de
+    -- accuracy = pos resuelta. Inmune a teleports gigantes / void spam. RP = params (tuneables por slider).
+    local clusters = {}   -- [player] = { list = {...}, lastPos, lastT }
     local RP = { posWeight = 1.5, voidWeight = 0.2, forget = 80, distPenalty = 2.0, accuracy = 1.35, lerp = 0.1 }
     Strafe.RParams = RP
     local function resolveCluster(plr, hitbox, now, localPos)
@@ -730,14 +731,62 @@ return function(require, LIP, Lib)
             local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
             if s > bestScore then bestScore = s; best = c end
         end
-        return (best and bestScore > RP.accuracy and best.pos) or hitbox
+        -- didDefensive = el cluster ganador cruzó el gate de accuracy = pos confiable + fire-ready (harmonía juju)
+        local didDefensive = (best ~= nil and bestScore > RP.accuracy)
+        return (didDefensive and best.pos) or hitbox, didDefensive
+    end
+
+    -- velocidad muestreada a resolver_rate (por target) — finite-diff, NO cada frame (juju resolver_rate)
+    local velState = {}   -- [plr] = { lastPos, lastT, vel }
+    function Strafe.resolvedVel(plr, pos, now, rate)
+        local v = velState[plr]
+        if not v then v = { lastPos = pos, lastT = now, vel = Vector3.zero }; velState[plr] = v; return v.vel end
+        if (now - v.lastT) > (rate or 0.037) then
+            v.vel = (pos - v.lastPos) / math.max(now - v.lastT, 1e-3)
+            v.lastPos = pos; v.lastT = now
+        end
+        return v.vel or Vector3.zero
+    end
+    -- AIM RESOLVER (harmonía juju): pos resuelta del cluster + prediction lead + flag didDefensive.
+    -- rawHitboxPos = head crudo del target. didDefensive true = confiable + autoriza el disparo.
+    function Strafe.resolveAim(plr, rawHitboxPos)
+        local now = os.clock()
+        local r = myRoot(); local loc = r and r.Position or rawHitboxPos
+        local pos, didDefensive = resolveCluster(plr, rawHitboxPos, now, loc)
+        local vel = Strafe.resolvedVel(plr, rawHitboxPos, now, O("ResolverRate") or 0.037)
+        local lead
+        if (O("PredMode") or "Auto") == "Auto" then
+            local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
+            lead = ping * 2                       -- ≡ ping_ms/500 de juju (GetNetworkPing = segundos)
+        else
+            lead = O("PredLead") or 0.12
+        end
+        pos = pos + vel * lead
+        return pos, didDefensive
+    end
+
+    -- TELEMETRÍA del resolver para el HUD: score normalizado (0-1) + estado + nº de clusters vivos.
+    function Strafe.resolverInfo(plr)
+        local t = clusters[plr]
+        local n = t and #t.list or 0
+        local bestScore = 0
+        if t then for _, c in ipairs(t.list) do
+            local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
+            if s > bestScore then bestScore = s end
+        end end
+        local score = math.clamp(bestScore / (RP.accuracy * 2), 0, 1)   -- normalizado (gate = 0.5 del rango)
+        local locked = bestScore > RP.accuracy
+        local inVoid = (t and t.lastPos and t.lastPos.Magnitude >= 9e5) or false
+        local state = locked and "LOCKED" or (inVoid and "VOID") or (n > 0 and "RESOLVING") or "NORMAL"
+        return { score = score, state = state, clusters = n }
     end
 
     -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
     function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
         if method == "Cluster" then
             local r = myRoot(); local loc = r and r.Position or rawPos
-            return resolveCluster(plr, rawPos, os.clock(), loc)
+            local p = resolveCluster(plr, rawPos, os.clock(), loc)   -- solo la pos para el orbit (descarta didDefensive)
+            return p
         end
         local h = hist[plr]; local n = h and #h.s or 0
         if n < 3 then return rawPos end
@@ -1119,7 +1168,9 @@ return function(require, LIP, Lib)
         -- (igual que el origin del disparo): spoofeado, el server te ve en spoofFakePos (weld/órbita, pegado al
         -- target) → el rango se mide desde ahí. Wallbang solo cuenta si NO estás spoofeado; si no, el gate medía
         -- desde tu cabeza REAL (lejos del target al spoofear) y NO disparaba hasta acercarte físicamente.
-        if autoOn and LIP.cachedHitPos then
+        -- didDefensive (resolver confiado) BYPASSA el gate de rango: el resolver ya validó la pos real →
+        -- dispará aunque el head crudo esté en el void/lejos (la harmonía autoriza el disparo).
+        if autoOn and LIP.cachedHitPos and not LIP.didDefensive then
             local h = char() and char():FindFirstChild("Head")
             local ref = ((LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos)
                         or (LIP.wallbang and LIP.cachedOrigin) or (h and h.Position)
@@ -2151,6 +2202,7 @@ return function(require, LIP, Lib)
     local Players    = game:GetService("Players")
     local RunService = game:GetService("RunService")
     local CrossHUD = {}
+    local Strafe   -- cacheado en init (para resolverInfo del HUD)
 
     local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
     local function O(f) local o = Lib.Options[f]; return o and o.Value end
@@ -2197,7 +2249,13 @@ return function(require, LIP, Lib)
         elseif LIP.hudReloadVoid then
             return "Reloading In Void..."
         elseif LIP.hudTargetName then
-            return ("killing: %s | Resolved: %.3f"):format(LIP.hudTargetName, LIP.hudResolved or 0)
+            local ri = (Strafe and Strafe.resolverInfo(LIP.target)) or { score = LIP.hudResolved or 0, state = "NORMAL", clusters = 0 }
+            local hp = 0
+            local tc = LIP.target and LIP.target.Character
+            local th = tc and tc:FindFirstChildOfClass("Humanoid")
+            if th then hp = math.floor(th.Health) end
+            return ("killing: %s | Resolved: %.3f | %s | clusters: %d | HP: %d"):format(
+                LIP.hudTargetName, ri.score, ri.state, ri.clusters, hp)
         end
         return ""
     end
@@ -2237,6 +2295,7 @@ return function(require, LIP, Lib)
     end
 
     function CrossHUD.init()
+        pcall(function() Strafe = require("Combat.Strafe") end)   -- para resolverInfo (score/state/clusters)
         LIP.track(RunService.RenderStepped:Connect(function(dt) pcall(update, dt) end))
         LIP.onCleanup(function() if sg then pcall(function() sg:Destroy() end) end end)
     end
@@ -2291,6 +2350,14 @@ return function(require, LIP, Lib)
             Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
         rp:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
             Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
+        rp:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
+            Tooltip = "Intervalo de muestreo de velocidad (juju 0.037). Chico = fresco/ruidoso, grande = suave/laggy." })
+        rp:AddDropdown("PredMode", { Text = "Prediction", Values = { "Auto", "Manual" }, Default = "Auto",
+            Tooltip = "Auto = lead por ping (ping·2). Manual = usa Pred Lead." })
+        rp:AddSlider("PredLead", { Text = "Pred Lead", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead manual (segundos de velocidad adelantada). Solo con Prediction = Manual." })
+        rp:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
+            Tooltip = "HARMONÍA: el autofire dispara a la pos RESUELTA (no al head crudo) cuando el resolver está confiado (didDefensive). RIESGO HBE (fuera del hitbox del ghost). OFF = HBE-safe." })
         -- Config del Cluster resolver (juju-style). Solo aplica con Method = Cluster.
         local RP = Strafe.RParams
         rp:AddLabel("Cluster Resolver", { Header = true })
@@ -2586,11 +2653,17 @@ return function(require, LIP, Lib)
         local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
         LIP.cachedHitPart = part
         if part then
-            -- HBE-SAFE: hitPos = CENTRO EXACTO del hitPart (objspace ZERO). El server aplica daño al
-            -- hitPart real igual → NO predecir/offsetear el hit (predict/antiInvis lo sacan del hitbox
-            -- = detección Hitbox Expander → ban). El resolver/predict se usa solo para el strafe orbit.
+            -- HBE-SAFE por default: hitPos = CENTRO del hitPart (objspace ZERO), el server aplica daño al
+            -- hitPart real. HARMONÍA (Resolver + Fire on Resolved): si el resolver está confiado (didDefensive),
+            -- disparar a la pos RESUELTA (no al head crudo del ghost en el void) — RIESGO HBE, aceptado.
             local base = part.Position
-            LIP.cachedHitPos = base
+            if (T.Resolver and T.Resolver.Value) and (T.FireResolved and T.FireResolved.Value) then
+                local resolved, didDef = Strafe.resolveAim(t, base)
+                if didDef then LIP.cachedHitPos = resolved; LIP.didDefensive = true
+                else LIP.cachedHitPos = base; LIP.didDefensive = false end
+            else
+                LIP.cachedHitPos = base; LIP.didDefensive = false
+            end
             -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
             if T.Wallbang and T.Wallbang.Value then
                 local myHead = LP.Character and LP.Character:FindFirstChild("Head")
@@ -2612,7 +2685,7 @@ return function(require, LIP, Lib)
                 LIP.cachedOrigin = nil
             end
         else
-            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil
+            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil; LIP.didDefensive = false
         end
     end
 
@@ -2671,7 +2744,7 @@ return function(require, LIP, Lib)
 
         -- target + precache (para silent aim swap Y autofire)
         resolveTarget(filters, needAim)
-        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
+        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos, LIP.didDefensive = nil, nil, false end
 
         -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
         -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO con Target Strafe activo (AutoFire
@@ -2683,7 +2756,7 @@ return function(require, LIP, Lib)
             if (tc and tc:FindFirstChildOfClass("ForceField")) or not (th and th.Health > 0) then holdIdle = true end
         end
         LIP.attackHold = holdIdle
-        if holdIdle then LIP.cachedHitPart = nil; LIP.cachedHitPos = nil end
+        if holdIdle then LIP.cachedHitPart = nil; LIP.cachedHitPos = nil; LIP.didDefensive = false end
 
         -- ── HUD del crosshair: estado del ragebot (base + overrides) ──
         do

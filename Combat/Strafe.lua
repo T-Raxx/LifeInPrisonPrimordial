@@ -138,14 +138,62 @@ return function(require, LIP, Lib)
             local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
             if s > bestScore then bestScore = s; best = c end
         end
-        return (best and bestScore > RP.accuracy and best.pos) or hitbox
+        -- didDefensive = el cluster ganador cruzó el gate de accuracy = pos confiable + fire-ready (harmonía juju)
+        local didDefensive = (best ~= nil and bestScore > RP.accuracy)
+        return (didDefensive and best.pos) or hitbox, didDefensive
+    end
+
+    -- velocidad muestreada a resolver_rate (por target) — finite-diff, NO cada frame (juju resolver_rate)
+    local velState = {}   -- [plr] = { lastPos, lastT, vel }
+    function Strafe.resolvedVel(plr, pos, now, rate)
+        local v = velState[plr]
+        if not v then v = { lastPos = pos, lastT = now, vel = Vector3.zero }; velState[plr] = v; return v.vel end
+        if (now - v.lastT) > (rate or 0.037) then
+            v.vel = (pos - v.lastPos) / math.max(now - v.lastT, 1e-3)
+            v.lastPos = pos; v.lastT = now
+        end
+        return v.vel or Vector3.zero
+    end
+    -- AIM RESOLVER (harmonía juju): pos resuelta del cluster + prediction lead + flag didDefensive.
+    -- rawHitboxPos = head crudo del target. didDefensive true = confiable + autoriza el disparo.
+    function Strafe.resolveAim(plr, rawHitboxPos)
+        local now = os.clock()
+        local r = myRoot(); local loc = r and r.Position or rawHitboxPos
+        local pos, didDefensive = resolveCluster(plr, rawHitboxPos, now, loc)
+        local vel = Strafe.resolvedVel(plr, rawHitboxPos, now, O("ResolverRate") or 0.037)
+        local lead
+        if (O("PredMode") or "Auto") == "Auto" then
+            local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
+            lead = ping * 2                       -- ≡ ping_ms/500 de juju (GetNetworkPing = segundos)
+        else
+            lead = O("PredLead") or 0.12
+        end
+        pos = pos + vel * lead
+        return pos, didDefensive
+    end
+
+    -- TELEMETRÍA del resolver para el HUD: score normalizado (0-1) + estado + nº de clusters vivos.
+    function Strafe.resolverInfo(plr)
+        local t = clusters[plr]
+        local n = t and #t.list or 0
+        local bestScore = 0
+        if t then for _, c in ipairs(t.list) do
+            local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
+            if s > bestScore then bestScore = s end
+        end end
+        local score = math.clamp(bestScore / (RP.accuracy * 2), 0, 1)   -- normalizado (gate = 0.5 del rango)
+        local locked = bestScore > RP.accuracy
+        local inVoid = (t and t.lastPos and t.lastPos.Magnitude >= 9e5) or false
+        local state = locked and "LOCKED" or (inVoid and "VOID") or (n > 0 and "RESOLVING") or "NORMAL"
+        return { score = score, state = state, clusters = n }
     end
 
     -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
     function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
         if method == "Cluster" then
             local r = myRoot(); local loc = r and r.Position or rawPos
-            return resolveCluster(plr, rawPos, os.clock(), loc)   -- cluster ya resuelto = pos estable (sin predict)
+            local p = resolveCluster(plr, rawPos, os.clock(), loc)   -- solo la pos para el orbit (descarta didDefensive)
+            return p
         end
         local h = hist[plr]; local n = h and #h.s or 0
         if n < 3 then return rawPos end

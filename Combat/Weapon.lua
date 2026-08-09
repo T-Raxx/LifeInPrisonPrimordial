@@ -165,7 +165,9 @@ return function(require, LIP, Lib)
         -- (igual que el origin del disparo): spoofeado, el server te ve en spoofFakePos (weld/órbita, pegado al
         -- target) → el rango se mide desde ahí. Wallbang solo cuenta si NO estás spoofeado; si no, el gate medía
         -- desde tu cabeza REAL (lejos del target al spoofear) y NO disparaba hasta acercarte físicamente.
-        if autoOn and LIP.cachedHitPos then
+        -- didDefensive (resolver confiado) BYPASSA el gate de rango: el resolver ya validó la pos real →
+        -- dispará aunque el head crudo esté en el void/lejos (la harmonía autoriza el disparo).
+        if autoOn and LIP.cachedHitPos and not LIP.didDefensive then
             local h = char() and char():FindFirstChild("Head")
             local ref = ((LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos)
                         or (LIP.wallbang and LIP.cachedOrigin) or (h and h.Position)

@@ -9,6 +9,7 @@ return function(require, LIP, Lib)
     local Players    = game:GetService("Players")
     local RunService = game:GetService("RunService")
     local CrossHUD = {}
+    local Strafe   -- cacheado en init (para resolverInfo del HUD)
 
     local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
     local function O(f) local o = Lib.Options[f]; return o and o.Value end
@@ -55,7 +56,13 @@ return function(require, LIP, Lib)
         elseif LIP.hudReloadVoid then
             return "Reloading In Void..."
         elseif LIP.hudTargetName then
-            return ("killing: %s | Resolved: %.3f"):format(LIP.hudTargetName, LIP.hudResolved or 0)
+            local ri = (Strafe and Strafe.resolverInfo(LIP.target)) or { score = LIP.hudResolved or 0, state = "NORMAL", clusters = 0 }
+            local hp = 0
+            local tc = LIP.target and LIP.target.Character
+            local th = tc and tc:FindFirstChildOfClass("Humanoid")
+            if th then hp = math.floor(th.Health) end
+            return ("killing: %s | Resolved: %.3f | %s | clusters: %d | HP: %d"):format(
+                LIP.hudTargetName, ri.score, ri.state, ri.clusters, hp)
         end
         return ""
     end
@@ -95,6 +102,7 @@ return function(require, LIP, Lib)
     end
 
     function CrossHUD.init()
+        pcall(function() Strafe = require("Combat.Strafe") end)   -- para resolverInfo (score/state/clusters)
         LIP.track(RunService.RenderStepped:Connect(function(dt) pcall(update, dt) end))
         LIP.onCleanup(function() if sg then pcall(function() sg:Destroy() end) end end)
     end

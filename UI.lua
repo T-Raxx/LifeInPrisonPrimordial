@@ -43,6 +43,14 @@ return function(require, LIP, Lib)
             Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
         rp:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
             Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
+        rp:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
+            Tooltip = "Intervalo de muestreo de velocidad (juju 0.037). Chico = fresco/ruidoso, grande = suave/laggy." })
+        rp:AddDropdown("PredMode", { Text = "Prediction", Values = { "Auto", "Manual" }, Default = "Auto",
+            Tooltip = "Auto = lead por ping (ping·2). Manual = usa Pred Lead." })
+        rp:AddSlider("PredLead", { Text = "Pred Lead", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead manual (segundos de velocidad adelantada). Solo con Prediction = Manual." })
+        rp:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
+            Tooltip = "HARMONÍA: el autofire dispara a la pos RESUELTA (no al head crudo) cuando el resolver está confiado (didDefensive). RIESGO HBE (fuera del hitbox del ghost). OFF = HBE-safe." })
         -- Config del Cluster resolver (juju-style). Solo aplica con Method = Cluster.
         local RP = Strafe.RParams
         rp:AddLabel("Cluster Resolver", { Header = true })

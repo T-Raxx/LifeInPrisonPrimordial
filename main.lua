@@ -64,11 +64,17 @@ return function(require, LIP, Lib)
         local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
         LIP.cachedHitPart = part
         if part then
-            -- HBE-SAFE: hitPos = CENTRO EXACTO del hitPart (objspace ZERO). El server aplica daño al
-            -- hitPart real igual → NO predecir/offsetear el hit (predict/antiInvis lo sacan del hitbox
-            -- = detección Hitbox Expander → ban). El resolver/predict se usa solo para el strafe orbit.
+            -- HBE-SAFE por default: hitPos = CENTRO del hitPart (objspace ZERO), el server aplica daño al
+            -- hitPart real. HARMONÍA (Resolver + Fire on Resolved): si el resolver está confiado (didDefensive),
+            -- disparar a la pos RESUELTA (no al head crudo del ghost en el void) — RIESGO HBE, aceptado.
             local base = part.Position
-            LIP.cachedHitPos = base
+            if (T.Resolver and T.Resolver.Value) and (T.FireResolved and T.FireResolved.Value) then
+                local resolved, didDef = Strafe.resolveAim(t, base)
+                if didDef then LIP.cachedHitPos = resolved; LIP.didDefensive = true
+                else LIP.cachedHitPos = base; LIP.didDefensive = false end
+            else
+                LIP.cachedHitPos = base; LIP.didDefensive = false
+            end
             -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
             if T.Wallbang and T.Wallbang.Value then
                 local myHead = LP.Character and LP.Character:FindFirstChild("Head")
@@ -90,7 +96,7 @@ return function(require, LIP, Lib)
                 LIP.cachedOrigin = nil
             end
         else
-            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil
+            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil; LIP.didDefensive = false
         end
     end
 
@@ -149,7 +155,7 @@ return function(require, LIP, Lib)
 
         -- target + precache (para silent aim swap Y autofire)
         resolveTarget(filters, needAim)
-        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos = nil, nil end
+        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos, LIP.didDefensive = nil, nil, false end
 
         -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
         -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO con Target Strafe activo (AutoFire
@@ -161,7 +167,7 @@ return function(require, LIP, Lib)
             if (tc and tc:FindFirstChildOfClass("ForceField")) or not (th and th.Health > 0) then holdIdle = true end
         end
         LIP.attackHold = holdIdle
-        if holdIdle then LIP.cachedHitPart = nil; LIP.cachedHitPos = nil end
+        if holdIdle then LIP.cachedHitPart = nil; LIP.cachedHitPos = nil; LIP.didDefensive = false end
 
         -- ── HUD del crosshair: estado del ragebot (base + overrides) ──
         do
