@@ -90,6 +90,13 @@ return function(require, LIP, Lib)
         end
         LIP.awGrabbing = false
         task.wait(0.15)
+        -- AUTO-EQUIPAR el arma recién agarrada (el op12 la manda al Backpack → equiparla al personaje)
+        do
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+            local bp = LP:FindFirstChild("Backpack")
+            local t = (bp and bp:FindFirstChild(name)) or (LP.Character and LP.Character:FindFirstChild(name))
+            if hum and t and t:IsA("Tool") then pcall(function() hum:EquipTool(t) end) end
+        end
         return (model.Parent == nil) or (AutoWeapons.have({ name }) ~= nil)
     end
 
