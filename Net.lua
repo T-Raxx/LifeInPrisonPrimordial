@@ -32,6 +32,15 @@ return function(require, LIP, Lib)
                     -- (El conteo de balas para el reload vive en Weapon.fireOne, NO acá: este hook
                     --  persiste entre reloads y no se puede actualizar sin rejoin limpio.)
                     if op == 14 and not D._selfFiring then
+                        -- PELLET COUNT por arma: las escopetas (SPAS/DB) mandan N pellets por tiro. Lo aprendemos
+                        -- del op14 REAL del juego (dispará 1 vez con la escopeta) → el autofire replica N pellets.
+                        do
+                            local bl, wt = p[3], p[2]
+                            if type(bl) == "table" and #bl >= 1 and typeof(wt) == "Instance" then
+                                D.pelletsByWeapon = D.pelletsByWeapon or {}
+                                D.pelletsByWeapon[wt.Name] = #bl
+                            end
+                        end
                         local now = os.clock()
                         if D._lastRealShot then
                             local dt = now - D._lastRealShot

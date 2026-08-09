@@ -93,6 +93,15 @@ return function(require, LIP, Lib)
                     -- (El conteo de balas para el reload vive en Weapon.fireOne, NO acá: este hook
                     --  persiste entre reloads y no se puede actualizar sin rejoin limpio.)
                     if op == 14 and not D._selfFiring then
+                        -- PELLET COUNT por arma: las escopetas (SPAS/DB) mandan N pellets por tiro. Lo aprendemos
+                        -- del op14 REAL del juego (dispará 1 vez con la escopeta) → el autofire replica N pellets.
+                        do
+                            local bl, wt = p[3], p[2]
+                            if type(bl) == "table" and #bl >= 1 and typeof(wt) == "Instance" then
+                                D.pelletsByWeapon = D.pelletsByWeapon or {}
+                                D.pelletsByWeapon[wt.Name] = #bl
+                            end
+                        end
                         local now = os.clock()
                         if D._lastRealShot then
                             local dt = now - D._lastRealShot
@@ -1144,8 +1153,13 @@ return function(require, LIP, Lib)
         local tool = firearm(); if not tool then return false end
         local bullet = buildBullet(hitPart, hitPos)
         if not bullet then return false end
+        -- ESCOPETAS: replicar el pellet-count del arma (aprendido en Net del op14 del juego). N pellets al MISMO
+        -- hit = N× daño al head. Armas de 1 bala = 1 pellet. El bulletMult del hook multiplica sobre esto.
+        local n = (tool and LIP.pelletsByWeapon and LIP.pelletsByWeapon[tool.Name]) or 1
+        local bullets = { bullet }
+        for i = 2, n do bullets[i] = { bullet[1], bullet[2], bullet[3], bullet[4], bullet[5], bullet[6] } end
         LIP._selfFiring = true
-        LIP.fire(14, tool, { bullet }, gst or GST())
+        LIP.fire(14, tool, bullets, gst or GST())
         LIP._selfFiring = false
         LIP.shotsFired = (LIP.shotsFired or 0) + 1
         return true
