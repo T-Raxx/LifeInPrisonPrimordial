@@ -160,7 +160,10 @@ return function(require, LIP, Lib)
         local now = os.clock()
         local r = myRoot(); local loc = r and r.Position or rawHitboxPos
         local pos, didDefensive = resolveCluster(plr, rawHitboxPos, now, loc)
-        local vel = Strafe.resolvedVel(plr, rawHitboxPos, now, O("ResolverRate") or 0.037)
+        -- velocidad desde la pos RESUELTA (estable, sin los saltos del void) + sanity clamp (ningún player va
+        -- >200 studs/s) → el lead nunca se vuela a millones aunque el target spamee void.
+        local vel = Strafe.resolvedVel(plr, pos, now, O("ResolverRate") or 0.037)
+        if vel.Magnitude > 200 then vel = Vector3.zero end
         local lead
         if (O("PredMode") or "Auto") == "Auto" then
             local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
