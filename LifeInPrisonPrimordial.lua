@@ -715,7 +715,9 @@ return function(require, LIP, Lib)
         local speed = 0
         if t.lastPos and t.lastT and (now - t.lastT) > 0 then speed = (hitbox - t.lastPos).Magnitude / (now - t.lastT) end
         t.lastPos = hitbox; t.lastT = now
-        local lerpAmt = speed < 5 and math.clamp(RP.lerp * 3, RP.lerp, 0.6) or RP.lerp
+        -- lerp: trackea TIGHT el movimiento REAL (target caminando / agarrando armas) y SOLO aflojá para los
+        -- saltos del void (magnitud gigante) o flings extremos (>150 studs/s) → sigue al walker, ignora el void.
+        local lerpAmt = (hitbox.Magnitude >= 9e5 or speed > 150) and RP.lerp or math.clamp(RP.lerp * 3, RP.lerp, 0.6)
         local keep = {}
         for _, c in ipairs(t.list) do
             local dt = now - c.last
