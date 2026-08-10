@@ -652,7 +652,8 @@ return function(require, LIP, Lib)
 
     ------------------------------------------------------------------ SPAM RESOLVER (métodos + pesos)
     local hist = {}   -- [player] = { s = {V3...}, t = {clock...} }
-    local MAX = 16
+    local beh  = {}   -- [player] = { voidFrac, flipRate, prevVoid } — EMA de comportamiento (Auto-método)
+    local MAX = 120   -- ~3s a ~40Hz (ventana del Density)
     local function sample(plr, pos, now, rejectVel)
         local h = hist[plr]; if not h then h = { s = {}, t = {} }; hist[plr] = h end
         local n = #h.s
@@ -662,6 +663,12 @@ return function(require, LIP, Lib)
         end
         h.s[#h.s + 1] = pos; h.t[#h.t + 1] = now
         if #h.s > MAX then table.remove(h.s, 1); table.remove(h.t, 1) end
+        -- comportamiento (Auto-método): fracción de muestras en void + tasa de flips real↔void
+        local b = beh[plr]; if not b then b = { voidFrac = 0, flipRate = 0, prevVoid = false }; beh[plr] = b end
+        local isVoid = (math.abs(pos.X) + math.abs(pos.Z)) >= 7000
+        b.voidFrac = b.voidFrac + 0.15 * ((isVoid and 1 or 0) - b.voidFrac)
+        b.flipRate = b.flipRate + 0.15 * (((isVoid ~= b.prevVoid) and 1 or 0) - b.flipRate)
+        b.prevVoid = isVoid
     end
     function Strafe.sampleAll(now, rejectVel)
         for _, plr in ipairs(Players:GetPlayers()) do
@@ -673,7 +680,6 @@ return function(require, LIP, Lib)
             end
         end
     end
-    local function median(a) local b = table.clone(a); table.sort(b); return b[math.floor(#b/2)+1] end
     -- velocidad instantánea del target (últimas 2 muestras) — para predicción/chase
     function Strafe.targetVel(plr)
         local h = hist[plr]; local n = h and #h.s or 0
@@ -706,6 +712,39 @@ return function(require, LIP, Lib)
     local clusters = {}   -- [player] = { list = {...}, lastPos, lastT }
     local RP = { posWeight = 1.5, voidWeight = 0.2, forget = 80, distPenalty = 2.0, accuracy = 1.35, lerp = 0.1 }
     Strafe.RParams = RP
+
+    -- RESOLVER DENSITY (sakura / Unnamed Enhancements): batch O(n²) sobre el log; para cada muestra cuenta
+    -- vecinos dentro de un radio CHICO (studs). El void (millones de studs entre sí) nunca clusteriza; solo
+    -- la pos real (jitter de pocos studs) acumula vecinos. El radio ENCOGE con la distancia = resolución far.
+    Strafe.DEN = { forgiveness = 14.4, outOfVoidBonus = 13, distPenalty = 3.2, minMatches = 3, window = 3.0, voidManhattan = 7000 }
+    local function resolveDensity(plr, localPos)
+        local D = Strafe.DEN
+        local h = hist[plr]; local n = h and #h.s or 0
+        if n < D.minMatches + 1 then return nil, false, 0 end
+        local now = os.clock()
+        local bestPos, bestCount = nil, D.minMatches - 1
+        for i = 1, n do
+            if now - h.t[i] <= D.window then
+                local p1 = h.s[i]
+                local inMap = (math.abs(p1.X) + math.abs(p1.Z)) < D.voidManhattan
+                local forg = D.forgiveness + (inMap and D.outOfVoidBonus or 0)
+                if localPos then forg = forg - ((localPos - p1).Magnitude / 100) * D.distPenalty end
+                forg = math.clamp(forg, 1, 1000)
+                local count, sum = 0, p1
+                for j = 1, n do
+                    if i ~= j and (now - h.t[j] <= D.window) and (p1 - h.s[j]).Magnitude <= forg then
+                        count = count + 1; sum = sum + h.s[j]
+                    end
+                end
+                if count >= D.minMatches and count > bestCount then
+                    bestCount = count; bestPos = sum / (count + 1)   -- centroide del vecindario denso
+                end
+            end
+        end
+        local didDef = bestPos ~= nil and bestCount >= (D.minMatches + 1)
+        return bestPos, didDef, bestCount
+    end
+
     local function resolveCluster(plr, hitbox, now, localPos)
         local t = clusters[plr]; if not t then t = { list = {} }; clusters[plr] = t end
         local dist = (localPos - hitbox).Magnitude
@@ -744,7 +783,38 @@ return function(require, LIP, Lib)
         end
         -- didDefensive = el cluster ganador cruzó el gate de accuracy = pos confiable + fire-ready (harmonía juju)
         local didDefensive = (best ~= nil and bestScore > RP.accuracy)
-        return (didDefensive and best.pos) or hitbox, didDefensive
+        local score = math.clamp(bestScore / (RP.accuracy * 2), 0, 1)
+        return (didDefensive and best.pos) or hitbox, didDefensive, score, #t.list
+    end
+
+    -- RUTEO UNIFICADO: Cluster / Density / Auto. Llena resState[plr] (lo leen peek/info) + cachea por frame.
+    local resState = {}   -- [player] = { pos, didDef, method, score, clusters, state, frameT }
+    local function pickMethod(plr)
+        local b = beh[plr]
+        if b and b.voidFrac > 0.30 and b.voidFrac < 0.75 and b.flipRate > 0.35 then return "Density" end
+        return "Cluster"
+    end
+    local function resolveByMethod(plr, rawPos, localPos)
+        local now = os.clock()
+        local rs = resState[plr]
+        if rs and rs.frameT == now then return rs.pos, rs.didDef end   -- cache por frame (varios callers/tick)
+        local method = O("ResolverMethod") or "Cluster"
+        if method == "Auto" then method = pickMethod(plr) end
+        local pos, didDef, score, cl, state
+        if method == "Density" then
+            local p, dd, cnt = resolveDensity(plr, localPos)
+            pos, didDef = p or rawPos, dd or false
+            score = math.clamp(((cnt or 0) - Strafe.DEN.minMatches) / 8, 0, 1)
+            cl = cnt or 0
+            state = didDef and "LOCKED" or (p and "RESOLVING" or "VOID")
+        else
+            local p, dd, sc, n = resolveCluster(plr, rawPos, now, localPos)
+            pos, didDef = p, dd
+            score = sc or 0; cl = n or 0
+            state = dd and "LOCKED" or ((cl > 0) and "RESOLVING" or "NORMAL")
+        end
+        resState[plr] = { pos = pos, didDef = didDef, method = method, score = score, clusters = cl, state = state, frameT = now }
+        return pos, didDef
     end
 
     -- velocidad muestreada a resolver_rate (por target) — finite-diff, NO cada frame (juju resolver_rate)
@@ -763,7 +833,7 @@ return function(require, LIP, Lib)
     function Strafe.resolveAim(plr, rawHitboxPos)
         local now = os.clock()
         local r = myRoot(); local loc = r and r.Position or rawHitboxPos
-        local pos, didDefensive = resolveCluster(plr, rawHitboxPos, now, loc)
+        local pos, didDefensive = resolveByMethod(plr, rawHitboxPos, loc)
         -- velocidad desde la pos RESUELTA (estable, sin los saltos del void) + sanity clamp (ningún player va
         -- >200 studs/s) → el lead nunca se vuela a millones aunque el target spamee void.
         local vel = Strafe.resolvedVel(plr, pos, now, O("ResolverRate") or 0.037)
@@ -779,33 +849,18 @@ return function(require, LIP, Lib)
         return pos, didDefensive
     end
 
-    -- TELEMETRÍA del resolver para el HUD: score normalizado (0-1) + estado + nº de clusters vivos.
+    -- TELEMETRÍA del resolver para el HUD: método activo + score (0-1) + estado + nº de clusters. Lee resState.
     function Strafe.resolverInfo(plr)
-        local t = clusters[plr]
-        local n = t and #t.list or 0
-        local bestScore = 0
-        if t then for _, c in ipairs(t.list) do
-            local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
-            if s > bestScore then bestScore = s end
-        end end
-        local score = math.clamp(bestScore / (RP.accuracy * 2), 0, 1)   -- normalizado (gate = 0.5 del rango)
-        local locked = bestScore > RP.accuracy
-        local inVoid = (t and t.lastPos and t.lastPos.Magnitude >= 9e5) or false
-        local state = locked and "LOCKED" or (inVoid and "VOID") or (n > 0 and "RESOLVING") or "NORMAL"
-        return { score = score, state = state, clusters = n }
+        local rs = resState[plr]
+        if not rs then return { score = 0, state = "NORMAL", clusters = 0, method = O("ResolverMethod") or "Cluster" } end
+        return { score = rs.score or 0, state = rs.state or "NORMAL", clusters = rs.clusters or 0, method = rs.method or "Cluster" }
     end
 
-    -- LECTOR PURO (para el tracer): pos del cluster ganador + lead, SIN ingestar una muestra
-    -- (no llama resolveCluster/resolvedVel → no perturba el histograma). nil si no hay cluster.
+    -- LECTOR PURO (para el tracer): pos resuelta del método activo + lead, SIN ingestar (lee resState →
+    -- no perturba el resolver). Método-agnóstico (Cluster/Density). nil si aún no resolvió.
     function Strafe.resolvedPeek(plr)
-        local t = clusters[plr]; if not t or #t.list == 0 then return nil end
-        local best, bestScore = nil, 0
-        for _, c in ipairs(t.list) do
-            local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
-            if s > bestScore then bestScore = s; best = c end
-        end
-        if not best then return nil end
-        local pos = best.pos
+        local rs = resState[plr]; if not rs or not rs.pos then return nil end
+        local pos = rs.pos
         local v = velState[plr]
         if v and v.vel and v.vel.Magnitude <= 200 then
             local lead
@@ -820,31 +875,12 @@ return function(require, LIP, Lib)
         return pos
     end
 
-    -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
+    -- PIVOTE del orbit del strafe: rutea por el método activo (Cluster/Density/Auto) + lead manual opcional.
     function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
-        if method == "Cluster" then
-            local r = myRoot(); local loc = r and r.Position or rawPos
-            local p = resolveCluster(plr, rawPos, os.clock(), loc)   -- solo la pos para el orbit (descarta didDefensive)
-            return p
-        end
-        local h = hist[plr]; local n = h and #h.s or 0
-        if n < 3 then return rawPos end
-        local k = math.clamp(samples or 8, 3, n)
-        local xs, ys, zs, wsum, wx, wy, wz = {}, {}, {}, 0, 0, 0, 0
-        for i = n - k + 1, n do
-            local p = h.s[i]
-            xs[#xs+1] = p.X; ys[#ys+1] = p.Y; zs[#zs+1] = p.Z
-            local w = (i - (n - k))           -- peso lineal: frames recientes pesan más
-            wsum = wsum + w; wx = wx + p.X*w; wy = wy + p.Y*w; wz = wz + p.Z*w
-        end
-        local base
-        if method == "Average" then
-            local s = Vector3.zero; for i = n-k+1, n do s = s + h.s[i] end; base = s / k
-        elseif method == "Weighted" then base = Vector3.new(wx/wsum, wy/wsum, wz/wsum)
-        elseif method == "Latest" then base = h.s[n]
-        else base = Vector3.new(median(xs), median(ys), median(zs)) end   -- Median (robusto)
-        if predictT and predictT > 0 then base = base + Strafe.targetVel(plr) * predictT end
-        return base
+        local r = myRoot(); local loc = r and r.Position or rawPos
+        local p = resolveByMethod(plr, rawPos, loc)   -- descarta didDef, solo la pos para orbitar
+        if predictT and predictT > 0 then p = p + Strafe.targetVel(plr) * predictT end
+        return p or rawPos
     end
 
     ------------------------------------------------------------------ PRESETS
@@ -877,7 +913,7 @@ return function(require, LIP, Lib)
     -- órbita alrededor de un CENTRO, mirando al centro. Normal/Random/Behind.
     local function orbitCF(center, tLook, opts)
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
-        local mode = opts.mode or "Normal"
+        local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
         if mode == "Behind" then
             local look = tLook or Vector3.new(0, 0, -1)
             local goPos = center - look * R + Vector3.new(0, h, 0)
@@ -907,7 +943,7 @@ return function(require, LIP, Lib)
     function Strafe.offsetVec(target, opts)
         local tRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
-        local mode = opts.mode or "Normal"
+        local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
         if mode == "Behind" and tRoot then
             local lv = tRoot.CFrame.LookVector
             local flat = Vector3.new(lv.X, 0, lv.Z)
@@ -927,7 +963,7 @@ return function(require, LIP, Lib)
     local wseed = 0
     local function weldOrbitOffset(opts)
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
-        local mode = opts.mode or "Normal"
+        local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
         if mode == "Behind" then
             return CFrame.new(0, h, R)                               -- fijo R atrás
         elseif mode == "Spiral" then
@@ -941,6 +977,52 @@ return function(require, LIP, Lib)
             wseed = wseed + spd * 0.05
             return CFrame.new(math.cos(wseed) * R, h, math.sin(wseed) * R)
         end
+    end
+
+    -- AUTO-BEST-MODE (innovación): elige el modo de strafe según contexto, al entrar a CHASE. Se guarda en
+    -- LIP.strafeMode; solo cambia en el borde del ciclo (LIP.strafeCycleNew) = histéresis natural.
+    local function pickBestMode(dist, tvel, spoof)
+        if spoof > (O("AutoSpoofThresh") or 0.40) then return "Spiral" end   -- target spoofea fuerte → 3D
+        if tvel  > (O("AutoFastThresh")  or 40)   then return "Behind" end   -- rápido → pegado a su espalda
+        if dist  > (O("AutoFarThresh")   or 60)   then return "Normal" end   -- lejos → órbita ancha
+        return "Random"                                                       -- cerca+estático → máx jitter
+    end
+
+    -- FLING al void para baitear el resolver enemigo (fase BAIT del ciclo). ORIGIN alto + XYZ random + rot
+    -- random, clamp Y≥30 (NUNCA al vacío que mata). Reusa el rng brng (rnd/rndS).
+    local VORIGIN = Vector3.new(0, 100, 0)
+    local function voidBaitCF(dist)
+        dist = dist or 5000
+        local off = Vector3.new(rndS() * dist, rnd() * dist * 0.5, rndS() * dist)
+        local pos = VORIGIN + off
+        if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end
+        return CFrame.new(pos) * CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)
+    end
+
+    -- FSM del ciclo dinámico: CHASE (orbita la resuelta) aroundTime ↔ BAIT (fling void) voidTime. Los presets
+    -- setean los timers. Marca LIP.strafeCycleNew al ENTRAR a un CHASE (lo usa el auto-mode para re-elegir).
+    local function cycleStep()
+        local now = os.clock()
+        local preset = O("BaitPreset") or "Timed"
+        local aT, vT
+        if preset == "Micro" then
+            local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
+            aT, vT = ping + 0.02, O("VoidTime") or 0.5
+        elseif preset == "Spam" then
+            aT, vT = 0.06, 0.11
+        else
+            aT, vT = O("AroundTime") or 3.0, O("VoidTime") or 1.0   -- Timed
+        end
+        if not LIP.strafePhase or not LIP.strafePhaseUntil then
+            LIP.strafePhase = "chase"; LIP.strafePhaseUntil = now + aT; LIP.strafeCycleNew = true
+        elseif now >= LIP.strafePhaseUntil then
+            if LIP.strafePhase == "chase" then
+                LIP.strafePhase = "bait"; LIP.strafePhaseUntil = now + vT
+            else
+                LIP.strafePhase = "chase"; LIP.strafePhaseUntil = now + aT; LIP.strafeCycleNew = true
+            end
+        end
+        return LIP.strafePhase
     end
 
     -- llamado por el driver cada Heartbeat con el target resuelto
@@ -959,7 +1041,27 @@ return function(require, LIP, Lib)
             if (opts.predict or 0) > 0 then center = center + Strafe.targetVel(target) * opts.predict end
         end
 
-        local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
+        -- CICLO DINÁMICO: si DynStrafe ON, alterna CHASE (orbita) / BAIT (fling void). En BAIT el goCF va al void.
+        local phase = "chase"
+        if T("DynStrafe") then phase = cycleStep() else LIP.strafePhase = "chase" end
+        -- AUTO-MODE: al ENTRAR a un CHASE nuevo, re-elegir el mejor modo desde el contexto resuelto (histéresis).
+        if T("AutoMode") and LIP.strafeCycleNew then
+            LIP.strafeCycleNew = false
+            local myR = myRoot()
+            local dist = (myR and center) and (myR.Position - center).Magnitude or 0
+            local rs = resState[target]
+            local tvel = Strafe.targetVel(target).Magnitude
+            local spoof = (rs and rs.method == "Cluster") and (1 - (rs.score or 0)) or (beh[target] and beh[target].voidFrac or 0)
+            LIP.strafeMode = pickBestMode(dist, tvel, spoof)
+        end
+        if not T("AutoMode") then LIP.strafeMode = nil end
+
+        local goCF
+        if phase == "bait" then
+            goCF = voidBaitCF(opts.radius and (opts.radius * 500) or 5000)
+        else
+            goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
+        end
 
         -- BAIT: cada 1-3s salta a una pos random FIJA (dentro de 100 studs del target) por 0.5s, + jitter en
         -- X de ±5 studs cada frame → el enemigo ve un ghost lejano temblando = rompe/baitea su aim.
@@ -1216,6 +1318,8 @@ return function(require, LIP, Lib)
         if LIP.awGrabbing then LIP.fireAccum = 0; lastTick = now; return end   -- AutoWeapons grabbing: pausar
         -- VOID SPAM: pausar disparo mientras estás IN void (solo disparar OUT del void)
         if LIP.voidSpamOn and LIP.voidShootOut and not LIP.voidShootOk then LIP.fireAccum = 0; lastTick = now; return end
+        -- DYNAMIC STRAFE fase BAIT: tu origin está en el void → el disparo no registra, no quemar balas
+        if LIP.strafePhase == "bait" then LIP.fireAccum = 0; lastTick = now; return end
         -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server. SPOOF PRIMERO
         -- (igual que el origin del disparo): spoofeado, el server te ve en spoofFakePos (weld/órbita, pegado al
         -- target) → el rango se mide desde ahí. Wallbang solo cuenta si NO estás spoofeado; si no, el gate medía
@@ -2424,44 +2528,6 @@ return function(require, LIP, Lib)
         c1:AddToggle("FFCheck", { Text = "ForceField Check", Default = true,
             Tooltip = "Si el target tiene ForceField (spawn protection) o murió → te escondés (idle) y no disparás hasta que respawnee / se le quite el FF. Ignore temporal." })
 
-        local rp = RS:AddPanel("Resolver", { Column = 1 })
-        rp:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
-            Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
-        rp:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Median", "Weighted", "Average", "Latest" }, Default = "Cluster" })
-        rp:AddSlider("ResolverSamples", { Text = "Samples", Min = 3, Max = 20, Default = 12 })
-        rp:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
-            Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
-        rp:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
-        rp:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
-            Tooltip = "Intervalo de muestreo de velocidad (juju 0.037). Chico = fresco/ruidoso, grande = suave/laggy." })
-        rp:AddDropdown("PredMode", { Text = "Prediction", Values = { "Auto", "Manual" }, Default = "Auto",
-            Tooltip = "Auto = lead por ping (ping·2). Manual = usa Pred Lead." })
-        rp:AddSlider("PredLead", { Text = "Pred Lead", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead manual (segundos de velocidad adelantada). Solo con Prediction = Manual." })
-        rp:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
-            Tooltip = "HARMONÍA: el autofire dispara a la pos RESUELTA (no al head crudo) cuando el resolver está confiado (didDefensive). RIESGO HBE (fuera del hitbox del ghost). OFF = HBE-safe." })
-        rp:AddToggle("ResolvedTracer", { Text = "Resolved Tracer", Default = false,
-            Tooltip = "Tracer del centro de pantalla a la pos RESUELTA por el cluster." })
-            :AddColorPicker("ResolvedTracerColor", { Default = Color3.fromRGB(255, 120, 120) })
-        -- Config del Cluster resolver (juju-style). Solo aplica con Method = Cluster.
-        local RP = Strafe.RParams
-        rp:AddLabel("Cluster Resolver", { Header = true })
-        rp:AddSlider("RRPosWeight", { Text = "Position Trust", Min = 0.1, Max = 5, Default = 1.5, Decimals = 2,
-            Callback = function(v) if RP then RP.posWeight = v end end })
-        rp:AddSlider("RRVoidWeight", { Text = "Void Trust", Min = 0.1, Max = 5, Default = 0.2, Decimals = 2,
-            Tooltip = "Confianza en posiciones void (magnitud enorme). Baja = ignora void spam",
-            Callback = function(v) if RP then RP.voidWeight = v end end })
-        rp:AddSlider("RRForget", { Text = "Forget Rate", Min = 0, Max = 1000, Default = 80, Suffix = "%",
-            Callback = function(v) if RP then RP.forget = v end end })
-        rp:AddSlider("RRDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 5, Default = 2, Decimals = 1, Suffix = "x",
-            Callback = function(v) if RP then RP.distPenalty = v end end })
-        rp:AddSlider("RRAccuracy", { Text = "Accuracy (gate)", Min = 0.4, Max = 3, Default = 1.35, Decimals = 2,
-            Tooltip = "Confianza mínima para lockear un cluster. Alto = más certeza, menos tiros",
-            Callback = function(v) if RP then RP.accuracy = v end end })
-        rp:AddSlider("RRLerp", { Text = "Lerp", Min = 0.1, Max = 1, Default = 0.1, Decimals = 2,
-            Callback = function(v) if RP then RP.lerp = v end end })
-
         --== Col 2: Firepower + Void Spam ==--
         local c2 = RS:AddPanel("Firepower", { Column = 2 })
         c2:AddToggle("MultiFire", { Text = "Bullet Multiplier", Default = false,
@@ -2548,6 +2614,72 @@ return function(require, LIP, Lib)
             Tooltip = "Distancia abajo del centro del crosshair." })
 
         --========================= LEGIT =========================--
+        --========================= RESOLVER (Section en el sidebar de Rage) =========================--
+        local Res = Rage:AddSection("Resolver", "Cluster · Density · Dynamic Strafe", { Columns = 2 })
+        local RParams = Strafe.RParams; local DEN = Strafe.DEN
+        local rm = Res:AddPanel("Método", { Column = 1 })
+        rm:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
+            Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
+        rm:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Density", "Auto" }, Default = "Cluster",
+            Tooltip = "Cluster = histograma (juju). Density = vecindad batch (sakura, anti-alternador + far). Auto = elige según el target." })
+        rm:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
+            Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
+        rm:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
+        rm:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
+            Tooltip = "Intervalo de muestreo de velocidad (juju 0.037)." })
+        rm:AddDropdown("PredMode", { Text = "Prediction", Values = { "Auto", "Manual" }, Default = "Auto",
+            Tooltip = "Auto = lead por ping (ping·2). Manual = usa Pred Lead." })
+        rm:AddSlider("PredLead", { Text = "Pred Lead", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead manual. Solo con Prediction = Manual." })
+        rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
+            Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
+        rm:AddToggle("ResolvedTracer", { Text = "Resolved Tracer", Default = false,
+            Tooltip = "Tracer del centro de pantalla a la pos RESUELTA por el método activo." })
+            :AddColorPicker("ResolvedTracerColor", { Default = Color3.fromRGB(255, 120, 120) })
+        rm:AddLabel("Cluster", { Header = true })
+        rm:AddSlider("RRPosWeight", { Text = "Position Trust", Min = 0.1, Max = 5, Default = 1.5, Decimals = 2,
+            Callback = function(v) if RParams then RParams.posWeight = v end end })
+        rm:AddSlider("RRVoidWeight", { Text = "Void Trust", Min = 0.1, Max = 5, Default = 0.2, Decimals = 2,
+            Callback = function(v) if RParams then RParams.voidWeight = v end end })
+        rm:AddSlider("RRForget", { Text = "Forget Rate", Min = 0, Max = 1000, Default = 80, Suffix = "%",
+            Callback = function(v) if RParams then RParams.forget = v end end })
+        rm:AddSlider("RRDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 5, Default = 2, Decimals = 1, Suffix = "x",
+            Callback = function(v) if RParams then RParams.distPenalty = v end end })
+        rm:AddSlider("RRAccuracy", { Text = "Accuracy", Min = 0.4, Max = 3, Default = 1.35, Decimals = 2,
+            Callback = function(v) if RParams then RParams.accuracy = v end end })
+        rm:AddSlider("RRLerp", { Text = "Lerp", Min = 0.1, Max = 1, Default = 0.1, Decimals = 2,
+            Callback = function(v) if RParams then RParams.lerp = v end end })
+        rm:AddLabel("Density", { Header = true })
+        rm:AddSlider("DenForgiveness", { Text = "Forgiveness", Min = 2, Max = 60, Default = 14.4, Decimals = 1, Suffix = "st",
+            Tooltip = "Radio de vecindad (studs). Chico = void nunca clusteriza.",
+            Callback = function(v) if DEN then DEN.forgiveness = v end end })
+        rm:AddSlider("DenOutBonus", { Text = "Out-of-Void Bonus", Min = 0, Max = 40, Default = 13, Decimals = 1, Suffix = "st",
+            Callback = function(v) if DEN then DEN.outOfVoidBonus = v end end })
+        rm:AddSlider("DenDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 8, Default = 3.2, Decimals = 1, Suffix = "x",
+            Tooltip = "Encoge el radio con la distancia (resolución far).",
+            Callback = function(v) if DEN then DEN.distPenalty = v end end })
+        rm:AddSlider("DenMinMatches", { Text = "Min Matches", Min = 2, Max = 10, Default = 3,
+            Callback = function(v) if DEN then DEN.minMatches = math.floor(v) end end })
+        rm:AddSlider("DenWindow", { Text = "Window", Min = 0.5, Max = 5, Default = 3, Decimals = 1, Suffix = "s",
+            Callback = function(v) if DEN then DEN.window = v end end })
+
+        local dyn = Res:AddPanel("Dynamic Strafe", { Column = 2 })
+        dyn:AddToggle("DynStrafe", { Text = "Dynamic Cycle", Default = false,
+            Tooltip = "Ciclo CHASE (orbita la resuelta) ↔ BAIT (fling al void). Baitea el resolver enemigo. No dispara en bait." })
+        dyn:AddDropdown("BaitPreset", { Text = "Bait Preset", Values = { "Timed", "Micro", "Spam" }, Default = "Timed",
+            Tooltip = "Timed = chase 3s/bait 1s. Micro = chase ping+0.02/bait corto (flash). Spam = 0.06/0.11 rápido (juju)." })
+        dyn:AddSlider("AroundTime", { Text = "Chase Time", Min = 0.05, Max = 10, Default = 3, Decimals = 2, Suffix = "s" })
+        dyn:AddSlider("VoidTime", { Text = "Bait Time", Min = 0.05, Max = 12, Default = 1, Decimals = 2, Suffix = "s" })
+        dyn:AddToggle("AutoMode", { Text = "Auto Best-Mode", Default = false,
+            Tooltip = "Elige Spiral/Behind/Normal/Random según distancia/velocidad/spoof del target, al entrar a CHASE." })
+        dyn:AddSlider("AutoSpoofThresh", { Text = "Spoof→Spiral", Min = 0, Max = 1, Default = 0.40, Decimals = 2,
+            Tooltip = "Si el spoof del target supera esto → Spiral (3D impredecible)." })
+        dyn:AddSlider("AutoFastThresh", { Text = "Fast→Behind", Min = 5, Max = 150, Default = 40, Suffix = "st/s",
+            Tooltip = "Si el target se mueve más rápido que esto → Behind." })
+        dyn:AddSlider("AutoFarThresh", { Text = "Far→Normal", Min = 10, Max = 200, Default = 60, Suffix = "st",
+            Tooltip = "Si el target está más lejos que esto → Normal (órbita ancha)." })
+
         local Legit = Window:AddCategory("Legit", "target")
         local LS = Legit:AddSection("Legit", "Melee · Fists", { Columns = 2 })
         local l1 = LS:AddPanel("Melee", { Column = 1 })
@@ -2899,7 +3031,7 @@ return function(require, LIP, Lib)
                                   posSpoof = posSpoof, connExploit = connExp, bait = T.StrafeBait.Value,
                                   predict = O.ResolverPredict.Value,
                                   resolve = T.Resolver and T.Resolver.Value,
-                                  resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value }
+                                  resolveMethod = O.ResolverMethod.Value }
                 if voidSpamOn then
                     -- VOID SPAM sobre el strafe: OUT = strafe-orbit (dispara), IN = void (esconde); force-void en reload
                     local phase = Void.voidStep({ inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
