@@ -50,7 +50,8 @@ return function(require, LIP, Lib)
 
     ------------------------------------------------------------------ SPAM RESOLVER (métodos + pesos)
     local hist = {}   -- [player] = { s = {V3...}, t = {clock...} }
-    local MAX = 16
+    local beh  = {}   -- [player] = { voidFrac, flipRate, prevVoid } — EMA de comportamiento (Auto-método)
+    local MAX = 120   -- ~3s a ~40Hz (ventana del Density)
     local function sample(plr, pos, now, rejectVel)
         local h = hist[plr]; if not h then h = { s = {}, t = {} }; hist[plr] = h end
         local n = #h.s
@@ -60,6 +61,12 @@ return function(require, LIP, Lib)
         end
         h.s[#h.s + 1] = pos; h.t[#h.t + 1] = now
         if #h.s > MAX then table.remove(h.s, 1); table.remove(h.t, 1) end
+        -- comportamiento (Auto-método): fracción de muestras en void + tasa de flips real↔void
+        local b = beh[plr]; if not b then b = { voidFrac = 0, flipRate = 0, prevVoid = false }; beh[plr] = b end
+        local isVoid = (math.abs(pos.X) + math.abs(pos.Z)) >= 7000
+        b.voidFrac = b.voidFrac + 0.15 * ((isVoid and 1 or 0) - b.voidFrac)
+        b.flipRate = b.flipRate + 0.15 * (((isVoid ~= b.prevVoid) and 1 or 0) - b.flipRate)
+        b.prevVoid = isVoid
     end
     function Strafe.sampleAll(now, rejectVel)
         for _, plr in ipairs(Players:GetPlayers()) do
@@ -104,6 +111,39 @@ return function(require, LIP, Lib)
     local clusters = {}   -- [player] = { list = {...}, lastPos, lastT }
     local RP = { posWeight = 1.5, voidWeight = 0.2, forget = 80, distPenalty = 2.0, accuracy = 1.35, lerp = 0.1 }
     Strafe.RParams = RP
+
+    -- RESOLVER DENSITY (sakura / Unnamed Enhancements): batch O(n²) sobre el log; para cada muestra cuenta
+    -- vecinos dentro de un radio CHICO (studs). El void (millones de studs entre sí) nunca clusteriza; solo
+    -- la pos real (jitter de pocos studs) acumula vecinos. El radio ENCOGE con la distancia = resolución far.
+    Strafe.DEN = { forgiveness = 14.4, outOfVoidBonus = 13, distPenalty = 3.2, minMatches = 3, window = 3.0, voidManhattan = 7000 }
+    local function resolveDensity(plr, localPos)
+        local D = Strafe.DEN
+        local h = hist[plr]; local n = h and #h.s or 0
+        if n < D.minMatches + 1 then return nil, false, 0 end
+        local now = os.clock()
+        local bestPos, bestCount = nil, D.minMatches - 1
+        for i = 1, n do
+            if now - h.t[i] <= D.window then
+                local p1 = h.s[i]
+                local inMap = (math.abs(p1.X) + math.abs(p1.Z)) < D.voidManhattan
+                local forg = D.forgiveness + (inMap and D.outOfVoidBonus or 0)
+                if localPos then forg = forg - ((localPos - p1).Magnitude / 100) * D.distPenalty end
+                forg = math.clamp(forg, 1, 1000)
+                local count, sum = 0, p1
+                for j = 1, n do
+                    if i ~= j and (now - h.t[j] <= D.window) and (p1 - h.s[j]).Magnitude <= forg then
+                        count = count + 1; sum = sum + h.s[j]
+                    end
+                end
+                if count >= D.minMatches and count > bestCount then
+                    bestCount = count; bestPos = sum / (count + 1)   -- centroide del vecindario denso
+                end
+            end
+        end
+        local didDef = bestPos ~= nil and bestCount >= (D.minMatches + 1)
+        return bestPos, didDef, bestCount
+    end
+
     local function resolveCluster(plr, hitbox, now, localPos)
         local t = clusters[plr]; if not t then t = { list = {} }; clusters[plr] = t end
         local dist = (localPos - hitbox).Magnitude
