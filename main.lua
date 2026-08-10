@@ -222,7 +222,7 @@ return function(require, LIP, Lib)
                                   posSpoof = posSpoof, connExploit = connExp, bait = T.StrafeBait.Value,
                                   predict = O.ResolverPredict.Value,
                                   resolve = T.Resolver and T.Resolver.Value,
-                                  resolveMethod = O.ResolverMethod.Value, samples = O.ResolverSamples.Value }
+                                  resolveMethod = O.ResolverMethod.Value }
                 if voidSpamOn then
                     -- VOID SPAM sobre el strafe: OUT = strafe-orbit (dispara), IN = void (esconde); force-void en reload
                     local phase = Void.voidStep({ inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,

@@ -34,44 +34,6 @@ return function(require, LIP, Lib)
         c1:AddToggle("FFCheck", { Text = "ForceField Check", Default = true,
             Tooltip = "Si el target tiene ForceField (spawn protection) o murió → te escondés (idle) y no disparás hasta que respawnee / se le quite el FF. Ignore temporal." })
 
-        local rp = RS:AddPanel("Resolver", { Column = 1 })
-        rp:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
-            Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
-        rp:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Median", "Weighted", "Average", "Latest" }, Default = "Cluster" })
-        rp:AddSlider("ResolverSamples", { Text = "Samples", Min = 3, Max = 20, Default = 12 })
-        rp:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
-            Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
-        rp:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
-        rp:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
-            Tooltip = "Intervalo de muestreo de velocidad (juju 0.037). Chico = fresco/ruidoso, grande = suave/laggy." })
-        rp:AddDropdown("PredMode", { Text = "Prediction", Values = { "Auto", "Manual" }, Default = "Auto",
-            Tooltip = "Auto = lead por ping (ping·2). Manual = usa Pred Lead." })
-        rp:AddSlider("PredLead", { Text = "Pred Lead", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead manual (segundos de velocidad adelantada). Solo con Prediction = Manual." })
-        rp:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
-            Tooltip = "HARMONÍA: el autofire dispara a la pos RESUELTA (no al head crudo) cuando el resolver está confiado (didDefensive). RIESGO HBE (fuera del hitbox del ghost). OFF = HBE-safe." })
-        rp:AddToggle("ResolvedTracer", { Text = "Resolved Tracer", Default = false,
-            Tooltip = "Tracer del centro de pantalla a la pos RESUELTA por el cluster." })
-            :AddColorPicker("ResolvedTracerColor", { Default = Color3.fromRGB(255, 120, 120) })
-        -- Config del Cluster resolver (juju-style). Solo aplica con Method = Cluster.
-        local RP = Strafe.RParams
-        rp:AddLabel("Cluster Resolver", { Header = true })
-        rp:AddSlider("RRPosWeight", { Text = "Position Trust", Min = 0.1, Max = 5, Default = 1.5, Decimals = 2,
-            Callback = function(v) if RP then RP.posWeight = v end end })
-        rp:AddSlider("RRVoidWeight", { Text = "Void Trust", Min = 0.1, Max = 5, Default = 0.2, Decimals = 2,
-            Tooltip = "Confianza en posiciones void (magnitud enorme). Baja = ignora void spam",
-            Callback = function(v) if RP then RP.voidWeight = v end end })
-        rp:AddSlider("RRForget", { Text = "Forget Rate", Min = 0, Max = 1000, Default = 80, Suffix = "%",
-            Callback = function(v) if RP then RP.forget = v end end })
-        rp:AddSlider("RRDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 5, Default = 2, Decimals = 1, Suffix = "x",
-            Callback = function(v) if RP then RP.distPenalty = v end end })
-        rp:AddSlider("RRAccuracy", { Text = "Accuracy (gate)", Min = 0.4, Max = 3, Default = 1.35, Decimals = 2,
-            Tooltip = "Confianza mínima para lockear un cluster. Alto = más certeza, menos tiros",
-            Callback = function(v) if RP then RP.accuracy = v end end })
-        rp:AddSlider("RRLerp", { Text = "Lerp", Min = 0.1, Max = 1, Default = 0.1, Decimals = 2,
-            Callback = function(v) if RP then RP.lerp = v end end })
-
         --== Col 2: Firepower + Void Spam ==--
         local c2 = RS:AddPanel("Firepower", { Column = 2 })
         c2:AddToggle("MultiFire", { Text = "Bullet Multiplier", Default = false,
@@ -158,6 +120,72 @@ return function(require, LIP, Lib)
             Tooltip = "Distancia abajo del centro del crosshair." })
 
         --========================= LEGIT =========================--
+        --========================= RESOLVER (Section en el sidebar de Rage) =========================--
+        local Res = Rage:AddSection("Resolver", "Cluster · Density · Dynamic Strafe", { Columns = 2 })
+        local RParams = Strafe.RParams; local DEN = Strafe.DEN
+        local rm = Res:AddPanel("Método", { Column = 1 })
+        rm:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
+            Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
+        rm:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Density", "Auto" }, Default = "Cluster",
+            Tooltip = "Cluster = histograma (juju). Density = vecindad batch (sakura, anti-alternador + far). Auto = elige según el target." })
+        rm:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
+            Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
+        rm:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
+        rm:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
+            Tooltip = "Intervalo de muestreo de velocidad (juju 0.037)." })
+        rm:AddDropdown("PredMode", { Text = "Prediction", Values = { "Auto", "Manual" }, Default = "Auto",
+            Tooltip = "Auto = lead por ping (ping·2). Manual = usa Pred Lead." })
+        rm:AddSlider("PredLead", { Text = "Pred Lead", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead manual. Solo con Prediction = Manual." })
+        rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
+            Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
+        rm:AddToggle("ResolvedTracer", { Text = "Resolved Tracer", Default = false,
+            Tooltip = "Tracer del centro de pantalla a la pos RESUELTA por el método activo." })
+            :AddColorPicker("ResolvedTracerColor", { Default = Color3.fromRGB(255, 120, 120) })
+        rm:AddLabel("Cluster", { Header = true })
+        rm:AddSlider("RRPosWeight", { Text = "Position Trust", Min = 0.1, Max = 5, Default = 1.5, Decimals = 2,
+            Callback = function(v) if RParams then RParams.posWeight = v end end })
+        rm:AddSlider("RRVoidWeight", { Text = "Void Trust", Min = 0.1, Max = 5, Default = 0.2, Decimals = 2,
+            Callback = function(v) if RParams then RParams.voidWeight = v end end })
+        rm:AddSlider("RRForget", { Text = "Forget Rate", Min = 0, Max = 1000, Default = 80, Suffix = "%",
+            Callback = function(v) if RParams then RParams.forget = v end end })
+        rm:AddSlider("RRDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 5, Default = 2, Decimals = 1, Suffix = "x",
+            Callback = function(v) if RParams then RParams.distPenalty = v end end })
+        rm:AddSlider("RRAccuracy", { Text = "Accuracy", Min = 0.4, Max = 3, Default = 1.35, Decimals = 2,
+            Callback = function(v) if RParams then RParams.accuracy = v end end })
+        rm:AddSlider("RRLerp", { Text = "Lerp", Min = 0.1, Max = 1, Default = 0.1, Decimals = 2,
+            Callback = function(v) if RParams then RParams.lerp = v end end })
+        rm:AddLabel("Density", { Header = true })
+        rm:AddSlider("DenForgiveness", { Text = "Forgiveness", Min = 2, Max = 60, Default = 14.4, Decimals = 1, Suffix = "st",
+            Tooltip = "Radio de vecindad (studs). Chico = void nunca clusteriza.",
+            Callback = function(v) if DEN then DEN.forgiveness = v end end })
+        rm:AddSlider("DenOutBonus", { Text = "Out-of-Void Bonus", Min = 0, Max = 40, Default = 13, Decimals = 1, Suffix = "st",
+            Callback = function(v) if DEN then DEN.outOfVoidBonus = v end end })
+        rm:AddSlider("DenDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 8, Default = 3.2, Decimals = 1, Suffix = "x",
+            Tooltip = "Encoge el radio con la distancia (resolución far).",
+            Callback = function(v) if DEN then DEN.distPenalty = v end end })
+        rm:AddSlider("DenMinMatches", { Text = "Min Matches", Min = 2, Max = 10, Default = 3,
+            Callback = function(v) if DEN then DEN.minMatches = math.floor(v) end end })
+        rm:AddSlider("DenWindow", { Text = "Window", Min = 0.5, Max = 5, Default = 3, Decimals = 1, Suffix = "s",
+            Callback = function(v) if DEN then DEN.window = v end end })
+
+        local dyn = Res:AddPanel("Dynamic Strafe", { Column = 2 })
+        dyn:AddToggle("DynStrafe", { Text = "Dynamic Cycle", Default = false,
+            Tooltip = "Ciclo CHASE (orbita la resuelta) ↔ BAIT (fling al void). Baitea el resolver enemigo. No dispara en bait." })
+        dyn:AddDropdown("BaitPreset", { Text = "Bait Preset", Values = { "Timed", "Micro", "Spam" }, Default = "Timed",
+            Tooltip = "Timed = chase 3s/bait 1s. Micro = chase ping+0.02/bait corto (flash). Spam = 0.06/0.11 rápido (juju)." })
+        dyn:AddSlider("AroundTime", { Text = "Chase Time", Min = 0.05, Max = 10, Default = 3, Decimals = 2, Suffix = "s" })
+        dyn:AddSlider("VoidTime", { Text = "Bait Time", Min = 0.05, Max = 12, Default = 1, Decimals = 2, Suffix = "s" })
+        dyn:AddToggle("AutoMode", { Text = "Auto Best-Mode", Default = false,
+            Tooltip = "Elige Spiral/Behind/Normal/Random según distancia/velocidad/spoof del target, al entrar a CHASE." })
+        dyn:AddSlider("AutoSpoofThresh", { Text = "Spoof→Spiral", Min = 0, Max = 1, Default = 0.40, Decimals = 2,
+            Tooltip = "Si el spoof del target supera esto → Spiral (3D impredecible)." })
+        dyn:AddSlider("AutoFastThresh", { Text = "Fast→Behind", Min = 5, Max = 150, Default = 40, Suffix = "st/s",
+            Tooltip = "Si el target se mueve más rápido que esto → Behind." })
+        dyn:AddSlider("AutoFarThresh", { Text = "Far→Normal", Min = 10, Max = 200, Default = 60, Suffix = "st",
+            Tooltip = "Si el target está más lejos que esto → Normal (órbita ancha)." })
+
         local Legit = Window:AddCategory("Legit", "target")
         local LS = Legit:AddSection("Legit", "Melee · Fists", { Columns = 2 })
         local l1 = LS:AddPanel("Melee", { Column = 1 })
