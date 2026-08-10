@@ -311,7 +311,7 @@ return function(require, LIP, Lib)
     -- órbita alrededor de un CENTRO, mirando al centro. Normal/Random/Behind.
     local function orbitCF(center, tLook, opts)
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
-        local mode = opts.mode or "Normal"
+        local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
         if mode == "Behind" then
             local look = tLook or Vector3.new(0, 0, -1)
             local goPos = center - look * R + Vector3.new(0, h, 0)
@@ -341,7 +341,7 @@ return function(require, LIP, Lib)
     function Strafe.offsetVec(target, opts)
         local tRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
-        local mode = opts.mode or "Normal"
+        local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
         if mode == "Behind" and tRoot then
             local lv = tRoot.CFrame.LookVector
             local flat = Vector3.new(lv.X, 0, lv.Z)
@@ -361,7 +361,7 @@ return function(require, LIP, Lib)
     local wseed = 0
     local function weldOrbitOffset(opts)
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
-        local mode = opts.mode or "Normal"
+        local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
         if mode == "Behind" then
             return CFrame.new(0, h, R)                               -- fijo R atrás
         elseif mode == "Spiral" then
@@ -375,6 +375,15 @@ return function(require, LIP, Lib)
             wseed = wseed + spd * 0.05
             return CFrame.new(math.cos(wseed) * R, h, math.sin(wseed) * R)
         end
+    end
+
+    -- AUTO-BEST-MODE (innovación): elige el modo de strafe según contexto, al entrar a CHASE. Se guarda en
+    -- LIP.strafeMode; solo cambia en el borde del ciclo (LIP.strafeCycleNew) = histéresis natural.
+    local function pickBestMode(dist, tvel, spoof)
+        if spoof > (O("AutoSpoofThresh") or 0.40) then return "Spiral" end   -- target spoofea fuerte → 3D
+        if tvel  > (O("AutoFastThresh")  or 40)   then return "Behind" end   -- rápido → pegado a su espalda
+        if dist  > (O("AutoFarThresh")   or 60)   then return "Normal" end   -- lejos → órbita ancha
+        return "Random"                                                       -- cerca+estático → máx jitter
     end
 
     -- FLING al void para baitear el resolver enemigo (fase BAIT del ciclo). ORIGIN alto + XYZ random + rot
@@ -433,6 +442,18 @@ return function(require, LIP, Lib)
         -- CICLO DINÁMICO: si DynStrafe ON, alterna CHASE (orbita) / BAIT (fling void). En BAIT el goCF va al void.
         local phase = "chase"
         if T("DynStrafe") then phase = cycleStep() else LIP.strafePhase = "chase" end
+        -- AUTO-MODE: al ENTRAR a un CHASE nuevo, re-elegir el mejor modo desde el contexto resuelto (histéresis).
+        if T("AutoMode") and LIP.strafeCycleNew then
+            LIP.strafeCycleNew = false
+            local myR = myRoot()
+            local dist = (myR and center) and (myR.Position - center).Magnitude or 0
+            local rs = resState[target]
+            local tvel = Strafe.targetVel(target).Magnitude
+            local spoof = (rs and rs.method == "Cluster") and (1 - (rs.score or 0)) or (beh[target] and beh[target].voidFrac or 0)
+            LIP.strafeMode = pickBestMode(dist, tvel, spoof)
+        end
+        if not T("AutoMode") then LIP.strafeMode = nil end
+
         local goCF
         if phase == "bait" then
             goCF = voidBaitCF(opts.radius and (opts.radius * 500) or 5000)
