@@ -377,6 +377,43 @@ return function(require, LIP, Lib)
         end
     end
 
+    -- FLING al void para baitear el resolver enemigo (fase BAIT del ciclo). ORIGIN alto + XYZ random + rot
+    -- random, clamp Y≥30 (NUNCA al vacío que mata). Reusa el rng brng (rnd/rndS).
+    local VORIGIN = Vector3.new(0, 100, 0)
+    local function voidBaitCF(dist)
+        dist = dist or 5000
+        local off = Vector3.new(rndS() * dist, rnd() * dist * 0.5, rndS() * dist)
+        local pos = VORIGIN + off
+        if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end
+        return CFrame.new(pos) * CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)
+    end
+
+    -- FSM del ciclo dinámico: CHASE (orbita la resuelta) aroundTime ↔ BAIT (fling void) voidTime. Los presets
+    -- setean los timers. Marca LIP.strafeCycleNew al ENTRAR a un CHASE (lo usa el auto-mode para re-elegir).
+    local function cycleStep()
+        local now = os.clock()
+        local preset = O("BaitPreset") or "Timed"
+        local aT, vT
+        if preset == "Micro" then
+            local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
+            aT, vT = ping + 0.02, O("VoidTime") or 0.5
+        elseif preset == "Spam" then
+            aT, vT = 0.06, 0.11
+        else
+            aT, vT = O("AroundTime") or 3.0, O("VoidTime") or 1.0   -- Timed
+        end
+        if not LIP.strafePhase or not LIP.strafePhaseUntil then
+            LIP.strafePhase = "chase"; LIP.strafePhaseUntil = now + aT; LIP.strafeCycleNew = true
+        elseif now >= LIP.strafePhaseUntil then
+            if LIP.strafePhase == "chase" then
+                LIP.strafePhase = "bait"; LIP.strafePhaseUntil = now + vT
+            else
+                LIP.strafePhase = "chase"; LIP.strafePhaseUntil = now + aT; LIP.strafeCycleNew = true
+            end
+        end
+        return LIP.strafePhase
+    end
+
     -- llamado por el driver cada Heartbeat con el target resuelto
     function Strafe.tick(target, opts)
         local root = myRoot(); local cam = Workspace.CurrentCamera
@@ -393,7 +430,15 @@ return function(require, LIP, Lib)
             if (opts.predict or 0) > 0 then center = center + Strafe.targetVel(target) * opts.predict end
         end
 
-        local goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
+        -- CICLO DINÁMICO: si DynStrafe ON, alterna CHASE (orbita) / BAIT (fling void). En BAIT el goCF va al void.
+        local phase = "chase"
+        if T("DynStrafe") then phase = cycleStep() else LIP.strafePhase = "chase" end
+        local goCF
+        if phase == "bait" then
+            goCF = voidBaitCF(opts.radius and (opts.radius * 500) or 5000)
+        else
+            goCF = orbitCF(center, tRoot.CFrame.LookVector, opts)
+        end
 
         -- BAIT: cada 1-3s salta a una pos random FIJA (dentro de 100 studs del target) por 0.5s, + jitter en
         -- X de ±5 studs cada frame → el enemigo ve un ghost lejano temblando = rompe/baitea su aim.
