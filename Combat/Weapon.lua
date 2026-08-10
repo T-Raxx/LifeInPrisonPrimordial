@@ -174,6 +174,8 @@ return function(require, LIP, Lib)
         if LIP.awGrabbing then LIP.fireAccum = 0; lastTick = now; return end   -- AutoWeapons grabbing: pausar
         -- VOID SPAM: pausar disparo mientras estás IN void (solo disparar OUT del void)
         if LIP.voidSpamOn and LIP.voidShootOut and not LIP.voidShootOk then LIP.fireAccum = 0; lastTick = now; return end
+        -- DYNAMIC STRAFE fase BAIT: tu origin está en el void → el disparo no registra, no quemar balas
+        if LIP.strafePhase == "bait" then LIP.fireAccum = 0; lastTick = now; return end
         -- RANGO (solo autofire al target): no firar fuera de rango. ref = pos que ve el server. SPOOF PRIMERO
         -- (igual que el origin del disparo): spoofeado, el server te ve en spoofFakePos (weld/órbita, pegado al
         -- target) → el rango se mide desde ahí. Wallbang solo cuenta si NO estás spoofeado; si no, el gate medía
