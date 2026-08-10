@@ -78,7 +78,6 @@ return function(require, LIP, Lib)
             end
         end
     end
-    local function median(a) local b = table.clone(a); table.sort(b); return b[math.floor(#b/2)+1] end
     -- velocidad instantánea del target (últimas 2 muestras) — para predicción/chase
     function Strafe.targetVel(plr)
         local h = hist[plr]; local n = h and #h.s or 0
@@ -182,7 +181,38 @@ return function(require, LIP, Lib)
         end
         -- didDefensive = el cluster ganador cruzó el gate de accuracy = pos confiable + fire-ready (harmonía juju)
         local didDefensive = (best ~= nil and bestScore > RP.accuracy)
-        return (didDefensive and best.pos) or hitbox, didDefensive
+        local score = math.clamp(bestScore / (RP.accuracy * 2), 0, 1)
+        return (didDefensive and best.pos) or hitbox, didDefensive, score, #t.list
+    end
+
+    -- RUTEO UNIFICADO: Cluster / Density / Auto. Llena resState[plr] (lo leen peek/info) + cachea por frame.
+    local resState = {}   -- [player] = { pos, didDef, method, score, clusters, state, frameT }
+    local function pickMethod(plr)
+        local b = beh[plr]
+        if b and b.voidFrac > 0.30 and b.voidFrac < 0.75 and b.flipRate > 0.35 then return "Density" end
+        return "Cluster"
+    end
+    local function resolveByMethod(plr, rawPos, localPos)
+        local now = os.clock()
+        local rs = resState[plr]
+        if rs and rs.frameT == now then return rs.pos, rs.didDef end   -- cache por frame (varios callers/tick)
+        local method = O("ResolverMethod") or "Cluster"
+        if method == "Auto" then method = pickMethod(plr) end
+        local pos, didDef, score, cl, state
+        if method == "Density" then
+            local p, dd, cnt = resolveDensity(plr, localPos)
+            pos, didDef = p or rawPos, dd or false
+            score = math.clamp(((cnt or 0) - Strafe.DEN.minMatches) / 8, 0, 1)
+            cl = cnt or 0
+            state = didDef and "LOCKED" or (p and "RESOLVING" or "VOID")
+        else
+            local p, dd, sc, n = resolveCluster(plr, rawPos, now, localPos)
+            pos, didDef = p, dd
+            score = sc or 0; cl = n or 0
+            state = dd and "LOCKED" or ((cl > 0) and "RESOLVING" or "NORMAL")
+        end
+        resState[plr] = { pos = pos, didDef = didDef, method = method, score = score, clusters = cl, state = state, frameT = now }
+        return pos, didDef
     end
 
     -- velocidad muestreada a resolver_rate (por target) — finite-diff, NO cada frame (juju resolver_rate)
@@ -201,7 +231,7 @@ return function(require, LIP, Lib)
     function Strafe.resolveAim(plr, rawHitboxPos)
         local now = os.clock()
         local r = myRoot(); local loc = r and r.Position or rawHitboxPos
-        local pos, didDefensive = resolveCluster(plr, rawHitboxPos, now, loc)
+        local pos, didDefensive = resolveByMethod(plr, rawHitboxPos, loc)
         -- velocidad desde la pos RESUELTA (estable, sin los saltos del void) + sanity clamp (ningún player va
         -- >200 studs/s) → el lead nunca se vuela a millones aunque el target spamee void.
         local vel = Strafe.resolvedVel(plr, pos, now, O("ResolverRate") or 0.037)
@@ -217,33 +247,18 @@ return function(require, LIP, Lib)
         return pos, didDefensive
     end
 
-    -- TELEMETRÍA del resolver para el HUD: score normalizado (0-1) + estado + nº de clusters vivos.
+    -- TELEMETRÍA del resolver para el HUD: método activo + score (0-1) + estado + nº de clusters. Lee resState.
     function Strafe.resolverInfo(plr)
-        local t = clusters[plr]
-        local n = t and #t.list or 0
-        local bestScore = 0
-        if t then for _, c in ipairs(t.list) do
-            local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
-            if s > bestScore then bestScore = s end
-        end end
-        local score = math.clamp(bestScore / (RP.accuracy * 2), 0, 1)   -- normalizado (gate = 0.5 del rango)
-        local locked = bestScore > RP.accuracy
-        local inVoid = (t and t.lastPos and t.lastPos.Magnitude >= 9e5) or false
-        local state = locked and "LOCKED" or (inVoid and "VOID") or (n > 0 and "RESOLVING") or "NORMAL"
-        return { score = score, state = state, clusters = n }
+        local rs = resState[plr]
+        if not rs then return { score = 0, state = "NORMAL", clusters = 0, method = O("ResolverMethod") or "Cluster" } end
+        return { score = rs.score or 0, state = rs.state or "NORMAL", clusters = rs.clusters or 0, method = rs.method or "Cluster" }
     end
 
-    -- LECTOR PURO (para el tracer): pos del cluster ganador + lead, SIN ingestar una muestra
-    -- (no llama resolveCluster/resolvedVel → no perturba el histograma). nil si no hay cluster.
+    -- LECTOR PURO (para el tracer): pos resuelta del método activo + lead, SIN ingestar (lee resState →
+    -- no perturba el resolver). Método-agnóstico (Cluster/Density). nil si aún no resolvió.
     function Strafe.resolvedPeek(plr)
-        local t = clusters[plr]; if not t or #t.list == 0 then return nil end
-        local best, bestScore = nil, 0
-        for _, c in ipairs(t.list) do
-            local s = c.weight * math.clamp(c.count * 0.25, 1, 3)
-            if s > bestScore then bestScore = s; best = c end
-        end
-        if not best then return nil end
-        local pos = best.pos
+        local rs = resState[plr]; if not rs or not rs.pos then return nil end
+        local pos = rs.pos
         local v = velState[plr]
         if v and v.vel and v.vel.Magnitude <= 200 then
             local lead
@@ -258,31 +273,12 @@ return function(require, LIP, Lib)
         return pos
     end
 
-    -- método de resolución + predicción (lead por velocidad, compensa ping/movimiento)
+    -- PIVOTE del orbit del strafe: rutea por el método activo (Cluster/Density/Auto) + lead manual opcional.
     function Strafe.resolvePos(plr, rawPos, method, samples, predictT)
-        if method == "Cluster" then
-            local r = myRoot(); local loc = r and r.Position or rawPos
-            local p = resolveCluster(plr, rawPos, os.clock(), loc)   -- solo la pos para el orbit (descarta didDefensive)
-            return p
-        end
-        local h = hist[plr]; local n = h and #h.s or 0
-        if n < 3 then return rawPos end
-        local k = math.clamp(samples or 8, 3, n)
-        local xs, ys, zs, wsum, wx, wy, wz = {}, {}, {}, 0, 0, 0, 0
-        for i = n - k + 1, n do
-            local p = h.s[i]
-            xs[#xs+1] = p.X; ys[#ys+1] = p.Y; zs[#zs+1] = p.Z
-            local w = (i - (n - k))           -- peso lineal: frames recientes pesan más
-            wsum = wsum + w; wx = wx + p.X*w; wy = wy + p.Y*w; wz = wz + p.Z*w
-        end
-        local base
-        if method == "Average" then
-            local s = Vector3.zero; for i = n-k+1, n do s = s + h.s[i] end; base = s / k
-        elseif method == "Weighted" then base = Vector3.new(wx/wsum, wy/wsum, wz/wsum)
-        elseif method == "Latest" then base = h.s[n]
-        else base = Vector3.new(median(xs), median(ys), median(zs)) end   -- Median (robusto)
-        if predictT and predictT > 0 then base = base + Strafe.targetVel(plr) * predictT end
-        return base
+        local r = myRoot(); local loc = r and r.Position or rawPos
+        local p = resolveByMethod(plr, rawPos, loc)   -- descarta didDef, solo la pos para orbitar
+        if predictT and predictT > 0 then p = p + Strafe.targetVel(plr) * predictT end
+        return p or rawPos
     end
 
     ------------------------------------------------------------------ PRESETS
