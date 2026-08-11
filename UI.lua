@@ -122,7 +122,7 @@ return function(require, LIP, Lib)
         --========================= LEGIT =========================--
         --========================= RESOLVER (Section en el sidebar de Rage) =========================--
         local Res = Rage:AddSection("Resolver", "Cluster · Density · Dynamic Strafe", { Columns = 2 })
-        local RParams = Strafe.RParams; local DEN = Strafe.DEN
+        local RParams = Strafe.RParams; local DEN = Strafe.DEN; local CONF = Strafe.CONF
         local rm = Res:AddPanel("Método", { Column = 1 })
         rm:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
             Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
@@ -138,6 +138,14 @@ return function(require, LIP, Lib)
             Tooltip = "Lead extra que escala con la velocidad del target" })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
+        rm:AddToggle("BigHitbox", { Text = "Big Hitbox (HRP)", Default = false,
+            Tooltip = "Aima al HRP (hitbox grande) en vez del Head. Auto para random-strafers (math.random)." })
+        rm:AddSlider("HistMax", { Text = "Sample Cap", Min = 60, Max = 500, Default = 200, Suffix = " smp",
+            Tooltip = "Muestras del historial. Más = centroide de math.random más ajustado. Density O(n²): 400+ puede lagear.",
+            Callback = function(v) if CONF then CONF.histMax = math.floor(v) end end })
+        rm:AddSlider("BacktrackWindow", { Text = "Backtrack Win", Min = 0, Max = 0.5, Default = 0.15, Decimals = 2, Suffix = "s",
+            Tooltip = "Ventana tras la última pos real donde el autofire dispara en void-frames (on-shot backtrack). 0 = off.",
+            Callback = function(v) if CONF then CONF.backtrackWindow = v end end })
         rm:AddToggle("ResolvedTracer", { Text = "Resolved Tracer", Default = false,
             Tooltip = "Tracer del centro de pantalla a la pos RESUELTA por el método activo." })
             :AddColorPicker("ResolvedTracerColor", { Default = Color3.fromRGB(255, 120, 120) })
