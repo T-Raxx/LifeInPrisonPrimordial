@@ -62,7 +62,12 @@ return function(require, LIP, Lib)
         local t = LIP.target
         if t and LIP.lastGoodUID ~= t.UserId then LIP.lastGoodHitPos = nil; LIP.lastGoodUID = t.UserId end
         local ch = t and t.Character
-        local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
+        -- TORSO-AIM: HRP (hitbox grande) si BigHitbox on O el resolver marca random-strafer (math.random) →
+        -- el residual del centroide (~5-9 studs) igual pega el cuerpo. Si no, Head como siempre.
+        local wantBig = ch and ((T.BigHitbox and T.BigHitbox.Value)
+                        or ((T.Resolver and T.Resolver.Value) and Strafe.isRandomStrafer(t)))
+        local part = ch and (wantBig and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Head"))
+                             or (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart")))
         LIP.cachedHitPart = part
         if part then
             -- HBE-SAFE por default: hitPos = CENTRO del hitPart (objspace ZERO), el server aplica daño al
@@ -82,7 +87,7 @@ return function(require, LIP, Lib)
             else
                 LIP.cachedHitPos = base; LIP.didDefensive = false
             end
-            if not inVoid then LIP.lastGoodHitPos = base end
+            if not inVoid then LIP.lastGoodHitPos = base; LIP.lastGoodT = os.clock() end
             LIP.targetExposed = not inVoid   -- head crudo real/visible → habilita fire oportunista
             -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
             if T.Wallbang and T.Wallbang.Value then
