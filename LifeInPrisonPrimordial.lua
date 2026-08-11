@@ -904,13 +904,6 @@ return function(require, LIP, Lib)
         local h = hc[plr]; return h and h.acc or 0
     end
 
-    -- FIRMA math.random: in-map (voidFrac bajo) + no resuelto (score bajo) + inestable (salta). Para torso-aim.
-    function Strafe.isRandomStrafer(plr)
-        local b, rs = beh[plr], resState[plr]
-        if not (b and rs) then return false end
-        return b.voidFrac < 0.30 and (rs.score or 0) < 0.30 and (rs.stabFrames or 0) < 2
-    end
-
     -- TELEMETRÍA del resolver para el HUD: método activo + score (0-1) + estado + nº de clusters. Lee resState.
     function Strafe.resolverInfo(plr)
         local rs = resState[plr]
@@ -2935,8 +2928,6 @@ return function(require, LIP, Lib)
             Tooltip = "Lead extra que escala con la velocidad del target" })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
-        rm:AddToggle("BigHitbox", { Text = "Big Hitbox (HRP)", Default = false,
-            Tooltip = "Aima al HRP (hitbox grande) en vez del Head. Auto para random-strafers (math.random)." })
         rm:AddSlider("HistMax", { Text = "Sample Cap", Min = 60, Max = 500, Default = 200, Suffix = " smp",
             Tooltip = "Muestras del historial. Más = centroide de math.random más ajustado. Density O(n²): 400+ puede lagear.",
             Callback = function(v) if CONF then CONF.histMax = math.floor(v) end end })
@@ -3189,12 +3180,7 @@ return function(require, LIP, Lib)
         local t = LIP.target
         if t and LIP.lastGoodUID ~= t.UserId then LIP.lastGoodHitPos = nil; LIP.lastGoodUID = t.UserId end
         local ch = t and t.Character
-        -- TORSO-AIM: HRP (hitbox grande) si BigHitbox on O el resolver marca random-strafer (math.random) →
-        -- el residual del centroide (~5-9 studs) igual pega el cuerpo. Si no, Head como siempre.
-        local wantBig = ch and ((T.BigHitbox and T.BigHitbox.Value)
-                        or ((T.Resolver and T.Resolver.Value) and Strafe.isRandomStrafer(t)))
-        local part = ch and (wantBig and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Head"))
-                             or (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart")))
+        local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
         LIP.cachedHitPart = part
         if part then
             -- HBE-SAFE por default: hitPos = CENTRO del hitPart (objspace ZERO), el server aplica daño al

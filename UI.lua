@@ -138,8 +138,6 @@ return function(require, LIP, Lib)
             Tooltip = "Lead extra que escala con la velocidad del target" })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
-        rm:AddToggle("BigHitbox", { Text = "Big Hitbox (HRP)", Default = false,
-            Tooltip = "Aima al HRP (hitbox grande) en vez del Head. Auto para random-strafers (math.random)." })
         rm:AddSlider("HistMax", { Text = "Sample Cap", Min = 60, Max = 500, Default = 200, Suffix = " smp",
             Tooltip = "Muestras del historial. Más = centroide de math.random más ajustado. Density O(n²): 400+ puede lagear.",
             Callback = function(v) if CONF then CONF.histMax = math.floor(v) end end })

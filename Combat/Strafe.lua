@@ -301,13 +301,6 @@ return function(require, LIP, Lib)
         local h = hc[plr]; return h and h.acc or 0
     end
 
-    -- FIRMA math.random: in-map (voidFrac bajo) + no resuelto (score bajo) + inestable (salta). Para torso-aim.
-    function Strafe.isRandomStrafer(plr)
-        local b, rs = beh[plr], resState[plr]
-        if not (b and rs) then return false end
-        return b.voidFrac < 0.30 and (rs.score or 0) < 0.30 and (rs.stabFrames or 0) < 2
-    end
-
     -- TELEMETRÍA del resolver para el HUD: método activo + score (0-1) + estado + nº de clusters. Lee resState.
     function Strafe.resolverInfo(plr)
         local rs = resState[plr]
