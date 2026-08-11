@@ -114,7 +114,9 @@ return function(require, LIP, Lib)
     -- CONFIANZA DE DISPARO fusionada: pesos + umbrales (todo live-tuneable). wDom+wStab+wResid = 1.0.
     Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 3, voidManhattan = 7000,
                     predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40,
-                    revisitBonus = 0.30, revisitMin = 4, revisitScale = 8, backtrackWindow = 0.15, histMax = 200 }
+                    revisitBonus = 0.30, revisitMin = 4, revisitScale = 8, backtrackWindow = 0.15, histMax = 200,
+                    chaseAmp = 10, chaseFreq = 2.5, ampMin = 6, ampMax = 30, freqMin = 0.5, freqMax = 4.0,
+                    adaptInterval = 1.0, adaptLrAmp = 2.0, adaptLrFreq = 0.3 }
     local function resolveDensity(plr, localPos)
         local D = Strafe.DEN
         local h = hist[plr]; local n = h and #h.s or 0
@@ -362,9 +364,41 @@ return function(require, LIP, Lib)
     local function rnd() brng = (brng * 1103515245 + 12345) % 2147483648; return brng / 2147483648 end
     local function rndS() return rnd() * 2 - 1 end   -- signed [-1,1]
 
+    -- NOISE-PATH: camino orgánico suave alrededor de un centro. Suma de octavas de seno con fases LCG-seedeadas
+    -- (Math.random bloqueado). amp = radio, freq = velocidad angular. Reemplaza el switch de modos preset.
+    local NP = {}   -- 9 fases (3 ejes × 3 octavas), seedeadas una vez
+    for i = 1, 9 do NP[i] = rnd() * 6.2831853 end
+    function Strafe.noiseOffset(t, amp, freq)
+        local function axis(o)
+            return math.sin(freq * t + NP[o]) * 0.6
+                 + math.sin(freq * 2.3 * t + NP[o + 1]) * 0.3
+                 + math.sin(freq * 4.1 * t + NP[o + 2]) * 0.1
+        end
+        return Vector3.new(axis(1) * amp, axis(4) * amp * 0.5, axis(7) * amp)   -- Y media amplitud
+    end
+
+    -- ADAPTACIÓN (hill-climb): nudgea amp/freq hacia lo que MAXIMIZA tus hits (Strafe.hitAccuracy). Coordinate
+    -- ascent: sigue la dirección mientras el hit-rate mejora, la reversa al empeorar. Corre en la fase STRAFE.
+    local adapt = { amp = 14, freq = 1.5, dirA = 1, dirF = 1, lastAcc = 0, lastT = 0 }
+    Strafe.adapt = adapt
+    local function adaptStep(target)
+        local C = Strafe.CONF
+        local now = os.clock()
+        if (now - adapt.lastT) < C.adaptInterval then return end
+        adapt.lastT = now
+        local acc = Strafe.hitAccuracy(target)
+        if acc < adapt.lastAcc - 1e-3 then adapt.dirA = -adapt.dirA; adapt.dirF = -adapt.dirF end
+        adapt.lastAcc = acc
+        adapt.amp  = math.clamp(adapt.amp  + adapt.dirA * C.adaptLrAmp,  C.ampMin,  C.ampMax)
+        adapt.freq = math.clamp(adapt.freq + adapt.dirF * C.adaptLrFreq, C.freqMin, C.freqMax)
+    end
+
     local seed = 0
     -- órbita alrededor de un CENTRO, mirando al centro. Normal/Random/Behind.
     local function orbitCF(center, tLook, opts)
+        if LIP.strafeNoise then
+            return CFrame.lookAt(center + Strafe.noiseOffset(os.clock(), LIP.curStrafeAmp or 12, LIP.curStrafeFreq or 1.5), center)
+        end
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
         local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
         if mode == "Behind" then
@@ -415,6 +449,9 @@ return function(require, LIP, Lib)
     -- posición Y rotación). +Z = ATRÁS del target (LookVector es -Z). radius nunca 0 → nunca adentro = sin fling.
     local wseed = 0
     local function weldOrbitOffset(opts)
+        if LIP.strafeNoise then
+            return CFrame.new(Strafe.noiseOffset(os.clock(), LIP.curStrafeAmp or 12, LIP.curStrafeFreq or 1.5))
+        end
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
         local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
         if mode == "Behind" then
@@ -432,15 +469,6 @@ return function(require, LIP, Lib)
         end
     end
 
-    -- AUTO-BEST-MODE (innovación): elige el modo de strafe según contexto, al entrar a CHASE. Se guarda en
-    -- LIP.strafeMode; solo cambia en el borde del ciclo (LIP.strafeCycleNew) = histéresis natural.
-    local function pickBestMode(dist, tvel, spoof)
-        if spoof > (O("AutoSpoofThresh") or 0.40) then return "Spiral" end   -- target spoofea fuerte → 3D
-        if tvel  > (O("AutoFastThresh")  or 40)   then return "Behind" end   -- rápido → pegado a su espalda
-        if dist  > (O("AutoFarThresh")   or 60)   then return "Normal" end   -- lejos → órbita ancha
-        return "Random"                                                       -- cerca+estático → máx jitter
-    end
-
     -- FLING al void para baitear el resolver enemigo (fase BAIT del ciclo). ORIGIN alto + XYZ random + rot
     -- random, clamp Y≥30 (NUNCA al vacío que mata). Reusa el rng brng (rnd/rndS).
     local VORIGIN = Vector3.new(0, 100, 0)
@@ -452,27 +480,29 @@ return function(require, LIP, Lib)
         return CFrame.new(pos) * CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)
     end
 
-    -- FSM del ciclo dinámico: CHASE (orbita la resuelta) aroundTime ↔ BAIT (fling void) voidTime. Los presets
-    -- setean los timers. Marca LIP.strafeCycleNew al ENTRAR a un CHASE (lo usa el auto-mode para re-elegir).
+    -- FSM del ciclo dinámico de 3 FASES: CHASE (orbit tight + fire) → STRAFE (orbit ancho adaptativo + fire) →
+    -- BAIT (fling void, no fire) → loop. Cada fase su timer (presets los setean).
     local function cycleStep()
         local now = os.clock()
         local preset = O("BaitPreset") or "Timed"
-        local aT, vT
+        local cT, sT, bT
         if preset == "Micro" then
             local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
-            aT, vT = ping + 0.02, O("VoidTime") or 0.5
+            cT, sT, bT = ping + 0.02, O("StrafeTime") or 0.5, O("VoidTime") or 0.5
         elseif preset == "Spam" then
-            aT, vT = 0.06, 0.11
+            cT, sT, bT = 0.06, 0.08, 0.11
         else
-            aT, vT = O("AroundTime") or 3.0, O("VoidTime") or 1.0   -- Timed
+            cT, sT, bT = O("AroundTime") or 2.0, O("StrafeTime") or 2.0, O("VoidTime") or 1.0   -- Timed
         end
         if not LIP.strafePhase or not LIP.strafePhaseUntil then
-            LIP.strafePhase = "chase"; LIP.strafePhaseUntil = now + aT; LIP.strafeCycleNew = true
+            LIP.strafePhase = "chase"; LIP.strafePhaseUntil = now + cT
         elseif now >= LIP.strafePhaseUntil then
             if LIP.strafePhase == "chase" then
-                LIP.strafePhase = "bait"; LIP.strafePhaseUntil = now + vT
+                LIP.strafePhase = "strafe"; LIP.strafePhaseUntil = now + sT
+            elseif LIP.strafePhase == "strafe" then
+                LIP.strafePhase = "bait"; LIP.strafePhaseUntil = now + bT
             else
-                LIP.strafePhase = "chase"; LIP.strafePhaseUntil = now + aT; LIP.strafeCycleNew = true
+                LIP.strafePhase = "chase"; LIP.strafePhaseUntil = now + cT
             end
         end
         return LIP.strafePhase
@@ -497,17 +527,19 @@ return function(require, LIP, Lib)
         -- CICLO DINÁMICO: si DynStrafe ON, alterna CHASE (orbita) / BAIT (fling void). En BAIT el goCF va al void.
         local phase = "chase"
         if T("DynStrafe") then phase = cycleStep() else LIP.strafePhase = "chase" end
-        -- AUTO-MODE: al ENTRAR a un CHASE nuevo, re-elegir el mejor modo desde el contexto resuelto (histéresis).
-        if T("AutoMode") and LIP.strafeCycleNew then
-            LIP.strafeCycleNew = false
-            local myR = myRoot()
-            local dist = (myR and center) and (myR.Position - center).Magnitude or 0
-            local rs = resState[target]
-            local tvel = Strafe.targetVel(target).Magnitude
-            local spoof = (rs and rs.method == "Cluster") and (1 - (rs.score or 0)) or (beh[target] and beh[target].voidFrac or 0)
-            LIP.strafeMode = pickBestMode(dist, tvel, spoof)
+        -- STRAFE PROPIO (noise-path adaptativo): reemplaza el switch de modos. amp/freq por fase — CHASE tight
+        -- (CONF.chaseAmp/Freq), STRAFE ancho + adaptativo (adapt.amp/freq, corre el hill-climb sobre hit-rate).
+        if T("DynStrafe") then
+            LIP.strafeNoise = true
+            if phase == "strafe" then
+                adaptStep(target)
+                LIP.curStrafeAmp, LIP.curStrafeFreq = adapt.amp, adapt.freq
+            else
+                LIP.curStrafeAmp, LIP.curStrafeFreq = Strafe.CONF.chaseAmp, Strafe.CONF.chaseFreq
+            end
+        else
+            LIP.strafeNoise = false
         end
-        if not T("AutoMode") then LIP.strafeMode = nil end
 
         local goCF
         if phase == "bait" then
