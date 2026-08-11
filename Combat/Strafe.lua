@@ -56,7 +56,7 @@ return function(require, LIP, Lib)
         local h = hist[plr]; if not h then h = { s = {}, t = {} }; hist[plr] = h end
         -- SIN reject-vel: el clustering + void-manhattan rechazan basura; el pre-filtro tapaba TPs reales.
         h.s[#h.s + 1] = pos; h.t[#h.t + 1] = now
-        if #h.s > MAX then table.remove(h.s, 1); table.remove(h.t, 1) end
+        if #h.s > (Strafe.CONF.histMax or MAX) then table.remove(h.s, 1); table.remove(h.t, 1) end
         -- comportamiento (Auto-método): fracción de muestras en void + tasa de flips real↔void
         local b = beh[plr]; if not b then b = { voidFrac = 0, flipRate = 0, prevVoid = false }; beh[plr] = b end
         local isVoid = (math.abs(pos.X) + math.abs(pos.Z)) >= 7000
@@ -112,8 +112,9 @@ return function(require, LIP, Lib)
     -- la pos real (jitter de pocos studs) acumula vecinos. El radio ENCOGE con la distancia = resolución far.
     Strafe.DEN = { forgiveness = 14.4, outOfVoidBonus = 13, distPenalty = 3.2, minMatches = 3, window = 3.0, voidManhattan = 7000 }
     -- CONFIANZA DE DISPARO fusionada: pesos + umbrales (todo live-tuneable). wDom+wStab+wResid = 1.0.
-    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 6, voidManhattan = 7000,
-                    predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40 }
+    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 3, voidManhattan = 7000,
+                    predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40,
+                    revisitBonus = 0.30, revisitMin = 4, revisitScale = 8, backtrackWindow = 0.15, histMax = 200 }
     local function resolveDensity(plr, localPos)
         local D = Strafe.DEN
         local h = hist[plr]; local n = h and #h.s or 0
@@ -181,7 +182,7 @@ return function(require, LIP, Lib)
         -- didDefensive = el cluster ganador cruzó el gate de accuracy = pos confiable + fire-ready (harmonía juju)
         local didDefensive = (best ~= nil and bestScore > RP.accuracy)
         local score = math.clamp(bestScore / (RP.accuracy * 2), 0, 1)
-        return (didDefensive and best.pos) or hitbox, didDefensive, score, #t.list
+        return (didDefensive and best.pos) or hitbox, didDefensive, score, #t.list, (best and best.count or 0)
     end
 
     -- ESTABILIDAD TEMPORAL del ganador: cuántos frames seguidos la pos resuelta no saltó (> stabThresh studs).
@@ -214,20 +215,21 @@ return function(require, LIP, Lib)
         local method = O("ResolverMethod") or "Cluster"
         if method == "Auto" then method = pickMethod(plr) end
         local pos, didDef, score, cl, state
+        local winCount = 0
         if method == "Density" then
             local p, dd, cnt = resolveDensity(plr, localPos)
             pos, didDef = p or rawPos, dd or false
             score = math.clamp(((cnt or 0) - Strafe.DEN.minMatches) / 8, 0, 1)
-            cl = cnt or 0
+            cl = cnt or 0; winCount = cnt or 0
             state = didDef and "LOCKED" or (p and "RESOLVING" or "VOID")
         else
-            local p, dd, sc, n = resolveCluster(plr, rawPos, now, localPos)
+            local p, dd, sc, n, wc = resolveCluster(plr, rawPos, now, localPos)
             pos, didDef = p, dd
-            score = sc or 0; cl = n or 0
+            score = sc or 0; cl = n or 0; winCount = wc or 0
             state = dd and "LOCKED" or ((cl > 0) and "RESOLVING" or "NORMAL")
         end
         local sf = updateStability(plr, pos)
-        resState[plr] = { pos = pos, didDef = didDef, method = method, score = score, clusters = cl, state = state, frameT = now, stabFrames = sf }
+        resState[plr] = { pos = pos, didDef = didDef, method = method, score = score, clusters = cl, state = state, frameT = now, stabFrames = sf, winCount = winCount }
         return pos, didDef
     end
 
@@ -271,7 +273,10 @@ return function(require, LIP, Lib)
         local sDom   = rs.score or 0
         local sStab  = math.clamp((rs.stabFrames or 0) / C.stabK, 0, 1)
         local sResid = Strafe.confidence(plr)
-        return math.clamp(C.wDom * sDom + C.wStab * sStab + C.wResid * sResid, 0, 1)
+        local base   = C.wDom * sDom + C.wStab * sStab + C.wResid * sResid
+        -- BONUS por revisita: un cluster golpeado muchas veces = el ancla real del void spam → lock más rápido.
+        local revisit = C.revisitBonus * math.clamp(((rs.winCount or 0) - C.revisitMin) / C.revisitScale, 0, 1)
+        return math.clamp(base + revisit, 0, 1)
     end
 
     -- HIT-CONFIRM: acc EMA por target. HP baja & disparamos < hcWindow → hit; disparamos sin baja → miss.
@@ -292,6 +297,13 @@ return function(require, LIP, Lib)
     end
     function Strafe.hitAccuracy(plr)
         local h = hc[plr]; return h and h.acc or 0
+    end
+
+    -- FIRMA math.random: in-map (voidFrac bajo) + no resuelto (score bajo) + inestable (salta). Para torso-aim.
+    function Strafe.isRandomStrafer(plr)
+        local b, rs = beh[plr], resState[plr]
+        if not (b and rs) then return false end
+        return b.voidFrac < 0.30 and (rs.score or 0) < 0.30 and (rs.stabFrames or 0) < 2
     end
 
     -- TELEMETRÍA del resolver para el HUD: método activo + score (0-1) + estado + nº de clusters. Lee resState.
