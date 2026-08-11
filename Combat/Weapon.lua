@@ -15,6 +15,7 @@ return function(require, LIP, Lib)
     local UIS        = game:GetService("UserInputService")
     local LP = Players.LocalPlayer
     local Weapon = {}
+    local Strafe   -- lazy-cached (require("Combat.Strafe")) para fireConfidence en el gate
 
     local function O(f) local o = Lib.Options[f]; return o and o.Value end
     local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
@@ -209,9 +210,24 @@ return function(require, LIP, Lib)
             rate = 8
         end
         rate = math.min(rate, O("AutoFireRate") or 120)
+        -- CONFIDENCE GATE (solo con Resolver on): escala el firerate efectivo por la confianza fusionada.
+        -- conf < floor (slider Accuracy) → m=0 = aguanta fuego; floor..floor+0.3 → goteo eased (smoothstep); arriba → full.
+        local m = 1
+        if T("Resolver") and LIP.target then
+            Strafe = Strafe or require("Combat.Strafe")
+            local conf  = Strafe.fireConfidence(LIP.target)
+            local floor = O("RRAccuracy") or 0.5
+            local hi    = math.min(1, floor + 0.30)
+            local u     = (hi > floor) and math.clamp((conf - floor) / (hi - floor), 0, 1) or (conf >= floor and 1 or 0)
+            m = u * u * (3 - 2 * u)
+            LIP.fireMult = m
+            if m < 0.02 then LIP.fireAccum = 0; lastTick = now; return end
+        else
+            LIP.fireMult = 1
+        end
         local dt = (lastTick > 0) and math.min(now - lastTick, 0.1) or 0
         lastTick = now
-        LIP.fireAccum = (LIP.fireAccum or 0) + dt * rate
+        LIP.fireAccum = (LIP.fireAccum or 0) + dt * rate * m
         local budget = 0
         while LIP.fireAccum >= 1 and budget < 4 do
             LIP.fireAccum = LIP.fireAccum - 1; budget = budget + 1

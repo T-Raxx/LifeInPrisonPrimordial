@@ -152,8 +152,9 @@ return function(require, LIP, Lib)
             Callback = function(v) if RParams then RParams.forget = v end end })
         rm:AddSlider("RRDistPenalty", { Text = "Distance Penalty", Min = 0, Max = 5, Default = 2, Decimals = 1, Suffix = "x",
             Callback = function(v) if RParams then RParams.distPenalty = v end end })
-        rm:AddSlider("RRAccuracy", { Text = "Accuracy", Min = 0.4, Max = 3, Default = 1.35, Decimals = 2,
-            Callback = function(v) if RParams then RParams.accuracy = v end end })
+        rm:AddSlider("RRAccuracy", { Text = "Accuracy", Min = 0, Max = 1, Default = 0.5, Decimals = 2,
+            Tooltip = "Min resolver confidence to fire (0 = off, higher = holds fire on shaky resolves)",
+            Callback = function() end })   -- leído en vivo por el gate del autofire: O('RRAccuracy')
         rm:AddSlider("RRLerp", { Text = "Lerp", Min = 0.1, Max = 1, Default = 0.1, Decimals = 2,
             Callback = function(v) if RParams then RParams.lerp = v end end })
         rm:AddLabel("Density", { Header = true })
