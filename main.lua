@@ -60,6 +60,7 @@ return function(require, LIP, Lib)
     -- precache del hit de silent aim / autofire (Head del target, resolver opcional)
     local function cacheHit()
         local t = LIP.target
+        if t and LIP.lastGoodUID ~= t.UserId then LIP.lastGoodHitPos = nil; LIP.lastGoodUID = t.UserId end
         local ch = t and t.Character
         local part = ch and (ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
         LIP.cachedHitPart = part
@@ -68,13 +69,20 @@ return function(require, LIP, Lib)
             -- hitPart real. HARMONÍA (Resolver + Fire on Resolved): si el resolver está confiado (didDefensive),
             -- disparar a la pos RESUELTA (no al head crudo del ghost en el void) — RIESGO HBE, aceptado.
             local base = part.Position
-            if (T.Resolver and T.Resolver.Value) and (T.FireResolved and T.FireResolved.Value) then
-                local resolved, didDef = Strafe.resolveAim(t, base)
-                if didDef then LIP.cachedHitPos = resolved; LIP.didDefensive = true
-                else LIP.cachedHitPos = base; LIP.didDefensive = false end
+            local resolveOn = T.Resolver and T.Resolver.Value
+            local fireResOn = resolveOn and (T.FireResolved and T.FireResolved.Value)
+            local voidMan = (Strafe.CONF and Strafe.CONF.voidManhattan) or 7000
+            local inVoid = (math.abs(base.X) + math.abs(base.Z)) >= voidMan
+            local resolved, didDef
+            if resolveOn then resolved, didDef = Strafe.resolveAim(t, base) end   -- puebla resState (confianza) aunque FireResolved off
+            if fireResOn and didDef and resolved then
+                LIP.cachedHitPos = resolved; LIP.didDefensive = true
+            elseif inVoid and LIP.lastGoodHitPos then
+                LIP.cachedHitPos = LIP.lastGoodHitPos; LIP.didDefensive = false   -- guard anti-void: nunca latch al ghost
             else
                 LIP.cachedHitPos = base; LIP.didDefensive = false
             end
+            if not inVoid then LIP.lastGoodHitPos = base end
             -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
             if T.Wallbang and T.Wallbang.Value then
                 local myHead = LP.Character and LP.Character:FindFirstChild("Head")
@@ -96,7 +104,7 @@ return function(require, LIP, Lib)
                 LIP.cachedOrigin = nil
             end
         else
-            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil; LIP.didDefensive = false
+            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil; LIP.didDefensive = false; LIP.lastGoodHitPos = nil
         end
     end
 
@@ -155,7 +163,7 @@ return function(require, LIP, Lib)
 
         -- target + precache (para silent aim swap Y autofire)
         resolveTarget(filters, needAim)
-        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos, LIP.didDefensive = nil, nil, false end
+        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos, LIP.didDefensive, LIP.lastGoodHitPos = nil, nil, false, nil end
 
         -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
         -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO con Target Strafe activo (AutoFire
