@@ -83,6 +83,7 @@ return function(require, LIP, Lib)
                 LIP.cachedHitPos = base; LIP.didDefensive = false
             end
             if not inVoid then LIP.lastGoodHitPos = base end
+            LIP.targetExposed = not inVoid   -- head crudo real/visible → habilita fire oportunista
             -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
             if T.Wallbang and T.Wallbang.Value then
                 local myHead = LP.Character and LP.Character:FindFirstChild("Head")
@@ -104,7 +105,7 @@ return function(require, LIP, Lib)
                 LIP.cachedOrigin = nil
             end
         else
-            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil; LIP.didDefensive = false; LIP.lastGoodHitPos = nil
+            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil; LIP.didDefensive = false; LIP.lastGoodHitPos = nil; LIP.targetExposed = false
         end
     end
 
@@ -159,11 +160,16 @@ return function(require, LIP, Lib)
         local needAim  = LIP.swapOn or strafeOn or autoOn
 
         -- resolver sampling (historial de enemigos)
-        if needAim or (T.Resolver and T.Resolver.Value) then Strafe.sampleAll(os.clock(), O.ResolverReject.Value) end
+        if needAim or (T.Resolver and T.Resolver.Value) then Strafe.sampleAll(os.clock()) end
 
         -- target + precache (para silent aim swap Y autofire)
         resolveTarget(filters, needAim)
-        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos, LIP.didDefensive, LIP.lastGoodHitPos = nil, nil, false, nil end
+        if LIP.target then
+            cacheHit()
+            Strafe.updateHitConfirm(LIP.target, os.clock())   -- hit-confirm auto-tune (HP-drop → acc)
+        else
+            LIP.cachedHitPart, LIP.cachedHitPos, LIP.didDefensive, LIP.lastGoodHitPos, LIP.targetExposed = nil, nil, false, nil, false
+        end
 
         -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
         -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO con Target Strafe activo (AutoFire
