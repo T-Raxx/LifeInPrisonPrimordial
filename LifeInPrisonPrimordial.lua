@@ -655,13 +655,9 @@ return function(require, LIP, Lib)
     local hist = {}   -- [player] = { s = {V3...}, t = {clock...} }
     local beh  = {}   -- [player] = { voidFrac, flipRate, prevVoid } — EMA de comportamiento (Auto-método)
     local MAX = 120   -- ~3s a ~40Hz (ventana del Density)
-    local function sample(plr, pos, now, rejectVel)
+    local function sample(plr, pos, now)
         local h = hist[plr]; if not h then h = { s = {}, t = {} }; hist[plr] = h end
-        local n = #h.s
-        if n > 0 then
-            local dt = now - h.t[n]
-            if dt > 0 and (pos - h.s[n]).Magnitude / dt > (rejectVel or 300) then return end  -- fling/tp spoof
-        end
+        -- SIN reject-vel: el clustering + void-manhattan rechazan basura; el pre-filtro tapaba TPs reales.
         h.s[#h.s + 1] = pos; h.t[#h.t + 1] = now
         if #h.s > MAX then table.remove(h.s, 1); table.remove(h.t, 1) end
         -- comportamiento (Auto-método): fracción de muestras en void + tasa de flips real↔void
@@ -671,13 +667,13 @@ return function(require, LIP, Lib)
         b.flipRate = b.flipRate + 0.15 * (((isVoid ~= b.prevVoid) and 1 or 0) - b.flipRate)
         b.prevVoid = isVoid
     end
-    function Strafe.sampleAll(now, rejectVel)
+    function Strafe.sampleAll(now)
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LP then
                 local c = plr.Character
                 local hrp = c and c:FindFirstChild("HumanoidRootPart")
                 local hum = c and c:FindFirstChildOfClass("Humanoid")
-                if hrp and hum and hum.Health > 0 then sample(plr, hrp.Position, now, rejectVel) end
+                if hrp and hum and hum.Health > 0 then sample(plr, hrp.Position, now) end
             end
         end
     end
@@ -719,7 +715,8 @@ return function(require, LIP, Lib)
     -- la pos real (jitter de pocos studs) acumula vecinos. El radio ENCOGE con la distancia = resolución far.
     Strafe.DEN = { forgiveness = 14.4, outOfVoidBonus = 13, distPenalty = 3.2, minMatches = 3, window = 3.0, voidManhattan = 7000 }
     -- CONFIANZA DE DISPARO fusionada: pesos + umbrales (todo live-tuneable). wDom+wStab+wResid = 1.0.
-    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 6, voidManhattan = 7000 }
+    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 6, voidManhattan = 7000,
+                    predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40 }
     local function resolveDensity(plr, localPos)
         local D = Strafe.DEN
         local h = hist[plr]; local n = h and #h.s or 0
@@ -858,14 +855,12 @@ return function(require, LIP, Lib)
         -- >200 studs/s) → el lead nunca se vuela a millones aunque el target spamee void.
         local vel = Strafe.resolvedVel(plr, pos, now, O("ResolverRate") or 0.037)
         if vel.Magnitude > 200 then vel = Vector3.zero end
-        local lead
-        if (O("PredMode") or "Auto") == "Auto" then
-            local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
-            lead = ping * 2                       -- ≡ ping_ms/500 de juju (GetNetworkPing = segundos)
-        else
-            lead = O("PredLead") or 0.12
-        end
-        pos = pos + vel * lead
+        -- PREDICT base + amplitud×velocidad: base = lead constante (comp ping, aún quieto); amp escala con
+        -- la velocidad normalizada del target (rápido = más lead). Reemplaza el vel*lead ping/manual.
+        local base = O("PredictBase") or 0.10
+        local amp  = O("PredictAmp")  or 0.15
+        local speedNorm = math.clamp(vel.Magnitude / Strafe.CONF.predMaxSpeed, 0, 1)
+        pos = pos + vel * (base + amp * speedNorm)
         return pos, didDefensive
     end
 
@@ -882,11 +877,31 @@ return function(require, LIP, Lib)
         return math.clamp(C.wDom * sDom + C.wStab * sStab + C.wResid * sResid, 0, 1)
     end
 
+    -- HIT-CONFIRM: acc EMA por target. HP baja & disparamos < hcWindow → hit; disparamos sin baja → miss.
+    -- Atribución aproximada (otro jugador podría pegar); el EMA suaviza. Relaja el piso del gate (Weapon).
+    local hc = {}   -- [plr] = { lastHP, acc }
+    function Strafe.updateHitConfirm(plr, now)
+        local C = Strafe.CONF
+        local ch = plr and plr.Character
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if not hum then hc[plr] = nil; return end
+        local h = hc[plr]; if not h then hc[plr] = { lastHP = hum.Health, acc = 0 }; return end
+        local fired = (now - (LIP.lastFireT or 0)) <= C.hcWindow
+        if fired then
+            local hit = (hum.Health < h.lastHP - 0.01) and 1 or 0
+            h.acc = h.acc + C.hcRate * (hit - h.acc)
+        end
+        h.lastHP = hum.Health
+    end
+    function Strafe.hitAccuracy(plr)
+        local h = hc[plr]; return h and h.acc or 0
+    end
+
     -- TELEMETRÍA del resolver para el HUD: método activo + score (0-1) + estado + nº de clusters. Lee resState.
     function Strafe.resolverInfo(plr)
         local rs = resState[plr]
-        if not rs then return { score = 0, state = "NORMAL", clusters = 0, method = O("ResolverMethod") or "Cluster", confidence = 0 } end
-        return { score = rs.score or 0, state = rs.state or "NORMAL", clusters = rs.clusters or 0, method = rs.method or "Cluster", confidence = Strafe.fireConfidence(plr) }
+        if not rs then return { score = 0, state = "NORMAL", clusters = 0, method = O("ResolverMethod") or "Cluster", confidence = 0, hitAcc = Strafe.hitAccuracy(plr) } end
+        return { score = rs.score or 0, state = rs.state or "NORMAL", clusters = rs.clusters or 0, method = rs.method or "Cluster", confidence = Strafe.fireConfidence(plr), hitAcc = Strafe.hitAccuracy(plr) }
     end
 
     -- LECTOR PURO (para el tracer): pos resuelta del método activo + lead, SIN ingestar (lee resState →
@@ -896,14 +911,10 @@ return function(require, LIP, Lib)
         local pos = rs.pos
         local v = velState[plr]
         if v and v.vel and v.vel.Magnitude <= 200 then
-            local lead
-            if (O("PredMode") or "Auto") == "Auto" then
-                local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
-                lead = ping * 2
-            else
-                lead = O("PredLead") or 0.12
-            end
-            pos = pos + v.vel * lead
+            local base = O("PredictBase") or 0.10
+            local amp  = O("PredictAmp")  or 0.15
+            local speedNorm = math.clamp(v.vel.Magnitude / Strafe.CONF.predMaxSpeed, 0, 1)
+            pos = pos + v.vel * (base + amp * speedNorm)
         end
         return pos
     end
@@ -1333,6 +1344,7 @@ return function(require, LIP, Lib)
         LIP.fire(14, tool, bullets, gst or GST())
         LIP._selfFiring = false
         LIP.shotsFired = (LIP.shotsFired or 0) + 1
+        LIP.lastFireT = os.clock()   -- hit-confirm: marca de disparo para atribuir HP-drop
         return true
     end
 
@@ -1392,13 +1404,19 @@ return function(require, LIP, Lib)
         local m = 1
         if T("Resolver") and LIP.target then
             Strafe = Strafe or require("Combat.Strafe")
-            local conf  = Strafe.fireConfidence(LIP.target)
-            local floor = O("RRAccuracy") or 0.5
-            local hi    = math.min(1, floor + 0.30)
-            local u     = (hi > floor) and math.clamp((conf - floor) / (hi - floor), 0, 1) or (conf >= floor and 1 or 0)
-            m = u * u * (3 - 2 * u)
-            LIP.fireMult = m
-            if m < 0.02 then LIP.fireAccum = 0; lastTick = now; return end
+            if LIP.targetExposed then
+                -- FIRE OPORTUNISTA: target real/visible (head no-void) → snapshot, saltea piso+estabilidad.
+                m = 1; LIP.fireMult = 1
+            else
+                -- VOID: dispara a la pos recuperada, gateada por confianza. Piso relajado por hit-rate en vivo.
+                local conf  = Strafe.fireConfidence(LIP.target)
+                local floor = (O("RRAccuracy") or 0.5) * (1 - Strafe.CONF.hcRelax * Strafe.hitAccuracy(LIP.target))
+                local hi    = math.min(1, floor + 0.30)
+                local u     = (hi > floor) and math.clamp((conf - floor) / (hi - floor), 0, 1) or (conf >= floor and 1 or 0)
+                m = u * u * (3 - 2 * u)
+                LIP.fireMult = m
+                if m < 0.02 then LIP.fireAccum = 0; lastTick = now; return end
+            end
         else
             LIP.fireMult = 1
         end
@@ -2675,8 +2693,8 @@ return function(require, LIP, Lib)
             local tc = LIP.target and LIP.target.Character
             local th = tc and tc:FindFirstChildOfClass("Humanoid")
             if th then hp = math.floor(th.Health) end
-            return ("killing: %s | Conf: %.2f | Fire: %.2f | %s | HP: %d"):format(
-                LIP.hudTargetName, ri.confidence or 0, LIP.fireMult or 1, ri.state, hp)
+            return ("killing: %s | Conf: %.2f | Fire: %.2f | Hit: %.2f | %s | HP: %d"):format(
+                LIP.hudTargetName, ri.confidence or 0, LIP.fireMult or 1, ri.hitAcc or 0, ri.state, hp)
         end
         return ""
     end
@@ -2856,16 +2874,14 @@ return function(require, LIP, Lib)
             Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
         rm:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Density", "Auto" }, Default = "Cluster",
             Tooltip = "Cluster = histograma (juju). Density = vecindad batch (sakura, anti-alternador + far). Auto = elige según el target." })
-        rm:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
-            Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
         rm:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
             Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
         rm:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
             Tooltip = "Intervalo de muestreo de velocidad (juju 0.037)." })
-        rm:AddDropdown("PredMode", { Text = "Prediction", Values = { "Auto", "Manual" }, Default = "Auto",
-            Tooltip = "Auto = lead por ping (ping·2). Manual = usa Pred Lead." })
-        rm:AddSlider("PredLead", { Text = "Pred Lead", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead manual. Solo con Prediction = Manual." })
+        rm:AddSlider("PredictBase", { Text = "Predict Base", Min = 0, Max = 0.4, Default = 0.10, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead constante (comp de ping), aplicado aún quieto" })
+        rm:AddSlider("PredictAmp", { Text = "Predict Amp", Min = 0, Max = 0.4, Default = 0.15, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead extra que escala con la velocidad del target" })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
         rm:AddToggle("ResolvedTracer", { Text = "Resolved Tracer", Default = false,
@@ -3127,6 +3143,7 @@ return function(require, LIP, Lib)
                 LIP.cachedHitPos = base; LIP.didDefensive = false
             end
             if not inVoid then LIP.lastGoodHitPos = base end
+            LIP.targetExposed = not inVoid   -- head crudo real/visible → habilita fire oportunista
             -- WALLBANG: raycast target->yo; origin = del lado del target de la pared = LOS garantizada
             if T.Wallbang and T.Wallbang.Value then
                 local myHead = LP.Character and LP.Character:FindFirstChild("Head")
@@ -3148,7 +3165,7 @@ return function(require, LIP, Lib)
                 LIP.cachedOrigin = nil
             end
         else
-            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil; LIP.didDefensive = false; LIP.lastGoodHitPos = nil
+            LIP.cachedHitPos = nil; LIP.cachedOrigin = nil; LIP.didDefensive = false; LIP.lastGoodHitPos = nil; LIP.targetExposed = false
         end
     end
 
@@ -3203,11 +3220,16 @@ return function(require, LIP, Lib)
         local needAim  = LIP.swapOn or strafeOn or autoOn
 
         -- resolver sampling (historial de enemigos)
-        if needAim or (T.Resolver and T.Resolver.Value) then Strafe.sampleAll(os.clock(), O.ResolverReject.Value) end
+        if needAim or (T.Resolver and T.Resolver.Value) then Strafe.sampleAll(os.clock()) end
 
         -- target + precache (para silent aim swap Y autofire)
         resolveTarget(filters, needAim)
-        if LIP.target then cacheHit() else LIP.cachedHitPart, LIP.cachedHitPos, LIP.didDefensive, LIP.lastGoodHitPos = nil, nil, false, nil end
+        if LIP.target then
+            cacheHit()
+            Strafe.updateHitConfirm(LIP.target, os.clock())   -- hit-confirm auto-tune (HP-drop → acc)
+        else
+            LIP.cachedHitPart, LIP.cachedHitPos, LIP.didDefensive, LIP.lastGoodHitPos, LIP.targetExposed = nil, nil, false, nil, false
+        end
 
         -- FF/DEAD CHECK: si el target enfocado tiene ForceField (spawn protection) o murió → HOLD: esconderse
         -- (idle) y NO atacar hasta que respawnee / se le quite el FF. SOLO con Target Strafe activo (AutoFire
