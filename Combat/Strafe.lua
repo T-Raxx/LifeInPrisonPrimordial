@@ -115,6 +115,8 @@ return function(require, LIP, Lib)
     -- vecinos dentro de un radio CHICO (studs). El void (millones de studs entre sí) nunca clusteriza; solo
     -- la pos real (jitter de pocos studs) acumula vecinos. El radio ENCOGE con la distancia = resolución far.
     Strafe.DEN = { forgiveness = 14.4, outOfVoidBonus = 13, distPenalty = 3.2, minMatches = 3, window = 3.0, voidManhattan = 7000 }
+    -- CONFIANZA DE DISPARO fusionada: pesos + umbrales (todo live-tuneable). wDom+wStab+wResid = 1.0.
+    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 6, voidManhattan = 7000 }
     local function resolveDensity(plr, localPos)
         local D = Strafe.DEN
         local h = hist[plr]; local n = h and #h.s or 0
@@ -185,6 +187,22 @@ return function(require, LIP, Lib)
         return (didDefensive and best.pos) or hitbox, didDefensive, score, #t.list
     end
 
+    -- ESTABILIDAD TEMPORAL del ganador: cuántos frames seguidos la pos resuelta no saltó (> stabThresh studs).
+    -- Un ganador que salta = void-spammer bueno = nunca acumula = confianza baja. Método-agnóstico.
+    local stab = {}   -- [player] = { lastPos, frames }
+    local function updateStability(plr, pos)
+        local C = Strafe.CONF
+        local st = stab[plr]
+        if not st then stab[plr] = { lastPos = pos, frames = 0 }; return 0 end
+        if (pos - st.lastPos).Magnitude <= C.stabThresh then
+            st.frames = math.min(st.frames + 1, C.stabK)
+        else
+            st.frames = 0
+        end
+        st.lastPos = pos
+        return st.frames
+    end
+
     -- RUTEO UNIFICADO: Cluster / Density / Auto. Llena resState[plr] (lo leen peek/info) + cachea por frame.
     local resState = {}   -- [player] = { pos, didDef, method, score, clusters, state, frameT }
     local function pickMethod(plr)
@@ -211,7 +229,8 @@ return function(require, LIP, Lib)
             score = sc or 0; cl = n or 0
             state = dd and "LOCKED" or ((cl > 0) and "RESOLVING" or "NORMAL")
         end
-        resState[plr] = { pos = pos, didDef = didDef, method = method, score = score, clusters = cl, state = state, frameT = now }
+        local sf = updateStability(plr, pos)
+        resState[plr] = { pos = pos, didDef = didDef, method = method, score = score, clusters = cl, state = state, frameT = now, stabFrames = sf }
         return pos, didDef
     end
 
@@ -247,11 +266,24 @@ return function(require, LIP, Lib)
         return pos, didDefensive
     end
 
+    -- CONFIANZA DE DISPARO fusionada (0..1). La lee el gate del autofire (rate-scaling). 0 = aguanta fuego.
+    -- dominancia del cluster (score) + estabilidad temporal + residual lineal; anulada a 0 si la pos cae en void.
+    function Strafe.fireConfidence(plr)
+        local C = Strafe.CONF
+        local rs = resState[plr]
+        if not rs or not rs.pos then return 0 end
+        if (math.abs(rs.pos.X) + math.abs(rs.pos.Z)) >= C.voidManhattan then return 0 end
+        local sDom   = rs.score or 0
+        local sStab  = math.clamp((rs.stabFrames or 0) / C.stabK, 0, 1)
+        local sResid = Strafe.confidence(plr)
+        return math.clamp(C.wDom * sDom + C.wStab * sStab + C.wResid * sResid, 0, 1)
+    end
+
     -- TELEMETRÍA del resolver para el HUD: método activo + score (0-1) + estado + nº de clusters. Lee resState.
     function Strafe.resolverInfo(plr)
         local rs = resState[plr]
-        if not rs then return { score = 0, state = "NORMAL", clusters = 0, method = O("ResolverMethod") or "Cluster" } end
-        return { score = rs.score or 0, state = rs.state or "NORMAL", clusters = rs.clusters or 0, method = rs.method or "Cluster" }
+        if not rs then return { score = 0, state = "NORMAL", clusters = 0, method = O("ResolverMethod") or "Cluster", confidence = 0 } end
+        return { score = rs.score or 0, state = rs.state or "NORMAL", clusters = rs.clusters or 0, method = rs.method or "Cluster", confidence = Strafe.fireConfidence(plr) }
     end
 
     -- LECTOR PURO (para el tracer): pos resuelta del método activo + lead, SIN ingestar (lee resState →
