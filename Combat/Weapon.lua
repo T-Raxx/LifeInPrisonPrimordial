@@ -225,7 +225,14 @@ return function(require, LIP, Lib)
                 local floor = (O("RRAccuracy") or 0.5) * (1 - Strafe.CONF.hcRelax * Strafe.hitAccuracy(LIP.target))
                 local hi    = math.min(1, floor + 0.30)
                 local u     = (hi > floor) and math.clamp((conf - floor) / (hi - floor), 0, 1) or (conf >= floor and 1 or 0)
-                m = u * u * (3 - 2 * u)
+                local gateM = u * u * (3 - 2 * u)
+                -- ON-SHOT BACKTRACK: el cuerpo real sigue ~en lastGood durante los void-frames frescos → dispara
+                -- igual (cachedHitPos ya apunta a lastGoodHitPos en void). Fade por antigüedad de la última real.
+                local btM, lgt = 0, (LIP.lastGoodT or 0)
+                if LIP.lastGoodHitPos and (now - lgt) < Strafe.CONF.backtrackWindow then
+                    btM = math.clamp(1 - (now - lgt) / Strafe.CONF.backtrackWindow, 0, 1)
+                end
+                m = math.max(gateM, btM)
                 LIP.fireMult = m
                 if m < 0.02 then LIP.fireAccum = 0; lastTick = now; return end
             end
