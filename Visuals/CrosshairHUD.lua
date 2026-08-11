@@ -56,13 +56,13 @@ return function(require, LIP, Lib)
         elseif LIP.hudReloadVoid then
             return "Reloading In Void..."
         elseif LIP.hudTargetName then
-            local ri = (Strafe and Strafe.resolverInfo(LIP.target)) or { score = LIP.hudResolved or 0, state = "NORMAL", clusters = 0 }
+            local ri = (Strafe and Strafe.resolverInfo(LIP.target)) or { score = LIP.hudResolved or 0, state = "NORMAL", clusters = 0, confidence = 0 }
             local hp = 0
             local tc = LIP.target and LIP.target.Character
             local th = tc and tc:FindFirstChildOfClass("Humanoid")
             if th then hp = math.floor(th.Health) end
-            return ("killing: %s | Resolved: %.3f | %s | clusters: %d | HP: %d"):format(
-                LIP.hudTargetName, ri.score, ri.state, ri.clusters, hp)
+            return ("killing: %s | Conf: %.2f | Fire: %.2f | %s | HP: %d"):format(
+                LIP.hudTargetName, ri.confidence or 0, LIP.fireMult or 1, ri.state, hp)
         end
         return ""
     end

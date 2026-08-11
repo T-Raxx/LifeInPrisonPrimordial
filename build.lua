@@ -20,6 +20,7 @@ local ORDER = {
     "Movement/Void.lua",
     "Visuals/ESP.lua",
     "Visuals/HitEffects.lua",
+    "Visuals/CrosshairHUD.lua",
     "UI.lua",
     "main.lua",
 }
