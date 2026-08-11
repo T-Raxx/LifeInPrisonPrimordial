@@ -128,16 +128,14 @@ return function(require, LIP, Lib)
             Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
         rm:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Density", "Auto" }, Default = "Cluster",
             Tooltip = "Cluster = histograma (juju). Density = vecindad batch (sakura, anti-alternador + far). Auto = elige según el target." })
-        rm:AddSlider("ResolverReject", { Text = "Reject Vel", Min = 50, Max = 1000, Default = 300, Suffix = "st/s",
-            Tooltip = "Descarta muestras que saltan más rápido (fling/tp spoof)" })
         rm:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
             Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
         rm:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
             Tooltip = "Intervalo de muestreo de velocidad (juju 0.037)." })
-        rm:AddDropdown("PredMode", { Text = "Prediction", Values = { "Auto", "Manual" }, Default = "Auto",
-            Tooltip = "Auto = lead por ping (ping·2). Manual = usa Pred Lead." })
-        rm:AddSlider("PredLead", { Text = "Pred Lead", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead manual. Solo con Prediction = Manual." })
+        rm:AddSlider("PredictBase", { Text = "Predict Base", Min = 0, Max = 0.4, Default = 0.10, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead constante (comp de ping), aplicado aún quieto" })
+        rm:AddSlider("PredictAmp", { Text = "Predict Amp", Min = 0, Max = 0.4, Default = 0.15, Decimals = 2, Suffix = "s",
+            Tooltip = "Lead extra que escala con la velocidad del target" })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
         rm:AddToggle("ResolvedTracer", { Text = "Resolved Tracer", Default = false,
