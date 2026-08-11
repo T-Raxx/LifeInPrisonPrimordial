@@ -160,7 +160,21 @@ return function(require, LIP, Lib)
             Callback = function(v) if RParams then RParams.distPenalty = v end end })
         rm:AddSlider("RRAccuracy", { Text = "Accuracy", Min = 0, Max = 1, Default = 0.5, Decimals = 2,
             Tooltip = "Min resolver confidence to fire (0 = off, higher = holds fire on shaky resolves)",
-            Callback = function() end })   -- leído en vivo por el gate del autofire: O('RRAccuracy')
+            Callback = function() end })
+        rm:AddSlider("CwDom", { Text = "W: Dominance", Min = 0, Max = 1, Default = 0.45, Decimals = 2,
+            Callback = function(v) if CONF then CONF.wDom = v end end })
+        rm:AddSlider("CwStab", { Text = "W: Stability", Min = 0, Max = 1, Default = 0.35, Decimals = 2,
+            Callback = function(v) if CONF then CONF.wStab = v end end })
+        rm:AddSlider("CwResid", { Text = "W: Residual", Min = 0, Max = 1, Default = 0.20, Decimals = 2,
+            Callback = function(v) if CONF then CONF.wResid = v end end })
+        rm:AddSlider("CRevisit", { Text = "Revisit Bonus", Min = 0, Max = 1, Default = 0.30, Decimals = 2,
+            Callback = function(v) if CONF then CONF.revisitBonus = v end end })
+        rm:AddSlider("CPredMax", { Text = "Pred Max Speed", Min = 20, Max = 150, Default = 60, Suffix = "st/s",
+            Callback = function(v) if CONF then CONF.predMaxSpeed = v end end })
+        rm:AddSlider("NoiseAmpMax", { Text = "Strafe Amp Max", Min = 8, Max = 60, Default = 30, Suffix = "st",
+            Callback = function(v) if CONF then CONF.ampMax = v end end })
+        rm:AddSlider("NoiseFreqMax", { Text = "Strafe Freq Max", Min = 1, Max = 8, Default = 4, Decimals = 1,
+            Callback = function(v) if CONF then CONF.freqMax = v end end })   -- leído en vivo por el gate del autofire: O('RRAccuracy')
         rm:AddSlider("RRLerp", { Text = "Lerp", Min = 0.1, Max = 1, Default = 0.1, Decimals = 2,
             Callback = function(v) if RParams then RParams.lerp = v end end })
         rm:AddLabel("Density", { Header = true })
@@ -179,19 +193,13 @@ return function(require, LIP, Lib)
 
         local dyn = Res:AddPanel("Dynamic Strafe", { Column = 2 })
         dyn:AddToggle("DynStrafe", { Text = "Dynamic Cycle", Default = false,
-            Tooltip = "Ciclo CHASE (orbita la resuelta) ↔ BAIT (fling al void). Baitea el resolver enemigo. No dispara en bait." })
+            Tooltip = "Ciclo CHASE (orbit tight) → STRAFE (noise-path adaptativo) → BAIT (fling void). Strafe propio, sin modos. No dispara en bait." })
         dyn:AddDropdown("BaitPreset", { Text = "Bait Preset", Values = { "Timed", "Micro", "Spam" }, Default = "Timed",
-            Tooltip = "Timed = chase 3s/bait 1s. Micro = chase ping+0.02/bait corto (flash). Spam = 0.06/0.11 rápido (juju)." })
-        dyn:AddSlider("AroundTime", { Text = "Chase Time", Min = 0.05, Max = 10, Default = 3, Decimals = 2, Suffix = "s" })
+            Tooltip = "Timed = chase 2s/strafe 2s/bait 1s. Micro = ping+0.02/0.5/0.5 (flash). Spam = 0.06/0.08/0.11 rápido (juju)." })
+        dyn:AddSlider("AroundTime", { Text = "Chase Time", Min = 0.05, Max = 10, Default = 2, Decimals = 2, Suffix = "s" })
+        dyn:AddSlider("StrafeTime", { Text = "Strafe Time", Min = 0.05, Max = 10, Default = 2, Decimals = 2, Suffix = "s",
+            Tooltip = "Duración de la fase STRAFE (noise-path adaptativo alrededor del target, dispara)." })
         dyn:AddSlider("VoidTime", { Text = "Bait Time", Min = 0.05, Max = 12, Default = 1, Decimals = 2, Suffix = "s" })
-        dyn:AddToggle("AutoMode", { Text = "Auto Best-Mode", Default = false,
-            Tooltip = "Elige Spiral/Behind/Normal/Random según distancia/velocidad/spoof del target, al entrar a CHASE." })
-        dyn:AddSlider("AutoSpoofThresh", { Text = "Spoof→Spiral", Min = 0, Max = 1, Default = 0.40, Decimals = 2,
-            Tooltip = "Si el spoof del target supera esto → Spiral (3D impredecible)." })
-        dyn:AddSlider("AutoFastThresh", { Text = "Fast→Behind", Min = 5, Max = 150, Default = 40, Suffix = "st/s",
-            Tooltip = "Si el target se mueve más rápido que esto → Behind." })
-        dyn:AddSlider("AutoFarThresh", { Text = "Far→Normal", Min = 10, Max = 200, Default = 60, Suffix = "st",
-            Tooltip = "Si el target está más lejos que esto → Normal (órbita ancha)." })
 
         local Legit = Window:AddCategory("Legit", "target")
         local LS = Legit:AddSection("Legit", "Melee · Fists", { Columns = 2 })
