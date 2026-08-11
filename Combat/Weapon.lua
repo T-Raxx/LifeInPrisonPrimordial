@@ -156,6 +156,7 @@ return function(require, LIP, Lib)
         LIP.fire(14, tool, bullets, gst or GST())
         LIP._selfFiring = false
         LIP.shotsFired = (LIP.shotsFired or 0) + 1
+        LIP.lastFireT = os.clock()   -- hit-confirm: marca de disparo para atribuir HP-drop
         return true
     end
 
@@ -215,13 +216,19 @@ return function(require, LIP, Lib)
         local m = 1
         if T("Resolver") and LIP.target then
             Strafe = Strafe or require("Combat.Strafe")
-            local conf  = Strafe.fireConfidence(LIP.target)
-            local floor = O("RRAccuracy") or 0.5
-            local hi    = math.min(1, floor + 0.30)
-            local u     = (hi > floor) and math.clamp((conf - floor) / (hi - floor), 0, 1) or (conf >= floor and 1 or 0)
-            m = u * u * (3 - 2 * u)
-            LIP.fireMult = m
-            if m < 0.02 then LIP.fireAccum = 0; lastTick = now; return end
+            if LIP.targetExposed then
+                -- FIRE OPORTUNISTA: target real/visible (head no-void) → snapshot, saltea piso+estabilidad.
+                m = 1; LIP.fireMult = 1
+            else
+                -- VOID: dispara a la pos recuperada, gateada por confianza. Piso relajado por hit-rate en vivo.
+                local conf  = Strafe.fireConfidence(LIP.target)
+                local floor = (O("RRAccuracy") or 0.5) * (1 - Strafe.CONF.hcRelax * Strafe.hitAccuracy(LIP.target))
+                local hi    = math.min(1, floor + 0.30)
+                local u     = (hi > floor) and math.clamp((conf - floor) / (hi - floor), 0, 1) or (conf >= floor and 1 or 0)
+                m = u * u * (3 - 2 * u)
+                LIP.fireMult = m
+                if m < 0.02 then LIP.fireAccum = 0; lastTick = now; return end
+            end
         else
             LIP.fireMult = 1
         end
