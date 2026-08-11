@@ -61,8 +61,8 @@ return function(require, LIP, Lib)
             local tc = LIP.target and LIP.target.Character
             local th = tc and tc:FindFirstChildOfClass("Humanoid")
             if th then hp = math.floor(th.Health) end
-            return ("killing: %s | Conf: %.2f | Fire: %.2f | %s | HP: %d"):format(
-                LIP.hudTargetName, ri.confidence or 0, LIP.fireMult or 1, ri.state, hp)
+            return ("killing: %s | Conf: %.2f | Fire: %.2f | Hit: %.2f | %s | HP: %d"):format(
+                LIP.hudTargetName, ri.confidence or 0, LIP.fireMult or 1, ri.hitAcc or 0, ri.state, hp)
         end
         return ""
     end
