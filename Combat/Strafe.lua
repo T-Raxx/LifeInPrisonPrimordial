@@ -52,13 +52,9 @@ return function(require, LIP, Lib)
     local hist = {}   -- [player] = { s = {V3...}, t = {clock...} }
     local beh  = {}   -- [player] = { voidFrac, flipRate, prevVoid } — EMA de comportamiento (Auto-método)
     local MAX = 120   -- ~3s a ~40Hz (ventana del Density)
-    local function sample(plr, pos, now, rejectVel)
+    local function sample(plr, pos, now)
         local h = hist[plr]; if not h then h = { s = {}, t = {} }; hist[plr] = h end
-        local n = #h.s
-        if n > 0 then
-            local dt = now - h.t[n]
-            if dt > 0 and (pos - h.s[n]).Magnitude / dt > (rejectVel or 300) then return end  -- fling/tp spoof
-        end
+        -- SIN reject-vel: el clustering + void-manhattan rechazan basura; el pre-filtro tapaba TPs reales.
         h.s[#h.s + 1] = pos; h.t[#h.t + 1] = now
         if #h.s > MAX then table.remove(h.s, 1); table.remove(h.t, 1) end
         -- comportamiento (Auto-método): fracción de muestras en void + tasa de flips real↔void
@@ -68,13 +64,13 @@ return function(require, LIP, Lib)
         b.flipRate = b.flipRate + 0.15 * (((isVoid ~= b.prevVoid) and 1 or 0) - b.flipRate)
         b.prevVoid = isVoid
     end
-    function Strafe.sampleAll(now, rejectVel)
+    function Strafe.sampleAll(now)
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LP then
                 local c = plr.Character
                 local hrp = c and c:FindFirstChild("HumanoidRootPart")
                 local hum = c and c:FindFirstChildOfClass("Humanoid")
-                if hrp and hum and hum.Health > 0 then sample(plr, hrp.Position, now, rejectVel) end
+                if hrp and hum and hum.Health > 0 then sample(plr, hrp.Position, now) end
             end
         end
     end
@@ -116,7 +112,8 @@ return function(require, LIP, Lib)
     -- la pos real (jitter de pocos studs) acumula vecinos. El radio ENCOGE con la distancia = resolución far.
     Strafe.DEN = { forgiveness = 14.4, outOfVoidBonus = 13, distPenalty = 3.2, minMatches = 3, window = 3.0, voidManhattan = 7000 }
     -- CONFIANZA DE DISPARO fusionada: pesos + umbrales (todo live-tuneable). wDom+wStab+wResid = 1.0.
-    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 6, voidManhattan = 7000 }
+    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 6, voidManhattan = 7000,
+                    predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40 }
     local function resolveDensity(plr, localPos)
         local D = Strafe.DEN
         local h = hist[plr]; local n = h and #h.s or 0
@@ -255,14 +252,12 @@ return function(require, LIP, Lib)
         -- >200 studs/s) → el lead nunca se vuela a millones aunque el target spamee void.
         local vel = Strafe.resolvedVel(plr, pos, now, O("ResolverRate") or 0.037)
         if vel.Magnitude > 200 then vel = Vector3.zero end
-        local lead
-        if (O("PredMode") or "Auto") == "Auto" then
-            local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
-            lead = ping * 2                       -- ≡ ping_ms/500 de juju (GetNetworkPing = segundos)
-        else
-            lead = O("PredLead") or 0.12
-        end
-        pos = pos + vel * lead
+        -- PREDICT base + amplitud×velocidad: base = lead constante (comp ping, aún quieto); amp escala con
+        -- la velocidad normalizada del target (rápido = más lead). Reemplaza el vel*lead ping/manual.
+        local base = O("PredictBase") or 0.10
+        local amp  = O("PredictAmp")  or 0.15
+        local speedNorm = math.clamp(vel.Magnitude / Strafe.CONF.predMaxSpeed, 0, 1)
+        pos = pos + vel * (base + amp * speedNorm)
         return pos, didDefensive
     end
 
@@ -279,11 +274,31 @@ return function(require, LIP, Lib)
         return math.clamp(C.wDom * sDom + C.wStab * sStab + C.wResid * sResid, 0, 1)
     end
 
+    -- HIT-CONFIRM: acc EMA por target. HP baja & disparamos < hcWindow → hit; disparamos sin baja → miss.
+    -- Atribución aproximada (otro jugador podría pegar); el EMA suaviza. Relaja el piso del gate (Weapon).
+    local hc = {}   -- [plr] = { lastHP, acc }
+    function Strafe.updateHitConfirm(plr, now)
+        local C = Strafe.CONF
+        local ch = plr and plr.Character
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if not hum then hc[plr] = nil; return end
+        local h = hc[plr]; if not h then hc[plr] = { lastHP = hum.Health, acc = 0 }; return end
+        local fired = (now - (LIP.lastFireT or 0)) <= C.hcWindow
+        if fired then
+            local hit = (hum.Health < h.lastHP - 0.01) and 1 or 0
+            h.acc = h.acc + C.hcRate * (hit - h.acc)
+        end
+        h.lastHP = hum.Health
+    end
+    function Strafe.hitAccuracy(plr)
+        local h = hc[plr]; return h and h.acc or 0
+    end
+
     -- TELEMETRÍA del resolver para el HUD: método activo + score (0-1) + estado + nº de clusters. Lee resState.
     function Strafe.resolverInfo(plr)
         local rs = resState[plr]
-        if not rs then return { score = 0, state = "NORMAL", clusters = 0, method = O("ResolverMethod") or "Cluster", confidence = 0 } end
-        return { score = rs.score or 0, state = rs.state or "NORMAL", clusters = rs.clusters or 0, method = rs.method or "Cluster", confidence = Strafe.fireConfidence(plr) }
+        if not rs then return { score = 0, state = "NORMAL", clusters = 0, method = O("ResolverMethod") or "Cluster", confidence = 0, hitAcc = Strafe.hitAccuracy(plr) } end
+        return { score = rs.score or 0, state = rs.state or "NORMAL", clusters = rs.clusters or 0, method = rs.method or "Cluster", confidence = Strafe.fireConfidence(plr), hitAcc = Strafe.hitAccuracy(plr) }
     end
 
     -- LECTOR PURO (para el tracer): pos resuelta del método activo + lead, SIN ingestar (lee resState →
@@ -293,14 +308,10 @@ return function(require, LIP, Lib)
         local pos = rs.pos
         local v = velState[plr]
         if v and v.vel and v.vel.Magnitude <= 200 then
-            local lead
-            if (O("PredMode") or "Auto") == "Auto" then
-                local ping = 0.1; pcall(function() ping = LP:GetNetworkPing() end)
-                lead = ping * 2
-            else
-                lead = O("PredLead") or 0.12
-            end
-            pos = pos + v.vel * lead
+            local base = O("PredictBase") or 0.10
+            local amp  = O("PredictAmp")  or 0.15
+            local speedNorm = math.clamp(v.vel.Magnitude / Strafe.CONF.predMaxSpeed, 0, 1)
+            pos = pos + v.vel * (base + amp * speedNorm)
         end
         return pos
     end
