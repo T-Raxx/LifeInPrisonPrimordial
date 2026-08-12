@@ -139,20 +139,32 @@ return function(require, LIP, Lib)
             local h = char and char:FindFirstChildOfClass("Humanoid")
             if not h then return end
             local last = h.Health
+            local lastDmg = 0   -- ultimo delta de vida confirmado como "mio" (combat-vfx-port: dmg del onHit)
             local function mine() return not (LP.Team and plr.Team == LP.Team)
                 and LIP.lastShotT and (os.clock() - LIP.lastShotT) < 0.3 and aimingAt(char) end
             LIP.track(h.HealthChanged:Connect(function(hp)
                 local dropped = hp < (last - 0.5)
+                local dmg = last - hp
                 last = hp
                 if dropped and mine() then
                     local part = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+                    lastDmg = dmg
                     HE.hit(part and part.Position or nil)
+                    -- combat-vfx-port: onHit(player, part, damage, lethal=false) para hitmarker/dmg
+                    -- numbers/particulas/chams (GUIWorkspace core/combat.lua).
+                    if LIP.onHit then pcall(function() LIP.onHit:Fire(plr, part, dmg, false) end) end
                 end
             end))
             LIP.track(h.Died:Connect(function()
                 -- kill: enemigo muere apuntándole vos con un disparo reciente (ventana un toque más amplia)
                 if not (LP.Team and plr.Team == LP.Team) and LIP.lastShotT
-                   and (os.clock() - LIP.lastShotT) < 1.0 and aimingAt(char) then HE.kill() end
+                   and (os.clock() - LIP.lastShotT) < 1.0 and aimingAt(char) then
+                    HE.kill()
+                    if LIP.onHit then
+                        local part = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+                        pcall(function() LIP.onHit:Fire(plr, part, lastDmg, true) end)
+                    end
+                end
             end))
         end
         local function watch(plr)

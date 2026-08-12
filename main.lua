@@ -30,7 +30,8 @@ return function(require, LIP, Lib)
     -- ESP enumera Players (R6), SelfFX = Camera.FOV/crosshair/HUD, World = Lighting. Guarded por si falta.
     if LIP.Visuals and LIP.Visuals.Attach then
         pcall(function()
-            LIP.Visuals.Attach(Lib, Window, { adapter = "primordial", modules = { "world", "esp", "selffx" } })
+            LIP.Visuals.Attach(Lib, Window, { adapter = "primordial",
+                modules = { "world", "esp", "selffx", "combat", "aura" }, profile = "lifeinprison" })
         end)
     end
     Net.install()    -- __namecall silent aim op14 + melee aura op16

@@ -157,6 +157,12 @@ return function(require, LIP, Lib)
         LIP._selfFiring = false
         LIP.shotsFired = (LIP.shotsFired or 0) + 1
         LIP.lastFireT = os.clock()   -- hit-confirm: marca de disparo para atribuir HP-drop
+        -- combat-vfx-port: onShot(origin, hitPos, isLocal) para tracers (GUIWorkspace core/combat.lua).
+        if LIP.onShot then
+            local o = (LIP.spoofOn or LIP.connRep) and LIP.spoofFakePos
+                or (function() local h = char() and char():FindFirstChild("Head"); return h and h.Position end)()
+            pcall(function() LIP.onShot:Fire(LIP.cachedOrigin or o, hitPos, true) end)
+        end
         return true
     end
 

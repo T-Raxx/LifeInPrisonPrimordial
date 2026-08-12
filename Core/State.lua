@@ -12,6 +12,25 @@ return function(require, _unused, Lib)
 
     local RS = game:GetService("ReplicatedStorage")
 
+    -- signal minimo (tabla Lua, sin BindableEvent): usado por LIP.onShot/onHit para el port de
+    -- combat-vfx (GUIWorkspace core/combat.lua + core/aura.lua se enganchan via :Connect).
+    local Signal = {}
+    Signal.__index = Signal
+    function Signal.new() return setmetatable({ _cbs = {} }, Signal) end
+    function Signal:Connect(fn)
+        local conn = { fn = fn, _sig = self }
+        function conn:Disconnect()
+            for i, c in ipairs(self._sig._cbs) do
+                if c == self then table.remove(self._sig._cbs, i) break end
+            end
+        end
+        table.insert(self._cbs, conn)
+        return conn
+    end
+    function Signal:Fire(...)
+        for _, c in ipairs({ table.unpack(self._cbs) }) do task.spawn(c.fn, ...) end
+    end
+
     local LIP = {
         enabled   = false,           -- master del engine
         swapOn    = false,           -- silent aim arg-swap activo
@@ -22,6 +41,12 @@ return function(require, _unused, Lib)
         Events    = RS:FindFirstChild("Events"),
     }
     LIP.RE = LIP.Events and LIP.Events:FindFirstChild("RemoteEvent")
+    -- signals del combat-vfx-port: onShot(origin, hitPos, isLocal) desde Combat/Weapon.lua,
+    -- onHit(player, part, damage, lethal) desde Visuals/HitEffects.lua. Se crean SIEMPRE frescos
+    -- (LIP es una tabla nueva por carga, no hay estado previo que preservar → idempotente por
+    -- construccion, no hace falta un guard `LIP.onShot or Signal.new()`).
+    LIP.onShot = Signal.new()
+    LIP.onHit  = Signal.new()
     getgenv().LIP = LIP
 
     -- dispara el RemoteEvent multiplexado con opcode + payload (client→server). Único punto de salida.
