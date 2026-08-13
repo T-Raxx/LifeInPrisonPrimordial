@@ -277,7 +277,10 @@ return function(require, LIP, Lib)
         local C = Strafe.CONF
         local rs = resState[plr]
         if not rs or not rs.pos then return 0 end
-        if (math.abs(rs.pos.X) + math.abs(rs.pos.Z)) >= C.voidManhattan then return 0 end
+        -- VOID AUTOFIRE: si el toggle está ON, NO void-zeroeamos. La confianza fusionada abajo (estabilidad +
+        -- residual) ya distingue estático (estable → conf alta → dispara) de void-spam (salta → estabilidad baja
+        -- → conf baja → aguanta). El void-zero era un guard redundante que mataba el hit a targets estáticos hondos.
+        if (math.abs(rs.pos.X) + math.abs(rs.pos.Z)) >= C.voidManhattan and not T("VoidAutofire") then return 0 end
         local sDom   = rs.score or 0
         local sStab  = math.clamp((rs.stabFrames or 0) / C.stabK, 0, 1)
         local sResid = Strafe.confidence(plr)

@@ -79,8 +79,14 @@ return function(require, LIP, Lib)
             local inVoid = (math.abs(base.X) + math.abs(base.Z)) >= voidMan
             local resolved, didDef
             if resolveOn then resolved, didDef = Strafe.resolveAim(t, base) end   -- puebla resState (confianza) aunque FireResolved off
+            local voidAuto = T.VoidAutofire and T.VoidAutofire.Value
             if fireResOn and didDef and resolved then
                 LIP.cachedHitPos = resolved; LIP.didDefensive = true
+            elseif inVoid and voidAuto then
+                -- VOID AUTOFIRE: target estático hondo en el void (50M+) = su pos del void ES su pos real →
+                -- apuntá ahí (resuelta si hay, si no la cruda) + didDefensive=true para bypassear el gate de
+                -- rango (50M >> FireRange). A los void-spammers los filtra la baja estabilidad de fireConfidence.
+                LIP.cachedHitPos = (resolveOn and resolved) or base; LIP.didDefensive = true
             elseif inVoid and LIP.lastGoodHitPos then
                 LIP.cachedHitPos = LIP.lastGoodHitPos; LIP.didDefensive = false   -- guard anti-void: nunca latch al ghost
             else
