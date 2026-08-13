@@ -126,12 +126,12 @@ return function(require, LIP, Lib)
         --========================= LEGIT =========================--
         --========================= RESOLVER (Section en el sidebar de Rage) =========================--
         local Res = Rage:AddSection("Resolver", "Cluster · Density · Dynamic Strafe", { Columns = 2 })
-        local RParams = Strafe.RParams; local DEN = Strafe.DEN; local CONF = Strafe.CONF
+        local RParams = Strafe.RParams; local DEN = Strafe.DEN; local CONF = Strafe.CONF; local CEN = Strafe.CEN
         local rm = Res:AddPanel("Método", { Column = 1 })
         rm:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
             Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
-        rm:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Density", "Auto" }, Default = "Cluster",
-            Tooltip = "Cluster = histograma (juju). Density = vecindad batch (sakura, anti-alternador + far). Auto = elige según el target." })
+        rm:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Density", "Centroid", "Auto" }, Default = "Cluster",
+            Tooltip = "Cluster = histograma (juju). Density = vecindad batch (sakura, anti-alternador + far). Centroid = media robusta void-excluida (clava el CENTRO de random ancho, sin muro de 27 studs; para móviles/idle random). Auto = elige según el target." })
         rm:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
             Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
         rm:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
@@ -140,12 +140,25 @@ return function(require, LIP, Lib)
             Tooltip = "Lead constante (comp de ping), aplicado aún quieto" })
         rm:AddSlider("PredictAmp", { Text = "Predict Amp", Min = 0, Max = 0.4, Default = 0.15, Decimals = 2, Suffix = "s",
             Tooltip = "Lead extra (tiempo) modulado por la CONFIANZA del movimiento: smooth/lineal=full, random=~0" })
+        rm:AddSlider("PredictKill", { Text = "Predict Kill", Min = 0, Max = 1, Default = 0.25, Decimals = 2,
+            Tooltip = "Umbral: si la confianza lineal < esto (= movimiento random), MATA el lead completo (base incluido) → center-lock puro sin predict. 0 = nunca mata (siempre predice)." })
         rm:AddSlider("LeadCap", { Text = "Lead Cap", Min = 60, Max = 1000, Default = 400, Suffix = "st/s",
             Tooltip = "Tope de velocidad para el lead (CAP, no zero). Subir para fast movers (fly/vehículo ~300+). El void ya está guarded aparte." })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
         rm:AddToggle("VoidAutofire", { Text = "Void Autofire", Default = true,
             Tooltip = "Dispara a targets ESTÁTICOS hondo en el void (50M+ studs): su pos del void ES su pos real. Remueve el void-zero de la confianza (la estabilidad de fireConfidence filtra a los spammers) + bypassea el gate de rango. OFF = comportamiento viejo (no dispara en void)." })
+        rm:AddLabel("Centroid / Positioning", { Header = true })
+        rm:AddSlider("CentroidWindow", { Text = "Cen Window", Min = 0.5, Max = 4, Default = 1.5, Decimals = 2, Suffix = "s",
+            Tooltip = "Ventana temporal de samples para la media del método Centroid. Más larga = centro más estable pero más lento a reaccionar.",
+            Callback = function(v) if CEN then CEN.window = v end end })
+        rm:AddSlider("CentroidTrim", { Text = "Cen Trim", Min = 0, Max = 0.6, Default = 0.15, Decimals = 2, Suffix = "%",
+            Tooltip = "Fracción de samples más lejanos a la media que se descartan (outliers/flickers) antes de recomputar el centro robusto. Medido: 0.15 óptimo (0.30 descarta data buena, 0.00 explota con outliers).",
+            Callback = function(v) if CEN then CEN.trim = v end end })
+        rm:AddToggle("WeaponClamp", { Text = "Weapon Clamp", Default = true,
+            Tooltip = "Con Target Strafe: clampa MI pos a rango de arma del CENTRO resuelto → la escopeta siempre registra. Automatiza el 'ponerme al centro'. No aplica en bait ni con weld (ya glued al target)." })
+        rm:AddSlider("WeaponRange", { Text = "Weapon Range", Min = 30, Max = 300, Default = 125, Suffix = "st",
+            Tooltip = "Rango del arma para el Weapon Clamp (escopeta = 125). El radio efectivo se achica con el spread del random. Bajalo si querés pegarte más al centro." })
         rm:AddSlider("HistMax", { Text = "Sample Cap", Min = 60, Max = 500, Default = 200, Suffix = " smp",
             Tooltip = "Muestras del historial. Más = centroide de math.random más ajustado. Density O(n²): 400+ puede lagear.",
             Callback = function(v) if CONF then CONF.histMax = math.floor(v) end end })

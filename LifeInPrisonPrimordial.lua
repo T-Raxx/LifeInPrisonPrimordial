@@ -743,6 +743,13 @@ return function(require, LIP, Lib)
     -- vecinos dentro de un radio CHICO (studs). El void (millones de studs entre sí) nunca clusteriza; solo
     -- la pos real (jitter de pocos studs) acumula vecinos. El radio ENCOGE con la distancia = resolución far.
     Strafe.DEN = { forgiveness = 14.4, outOfVoidBonus = 13, distPenalty = 3.2, minMatches = 3, window = 3.0, voidManhattan = 7000 }
+    -- RESOLVER CENTROID: media robusta void-excluida + trimmed. Para RANDOM (idle jitter / strafe ancho): la
+    -- media de los samples IN-MAP → el CENTRO del spread, SIN límite de radio (Cluster/Density mueren >27 studs =
+    -- su forgiveness; una media no tiene ese muro). Trim descarta el X% más lejano de la media (flickers al void /
+    -- outliers). El void-spam se excluye del promedio (solo cuentan in-map) → inmune. Alimenta timing + centro.
+    -- trim 0.15 = sweet spot medido: ~11 studs de error en random puro ±100 (N=90), ~3.7 con outliers in-map;
+    -- 0.30 es peor en ambos (descarta data buena cuando no hay outliers), 0.00 explota con outliers.
+    Strafe.CEN = { window = 1.5, trim = 0.15, minSamples = 6, tightRef = 40 }
     -- CONFIANZA DE DISPARO fusionada: pesos + umbrales (todo live-tuneable). wDom+wStab+wResid = 1.0.
     Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 3, voidManhattan = 50000,
                     predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40,
@@ -775,6 +782,43 @@ return function(require, LIP, Lib)
         end
         local didDef = bestPos ~= nil and bestCount >= (D.minMatches + 1)
         return bestPos, didDef, bestCount
+    end
+
+    -- devuelve (centro, didDef, score 0-1, spread promedio). nil si no hay suficientes samples in-map.
+    local function resolveCentroid(plr)
+        local C = Strafe.CEN
+        local vMan = Strafe.CONF.voidManhattan
+        local h = hist[plr]; local n = h and #h.s or 0
+        if n < C.minSamples then return nil, false, 0, 0 end
+        local now = os.clock()
+        -- 1) junta samples IN-MAP dentro de la ventana (excluye void-spam)
+        local pts = {}
+        for i = 1, n do
+            if (now - h.t[i]) <= C.window then
+                local p = h.s[i]
+                if (math.abs(p.X) + math.abs(p.Z)) < vMan then pts[#pts + 1] = p end
+            end
+        end
+        local m = #pts
+        if m < C.minSamples then return nil, false, 0, 0 end
+        -- 2) media cruda
+        local sum = Vector3.zero
+        for i = 1, m do sum = sum + pts[i] end
+        local mean = sum / m
+        -- 3) TRIM: descarta el trim% más lejano de la media cruda, recomputa la media con el resto (robusto)
+        local keep = math.max(3, math.floor(m * (1 - C.trim)))
+        if keep < m then
+            table.sort(pts, function(a, b) return (a - mean).Magnitude < (b - mean).Magnitude end)
+            sum = Vector3.zero
+            for i = 1, keep do sum = sum + pts[i] end
+            mean = sum / keep
+        else keep = m end
+        -- 4) TIGHTNESS → score. Spread promedio de los kept respecto a la media trimmed. Tight = score alto.
+        local spread = 0
+        for i = 1, keep do spread = spread + (pts[i] - mean).Magnitude end
+        spread = (keep > 0) and (spread / keep) or 1e9
+        local score = math.clamp(1 - spread / C.tightRef, 0, 1)   -- spread 0 → 1.0 ; spread ≥ tightRef → 0
+        return mean, keep >= C.minSamples, score, spread
     end
 
     local function resolveCluster(plr, hitbox, now, localPos)
@@ -850,12 +894,18 @@ return function(require, LIP, Lib)
         if method == "Auto" then method = pickMethod(plr) end
         local pos, didDef, score, cl, state
         local winCount = 0
+        local spread = nil
         if method == "Density" then
             local p, dd, cnt = resolveDensity(plr, localPos)
             pos, didDef = p or rawPos, dd or false
             score = math.clamp(((cnt or 0) - Strafe.DEN.minMatches) / 8, 0, 1)
             cl = cnt or 0; winCount = cnt or 0
             state = didDef and "LOCKED" or (p and "RESOLVING" or "VOID")
+        elseif method == "Centroid" then
+            local p, dd, sc, sp = resolveCentroid(plr)
+            pos, didDef = p or rawPos, dd or false
+            score = sc or 0; cl = 0; winCount = 0; spread = sp
+            state = dd and "LOCKED" or (p and "RESOLVING" or "VOID")
         else
             local p, dd, sc, n, wc = resolveCluster(plr, rawPos, now, localPos)
             pos, didDef = p, dd
@@ -863,7 +913,7 @@ return function(require, LIP, Lib)
             state = dd and "LOCKED" or ((cl > 0) and "RESOLVING" or "NORMAL")
         end
         local sf = updateStability(plr, pos)
-        resState[plr] = { pos = pos, didDef = didDef, method = method, score = score, clusters = cl, state = state, frameT = now, stabFrames = sf, winCount = winCount }
+        resState[plr] = { pos = pos, didDef = didDef, method = method, score = score, clusters = cl, state = state, frameT = now, stabFrames = sf, winCount = winCount, spread = spread }
         return pos, didDef
     end
 
@@ -898,7 +948,12 @@ return function(require, LIP, Lib)
         -- mecanismo cubre fast-smooth Y random; el resolver SIEMPRE intenta.
         local base = O("PredictBase") or 0.10
         local amp  = O("PredictAmp")  or 0.15
-        local lead = base + amp * Strafe.confidence(plr)
+        local conf = Strafe.confidence(plr)
+        -- PREDICT-KILL: random (confianza lineal < PredictKill) → lead COMPLETO a 0 (base incluido). El centroide
+        -- ya da un centro estable; extrapolar sobre random solo mete ruido. Lo que te funcionó a mano: center-lock,
+        -- cero predict. Movimiento limpio (conf ≥ pk) → lead normal (base + amp·conf).
+        local pk = O("PredictKill") or 0.25
+        local lead = (conf < pk) and 0 or (base + amp * conf)
         pos = pos + vel * lead
         return pos, didDefensive
     end
@@ -961,7 +1016,9 @@ return function(require, LIP, Lib)
             if vel.Magnitude > cap then vel = vel.Unit * cap end
             local base = O("PredictBase") or 0.10
             local amp  = O("PredictAmp")  or 0.15
-            pos = pos + vel * (base + amp * Strafe.confidence(plr))
+            local conf = Strafe.confidence(plr)
+            local pk = O("PredictKill") or 0.25
+            pos = pos + vel * ((conf < pk) and 0 or (base + amp * conf))   -- predict-kill (ver resolveAim)
         end
         return pos
     end
@@ -1201,6 +1258,20 @@ return function(require, LIP, Lib)
                     LIP.baitJitterPos = LIP.baitPos + Vector3.new((rnd() - 0.5) * 10, 0, 0)  -- jitter X, rango 10
                     goCF = CFrame.new(LIP.baitJitterPos)
                 else LIP.baitUntil = nil; LIP.baitNext = now + 1 + rnd() * 2 end
+            end
+        end
+
+        -- POSITIONING: clamp goCF a rango de arma del CENTRO (centroide) → la escopeta siempre registra.
+        -- El radio efectivo se achica con el spread del random (más ancho = me acerco más). Automatiza el
+        -- "ponerme al centro". No aplica en bait (fling intencional) ni con weld (ya glued al cuerpo real via
+        -- PhysicsRepRootPart → sigue el cuerpo scattered = siempre a radius del target real).
+        if T("WeaponClamp") ~= false and phase ~= "bait" and not baiting and not opts.connExploit then
+            local rs = resState[target]
+            local spread = (rs and rs.spread) or 0
+            local wr = math.max(15, (O("WeaponRange") or 125) - spread)
+            local gp = goCF.Position
+            if (gp - center).Magnitude > wr then
+                goCF = (goCF - gp) + (center + (gp - center).Unit * wr)   -- preserva rotación, mueve pos
             end
         end
 
@@ -3015,12 +3086,12 @@ return function(require, LIP, Lib)
         --========================= LEGIT =========================--
         --========================= RESOLVER (Section en el sidebar de Rage) =========================--
         local Res = Rage:AddSection("Resolver", "Cluster · Density · Dynamic Strafe", { Columns = 2 })
-        local RParams = Strafe.RParams; local DEN = Strafe.DEN; local CONF = Strafe.CONF
+        local RParams = Strafe.RParams; local DEN = Strafe.DEN; local CONF = Strafe.CONF; local CEN = Strafe.CEN
         local rm = Res:AddPanel("Método", { Column = 1 })
         rm:AddToggle("Resolver", { Text = "Spam Resolver", Default = false,
             Tooltip = "Resuelve el centro REAL del target (el strafe orbita ahí, no su jitter)" })
-        rm:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Density", "Auto" }, Default = "Cluster",
-            Tooltip = "Cluster = histograma (juju). Density = vecindad batch (sakura, anti-alternador + far). Auto = elige según el target." })
+        rm:AddDropdown("ResolverMethod", { Text = "Method", Values = { "Cluster", "Density", "Centroid", "Auto" }, Default = "Cluster",
+            Tooltip = "Cluster = histograma (juju). Density = vecindad batch (sakura, anti-alternador + far). Centroid = media robusta void-excluida (clava el CENTRO de random ancho, sin muro de 27 studs; para móviles/idle random). Auto = elige según el target." })
         rm:AddSlider("ResolverPredict", { Text = "Predict", Min = 0, Max = 0.4, Default = 0.12, Decimals = 2, Suffix = "s",
             Tooltip = "Lead por velocidad (compensa el delay de replicación). 0 = off" })
         rm:AddSlider("ResolverRate", { Text = "Resolver Rate", Min = 0, Max = 0.1, Default = 0.037, Decimals = 4, Suffix = "s",
@@ -3029,12 +3100,25 @@ return function(require, LIP, Lib)
             Tooltip = "Lead constante (comp de ping), aplicado aún quieto" })
         rm:AddSlider("PredictAmp", { Text = "Predict Amp", Min = 0, Max = 0.4, Default = 0.15, Decimals = 2, Suffix = "s",
             Tooltip = "Lead extra (tiempo) modulado por la CONFIANZA del movimiento: smooth/lineal=full, random=~0" })
+        rm:AddSlider("PredictKill", { Text = "Predict Kill", Min = 0, Max = 1, Default = 0.25, Decimals = 2,
+            Tooltip = "Umbral: si la confianza lineal < esto (= movimiento random), MATA el lead completo (base incluido) → center-lock puro sin predict. 0 = nunca mata (siempre predice)." })
         rm:AddSlider("LeadCap", { Text = "Lead Cap", Min = 60, Max = 1000, Default = 400, Suffix = "st/s",
             Tooltip = "Tope de velocidad para el lead (CAP, no zero). Subir para fast movers (fly/vehículo ~300+). El void ya está guarded aparte." })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
         rm:AddToggle("VoidAutofire", { Text = "Void Autofire", Default = true,
             Tooltip = "Dispara a targets ESTÁTICOS hondo en el void (50M+ studs): su pos del void ES su pos real. Remueve el void-zero de la confianza (la estabilidad de fireConfidence filtra a los spammers) + bypassea el gate de rango. OFF = comportamiento viejo (no dispara en void)." })
+        rm:AddLabel("Centroid / Positioning", { Header = true })
+        rm:AddSlider("CentroidWindow", { Text = "Cen Window", Min = 0.5, Max = 4, Default = 1.5, Decimals = 2, Suffix = "s",
+            Tooltip = "Ventana temporal de samples para la media del método Centroid. Más larga = centro más estable pero más lento a reaccionar.",
+            Callback = function(v) if CEN then CEN.window = v end end })
+        rm:AddSlider("CentroidTrim", { Text = "Cen Trim", Min = 0, Max = 0.6, Default = 0.15, Decimals = 2, Suffix = "%",
+            Tooltip = "Fracción de samples más lejanos a la media que se descartan (outliers/flickers) antes de recomputar el centro robusto. Medido: 0.15 óptimo (0.30 descarta data buena, 0.00 explota con outliers).",
+            Callback = function(v) if CEN then CEN.trim = v end end })
+        rm:AddToggle("WeaponClamp", { Text = "Weapon Clamp", Default = true,
+            Tooltip = "Con Target Strafe: clampa MI pos a rango de arma del CENTRO resuelto → la escopeta siempre registra. Automatiza el 'ponerme al centro'. No aplica en bait ni con weld (ya glued al target)." })
+        rm:AddSlider("WeaponRange", { Text = "Weapon Range", Min = 30, Max = 300, Default = 125, Suffix = "st",
+            Tooltip = "Rango del arma para el Weapon Clamp (escopeta = 125). El radio efectivo se achica con el spread del random. Bajalo si querés pegarte más al centro." })
         rm:AddSlider("HistMax", { Text = "Sample Cap", Min = 60, Max = 500, Default = 200, Suffix = " smp",
             Tooltip = "Muestras del historial. Más = centroide de math.random más ajustado. Density O(n²): 400+ puede lagear.",
             Callback = function(v) if CONF then CONF.histMax = math.floor(v) end end })
