@@ -72,8 +72,13 @@ return function(require, LIP, Lib)
             Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
             Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
-        vd:AddList("VoidPattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
-        vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 1000000, Default = 1000, Suffix = "studs" })
+        vd:AddList("VoidPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak" }, Default = "Jitter",
+            Tooltip = "Non-pattern (Random/Teleport) = unpredecible pero PROMEDIABLE por un centroide. Pattern (Jitter/StaticBreak) = anti-centroide: el promedio enemigo cae en el vacío." })
+        vd:AddSlider("VoidDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
+            Tooltip = "Radio del jitter alrededor del origen (close-range pro). El patrón protege, no la distancia." })
+        vd:AddDropdown("VoidPreset", { Text = "Preset", Values = { "Legit", "Jitter", "Peek", "Blink", "Chaos" }, Default = "Jitter",
+            Tooltip = "Presets pro: setean pattern+radius+timing. Legit=sutil, Jitter/Peek=anti-centroide (centroide=aire), Blink=teleport, Chaos=random rápido.",
+            Callback = function(v) Void.applyPreset(v) end })
 
         --== Col 3: Target Strafe + Server Position ==--
         local ts = RS:AddPanel("Target Strafe", { Column = 3 })
@@ -108,8 +113,10 @@ return function(require, LIP, Lib)
         local idl = RS:AddPanel("Idle State", { Column = 3 })
         idl:AddToggle("IdleState", { Text = "Idle State", Default = false,
             Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando. (Antes se llamaba Void Spam.)" })
-        idl:AddList("IdlePattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
-        idl:AddSlider("IdleDist", { Text = "Distance", Min = 100, Max = 1000000, Default = 1000, Suffix = "studs" })
+        idl:AddList("IdlePattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak" }, Default = "Jitter",
+            Tooltip = "Non-pattern (Random/Teleport) vs Pattern anti-centroide (Jitter/StaticBreak)." })
+        idl:AddSlider("IdleDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
+            Tooltip = "Radio del jitter alrededor del origen (close-range pro)." })
 
         local hud = RS:AddPanel("Crosshair HUD", { Column = 3 })
         hud:AddToggle("CrossHUD", { Text = "Crosshair HUD", Default = true,
