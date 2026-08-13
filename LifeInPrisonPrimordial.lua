@@ -3190,10 +3190,13 @@ return function(require, LIP, Lib)
     -- LiP. Reusa la categoría "Visuals" que UI.build ya creó (Window.__visualsCat). Genérico (sin profile):
     -- ESP enumera Players (R6), SelfFX = Camera.FOV/crosshair/HUD, World = Lighting. Guarded por si falta.
     if LIP.Visuals and LIP.Visuals.Attach then
-        pcall(function()
-            LIP.Visuals.Attach(Lib, Window, { adapter = "primordial",
+        local ok, suite = pcall(function()
+            return LIP.Visuals.Attach(Lib, Window, { adapter = "primordial",
                 modules = { "world", "esp", "selffx", "aura", "combat" }, profile = "lifeinprison" })
         end)
+        if ok and suite and suite.Unload then
+            LIP.onCleanup(function() pcall(function() suite:Unload() end) end)
+        end
     end
     Net.install()    -- __namecall silent aim op14 + melee aura op16
     Move.init()      -- fly/noclip/speed/jump
