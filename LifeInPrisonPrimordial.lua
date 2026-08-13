@@ -2222,34 +2222,61 @@ return function(require, LIP, Lib)
 
     -- patrones de void (TODOS altos — clamp Y≥30 para NUNCA tocar el vacío, que mata).
     -- Rotación XYZ random SIEMPRE. Origen absoluto (0,100,0).
-    local orbSeed, tpAnchor, tpT = 0, nil, 0
-    local TWEEN = { Vector3.new(1,0,1), Vector3.new(-1,0,1), Vector3.new(-1,0,-1), Vector3.new(1,0,-1) }
+    -- estado de los patrones. Origen ABSOLUTO (0,100,0). `dist` ahora = RADIUS (1-100 studs, close-range pro).
+    local tpAnchor, tpT = nil, 0
+    local jitP1, jitP2, jitReseed, jitFlip = nil, nil, 0, false
+    local sbAnchor, sbT = nil, 0
     local function patternCF(dist, pattern)
-        local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)
+        local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)   -- anti-aim rotacional XYZ
+        local now = os.clock()
         local off
-        if pattern == "High" then
-            off = Vector3.new(0, dist, 0)
-        elseif pattern == "Orbit" then
-            orbSeed = orbSeed + 0.25
-            off = Vector3.new(math.cos(orbSeed) * dist, 60 + rnd() * dist * 0.3, math.sin(orbSeed) * dist)
-        elseif pattern == "Tween" then
-            orbSeed = orbSeed + 0.03
-            local i = (math.floor(orbSeed) % #TWEEN) + 1
-            local j = (i % #TWEEN) + 1
-            local f = orbSeed - math.floor(orbSeed)
-            local c = TWEEN[i]:Lerp(TWEEN[j], f) * dist
-            off = Vector3.new(c.X, 60 + math.abs(c.Y), c.Z)
-        elseif pattern == "Teleport" then
-            if not tpAnchor or (os.clock() - tpT) > 0.3 then
-                tpAnchor = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist); tpT = os.clock()
+        if pattern == "Teleport" then
+            -- NON-PATTERN: mantiene un offset random ~0.3s y salta (discreto)
+            if not tpAnchor or (now - tpT) > 0.3 then
+                tpAnchor = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist); tpT = now
             end
             off = tpAnchor
-        else -- "Random" (default): XYZ random cada frame, muy lejos
+        elseif pattern == "Jitter" then
+            -- PATTERN anti-centroide: 2 puntos fijos OPUESTOS en XZ, snap entre ellos cada frame → el promedio
+            -- (centroide) cae en el punto medio = ORIGIN = aire. Re-seedea los 2 puntos cada ~0.6s (menos predecible).
+            if not jitP1 or (now - jitReseed) > 0.6 then
+                local a = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist)
+                jitP1 = a; jitP2 = Vector3.new(-a.X, a.Y, -a.Z); jitReseed = now
+            end
+            jitFlip = not jitFlip
+            off = jitFlip and jitP1 or jitP2
+        elseif pattern == "StaticBreak" then
+            -- PATTERN peek-then-flick: QUIETO en un offset fijo ~0.5s (baitea al resolver a lockear) + FLICK al
+            -- opuesto ~0.1s (el "break") → el enemigo lockea el punto estático y al break ya no estás ahí.
+            if not sbAnchor or (now - sbT) > 0.6 then
+                sbAnchor = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist); sbT = now
+            end
+            if (now - sbT) > 0.5 then off = Vector3.new(-sbAnchor.X, sbAnchor.Y, -sbAnchor.Z)   -- BREAK (flick opuesto)
+            else off = sbAnchor end                                                              -- STATIC (bait)
+        else -- "Random" (NON-PATTERN, default): offset XYZ random cada frame dentro del radius
             off = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist)
         end
         local pos = ORIGIN + off
-        if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío
+        if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío (mata)
         return CFrame.new(pos) * rot
+    end
+
+    -- PRESETS PRO (VoidPreset): pattern + radius + timing in/out. Non-pattern (Legit/Chaos/Blink) vs pattern
+    -- anti-centroide (Jitter/Peek). applyPreset setea las Options (mismo mecanismo que Strafe.applyPreset).
+    Void.PRESETS = {
+        Legit  = { pattern = "Random",      radius = 15,  inT = 0.6,  outT = 0.5  },
+        Jitter = { pattern = "Jitter",      radius = 40,  inT = 0.3,  outT = 0.3  },
+        Peek   = { pattern = "StaticBreak", radius = 60,  inT = 0.5,  outT = 0.4  },
+        Blink  = { pattern = "Teleport",    radius = 80,  inT = 0.35, outT = 0.3  },
+        Chaos  = { pattern = "Random",      radius = 100, inT = 0.15, outT = 0.15 },
+    }
+    function Void.applyPreset(name)
+        local p = Void.PRESETS[name]; if not p then return end
+        local Op = Lib.Options
+        if Op.VoidPattern then Op.VoidPattern:SetValue(p.pattern) end
+        if Op.VoidDist    then Op.VoidDist:SetValue(p.radius) end
+        if Op.VoidInTime  then Op.VoidInTime:SetValue(p.inT) end
+        if Op.VoidOutTime then Op.VoidOutTime:SetValue(p.outT) end
     end
 
     function Void.tick(opts)
@@ -3032,8 +3059,13 @@ return function(require, LIP, Lib)
             Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
             Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
-        vd:AddList("VoidPattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
-        vd:AddSlider("VoidDist", { Text = "Distance", Min = 100, Max = 1000000, Default = 1000, Suffix = "studs" })
+        vd:AddList("VoidPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak" }, Default = "Jitter",
+            Tooltip = "Non-pattern (Random/Teleport) = unpredecible pero PROMEDIABLE por un centroide. Pattern (Jitter/StaticBreak) = anti-centroide: el promedio enemigo cae en el vacío." })
+        vd:AddSlider("VoidDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
+            Tooltip = "Radio del jitter alrededor del origen (close-range pro). El patrón protege, no la distancia." })
+        vd:AddDropdown("VoidPreset", { Text = "Preset", Values = { "Legit", "Jitter", "Peek", "Blink", "Chaos" }, Default = "Jitter",
+            Tooltip = "Presets pro: setean pattern+radius+timing. Legit=sutil, Jitter/Peek=anti-centroide (centroide=aire), Blink=teleport, Chaos=random rápido.",
+            Callback = function(v) Void.applyPreset(v) end })
 
         --== Col 3: Target Strafe + Server Position ==--
         local ts = RS:AddPanel("Target Strafe", { Column = 3 })
@@ -3068,8 +3100,10 @@ return function(require, LIP, Lib)
         local idl = RS:AddPanel("Idle State", { Column = 3 })
         idl:AddToggle("IdleState", { Text = "Idle State", Default = false,
             Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando. (Antes se llamaba Void Spam.)" })
-        idl:AddList("IdlePattern", { Values = { "Random", "High", "Orbit", "Tween", "Teleport" }, Default = "Random" })
-        idl:AddSlider("IdleDist", { Text = "Distance", Min = 100, Max = 1000000, Default = 1000, Suffix = "studs" })
+        idl:AddList("IdlePattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak" }, Default = "Jitter",
+            Tooltip = "Non-pattern (Random/Teleport) vs Pattern anti-centroide (Jitter/StaticBreak)." })
+        idl:AddSlider("IdleDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
+            Tooltip = "Radio del jitter alrededor del origen (close-range pro)." })
 
         local hud = RS:AddPanel("Crosshair HUD", { Column = 3 })
         hud:AddToggle("CrossHUD", { Text = "Crosshair HUD", Default = true,
