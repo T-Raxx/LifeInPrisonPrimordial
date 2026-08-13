@@ -31,7 +31,7 @@ return function(require, LIP, Lib)
     if LIP.Visuals and LIP.Visuals.Attach then
         pcall(function()
             LIP.Visuals.Attach(Lib, Window, { adapter = "primordial",
-                modules = { "world", "esp", "selffx", "combat", "aura" }, profile = "lifeinprison" })
+                modules = { "world", "esp", "selffx", "aura", "combat" }, profile = "lifeinprison" })
         end)
     end
     Net.install()    -- __namecall silent aim op14 + melee aura op16
