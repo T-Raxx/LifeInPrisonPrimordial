@@ -909,7 +909,10 @@ return function(require, LIP, Lib)
         local C = Strafe.CONF
         local rs = resState[plr]
         if not rs or not rs.pos then return 0 end
-        if (math.abs(rs.pos.X) + math.abs(rs.pos.Z)) >= C.voidManhattan then return 0 end
+        -- VOID AUTOFIRE: si el toggle está ON, NO void-zeroeamos. La confianza fusionada abajo (estabilidad +
+        -- residual) ya distingue estático (estable → conf alta → dispara) de void-spam (salta → estabilidad baja
+        -- → conf baja → aguanta). El void-zero era un guard redundante que mataba el hit a targets estáticos hondos.
+        if (math.abs(rs.pos.X) + math.abs(rs.pos.Z)) >= C.voidManhattan and not T("VoidAutofire") then return 0 end
         local sDom   = rs.score or 0
         local sStab  = math.clamp((rs.stabFrames or 0) / C.stabK, 0, 1)
         local sResid = Strafe.confidence(plr)
@@ -3030,6 +3033,8 @@ return function(require, LIP, Lib)
             Tooltip = "Tope de velocidad para el lead (CAP, no zero). Subir para fast movers (fly/vehículo ~300+). El void ya está guarded aparte." })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
+        rm:AddToggle("VoidAutofire", { Text = "Void Autofire", Default = true,
+            Tooltip = "Dispara a targets ESTÁTICOS hondo en el void (50M+ studs): su pos del void ES su pos real. Remueve el void-zero de la confianza (la estabilidad de fireConfidence filtra a los spammers) + bypassea el gate de rango. OFF = comportamiento viejo (no dispara en void)." })
         rm:AddSlider("HistMax", { Text = "Sample Cap", Min = 60, Max = 500, Default = 200, Suffix = " smp",
             Tooltip = "Muestras del historial. Más = centroide de math.random más ajustado. Density O(n²): 400+ puede lagear.",
             Callback = function(v) if CONF then CONF.histMax = math.floor(v) end end })
@@ -3302,8 +3307,14 @@ return function(require, LIP, Lib)
             local inVoid = (math.abs(base.X) + math.abs(base.Z)) >= voidMan
             local resolved, didDef
             if resolveOn then resolved, didDef = Strafe.resolveAim(t, base) end   -- puebla resState (confianza) aunque FireResolved off
+            local voidAuto = T.VoidAutofire and T.VoidAutofire.Value
             if fireResOn and didDef and resolved then
                 LIP.cachedHitPos = resolved; LIP.didDefensive = true
+            elseif inVoid and voidAuto then
+                -- VOID AUTOFIRE: target estático hondo en el void (50M+) = su pos del void ES su pos real →
+                -- apuntá ahí (resuelta si hay, si no la cruda) + didDefensive=true para bypassear el gate de
+                -- rango (50M >> FireRange). A los void-spammers los filtra la baja estabilidad de fireConfidence.
+                LIP.cachedHitPos = (resolveOn and resolved) or base; LIP.didDefensive = true
             elseif inVoid and LIP.lastGoodHitPos then
                 LIP.cachedHitPos = LIP.lastGoodHitPos; LIP.didDefensive = false   -- guard anti-void: nunca latch al ghost
             else
