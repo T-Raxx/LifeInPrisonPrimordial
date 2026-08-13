@@ -116,7 +116,7 @@ return function(require, LIP, Lib)
                     predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40,
                     revisitBonus = 0.30, revisitMin = 4, revisitScale = 8, backtrackWindow = 0.15, histMax = 200,
                     chaseAmp = 10, chaseFreq = 2.5, ampMin = 6, ampMax = 30, freqMin = 0.5, freqMax = 4.0,
-                    adaptInterval = 1.0, adaptLrAmp = 2.0, adaptLrFreq = 0.3 }
+                    adaptInterval = 1.0, adaptLrAmp = 2.0, adaptLrFreq = 0.3, leadCap = 400 }
     local function resolveDensity(plr, localPos)
         local D = Strafe.DEN
         local h = hist[plr]; local n = h and #h.s or 0
@@ -255,13 +255,19 @@ return function(require, LIP, Lib)
         -- velocidad desde la pos RESUELTA (estable, sin los saltos del void) + sanity clamp (ningún player va
         -- >200 studs/s) → el lead nunca se vuela a millones aunque el target spamee void.
         local vel = Strafe.resolvedVel(plr, pos, now, O("ResolverRate") or 0.037)
-        if vel.Magnitude > 200 then vel = Vector3.zero end
-        -- PREDICT base + amplitud×velocidad: base = lead constante (comp ping, aún quieto); amp escala con
-        -- la velocidad normalizada del target (rápido = más lead). Reemplaza el vel*lead ping/manual.
+        -- CAP (no ZERO) de la magnitud del lead: un target REAL rápido (fly/vehículo a 300 studs/s) IGUAL
+        -- leadea (dirección preservada, magnitud capeada). El void ya está guarded aparte (resolveByMethod da
+        -- pos in-map), así que el lead nunca vuela a millones. Slider LeadCap (subir para fast movers).
+        local cap = O("LeadCap") or Strafe.CONF.leadCap
+        if vel.Magnitude > cap then vel = vel.Unit * cap end
+        -- LEAD escalado por CONFIANZA (anti-blocker): lead = tiempo (comp ping + extra). El extra se modula por
+        -- la confianza del movimiento (residual lineal): fly smooth/consistente = confianza alta = lead FULL →
+        -- le pegás adelante; jittery/random = confianza baja = lead ≈ base → no over-extrapolás basura. Un solo
+        -- mecanismo cubre fast-smooth Y random; el resolver SIEMPRE intenta.
         local base = O("PredictBase") or 0.10
         local amp  = O("PredictAmp")  or 0.15
-        local speedNorm = math.clamp(vel.Magnitude / Strafe.CONF.predMaxSpeed, 0, 1)
-        pos = pos + vel * (base + amp * speedNorm)
+        local lead = base + amp * Strafe.confidence(plr)
+        pos = pos + vel * lead
         return pos, didDefensive
     end
 
@@ -314,11 +320,13 @@ return function(require, LIP, Lib)
         local rs = resState[plr]; if not rs or not rs.pos then return nil end
         local pos = rs.pos
         local v = velState[plr]
-        if v and v.vel and v.vel.Magnitude <= 200 then
+        if v and v.vel then
+            local vel = v.vel
+            local cap = O("LeadCap") or Strafe.CONF.leadCap
+            if vel.Magnitude > cap then vel = vel.Unit * cap end
             local base = O("PredictBase") or 0.10
             local amp  = O("PredictAmp")  or 0.15
-            local speedNorm = math.clamp(v.vel.Magnitude / Strafe.CONF.predMaxSpeed, 0, 1)
-            pos = pos + v.vel * (base + amp * speedNorm)
+            pos = pos + vel * (base + amp * Strafe.confidence(plr))
         end
         return pos
     end

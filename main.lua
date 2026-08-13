@@ -263,8 +263,22 @@ return function(require, LIP, Lib)
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
         end
 
-        -- spectator (override de cámara al target manual)
-        if T.Spectate and T.Spectate.Value then Strafe.spectate(cam) end
+        -- spectator: cámara al humanoide del target manual. CLEANUP: si Spectate off O no hay target válido →
+        -- restaurar CameraSubject a tu propio humanoide (si no, la cámara queda pegada al target al apagar
+        -- Spectate / Target Strafe). Salvo en desync/weld: ahí la cámara la maneja Spoof (no pisar).
+        do
+            local specHum
+            if T.Spectate and T.Spectate.Value then
+                local tp = Strafe.manualPlayer(); local tc = tp and tp.Character
+                specHum = tc and tc:FindFirstChildOfClass("Humanoid")
+            end
+            if specHum then
+                pcall(function() if cam.CameraSubject ~= specHum then cam.CameraSubject = specHum end end)
+            elseif not (LIP.spoofOn or LIP.connRep) then
+                local myHum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+                if myHum and cam.CameraSubject ~= myHum then pcall(function() cam.CameraSubject = myHum end) end
+            end
+        end
 
         -- auto/rapid fire (op14 directo con ammo tracking; funciona ragdolleado)
         Weapon.tickAuto()

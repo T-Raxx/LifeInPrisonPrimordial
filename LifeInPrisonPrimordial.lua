@@ -744,7 +744,7 @@ return function(require, LIP, Lib)
                     predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40,
                     revisitBonus = 0.30, revisitMin = 4, revisitScale = 8, backtrackWindow = 0.15, histMax = 200,
                     chaseAmp = 10, chaseFreq = 2.5, ampMin = 6, ampMax = 30, freqMin = 0.5, freqMax = 4.0,
-                    adaptInterval = 1.0, adaptLrAmp = 2.0, adaptLrFreq = 0.3 }
+                    adaptInterval = 1.0, adaptLrAmp = 2.0, adaptLrFreq = 0.3, leadCap = 400 }
     local function resolveDensity(plr, localPos)
         local D = Strafe.DEN
         local h = hist[plr]; local n = h and #h.s or 0
@@ -883,13 +883,19 @@ return function(require, LIP, Lib)
         -- velocidad desde la pos RESUELTA (estable, sin los saltos del void) + sanity clamp (ningún player va
         -- >200 studs/s) → el lead nunca se vuela a millones aunque el target spamee void.
         local vel = Strafe.resolvedVel(plr, pos, now, O("ResolverRate") or 0.037)
-        if vel.Magnitude > 200 then vel = Vector3.zero end
-        -- PREDICT base + amplitud×velocidad: base = lead constante (comp ping, aún quieto); amp escala con
-        -- la velocidad normalizada del target (rápido = más lead). Reemplaza el vel*lead ping/manual.
+        -- CAP (no ZERO) de la magnitud del lead: un target REAL rápido (fly/vehículo a 300 studs/s) IGUAL
+        -- leadea (dirección preservada, magnitud capeada). El void ya está guarded aparte (resolveByMethod da
+        -- pos in-map), así que el lead nunca vuela a millones. Slider LeadCap (subir para fast movers).
+        local cap = O("LeadCap") or Strafe.CONF.leadCap
+        if vel.Magnitude > cap then vel = vel.Unit * cap end
+        -- LEAD escalado por CONFIANZA (anti-blocker): lead = tiempo (comp ping + extra). El extra se modula por
+        -- la confianza del movimiento (residual lineal): fly smooth/consistente = confianza alta = lead FULL →
+        -- le pegás adelante; jittery/random = confianza baja = lead ≈ base → no over-extrapolás basura. Un solo
+        -- mecanismo cubre fast-smooth Y random; el resolver SIEMPRE intenta.
         local base = O("PredictBase") or 0.10
         local amp  = O("PredictAmp")  or 0.15
-        local speedNorm = math.clamp(vel.Magnitude / Strafe.CONF.predMaxSpeed, 0, 1)
-        pos = pos + vel * (base + amp * speedNorm)
+        local lead = base + amp * Strafe.confidence(plr)
+        pos = pos + vel * lead
         return pos, didDefensive
     end
 
@@ -942,11 +948,13 @@ return function(require, LIP, Lib)
         local rs = resState[plr]; if not rs or not rs.pos then return nil end
         local pos = rs.pos
         local v = velState[plr]
-        if v and v.vel and v.vel.Magnitude <= 200 then
+        if v and v.vel then
+            local vel = v.vel
+            local cap = O("LeadCap") or Strafe.CONF.leadCap
+            if vel.Magnitude > cap then vel = vel.Unit * cap end
             local base = O("PredictBase") or 0.10
             local amp  = O("PredictAmp")  or 0.15
-            local speedNorm = math.clamp(v.vel.Magnitude / Strafe.CONF.predMaxSpeed, 0, 1)
-            pos = pos + v.vel * (base + amp * speedNorm)
+            pos = pos + vel * (base + amp * Strafe.confidence(plr))
         end
         return pos
     end
@@ -1801,13 +1809,25 @@ return function(require, LIP, Lib)
             Spoof.camToChar(cam)
         end
         LIP.awGrabbing = false
-        task.wait(0.15)
-        -- AUTO-EQUIPAR el arma recién agarrada (el op12 la manda al Backpack → equiparla al personaje)
-        do
-            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        -- AUTO-EQUIPAR: el op12 manda el arma al Backpack ASYNC (server→cliente), NO instantáneo → POLLEAR hasta
+        -- que aparezca (~1.2s max) en vez de un check FIJO a 0.15s (perdía la carrera cuando el server tardaba
+        -- = por qué el equip "dejó de funcionar"). Al aparecer: EquipTool + reintento hasta que quede hija del
+        -- Character (EquipTool puede no pegar al primer intento si el humanoide está ocupado).
+        local hum, t
+        local deadline = os.clock() + 1.2
+        repeat
+            hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
             local bp = LP:FindFirstChild("Backpack")
-            local t = (bp and bp:FindFirstChild(name)) or (LP.Character and LP.Character:FindFirstChild(name))
-            if hum and t and t:IsA("Tool") then pcall(function() hum:EquipTool(t) end) end
+            t = (bp and bp:FindFirstChild(name)) or (LP.Character and LP.Character:FindFirstChild(name))
+            if hum and t and t:IsA("Tool") then break end
+            task.wait()
+        until os.clock() > deadline
+        if hum and t and t:IsA("Tool") then
+            for _ = 1, 3 do
+                if t.Parent == LP.Character then break end   -- ya equipada
+                pcall(function() hum:EquipTool(t) end)
+                task.wait(0.06)
+            end
         end
         return (model.Parent == nil) or (AutoWeapons.have({ name }) ~= nil)
     end
@@ -1821,10 +1841,37 @@ return function(require, LIP, Lib)
         if LIP.Library and LIP.Library.Notify then LIP.Library:Notify({ Title = title, Description = desc, Time = 4 }) end
     end
 
+    -- FAST RE-GRAB (evento, no poll): detectá el instante en que te quitan la tool (Character/Backpack
+    -- ChildRemoved) → si sale una SELECCIONADA y ya NO tengo ninguna → re-grab YA (nextRun=0), sin esperar
+    -- el poll de 1s. Un unequip normal (Character→Backpack) NO dispara: have() te ve la del Backpack.
+    local watchConns = {}
+    local function armUnequipWatch()
+        for _, c in ipairs(watchConns) do pcall(function() c:Disconnect() end) end
+        watchConns = {}
+        local function onRemoved(inst)
+            if not (inst and inst:IsA("Tool")) then return end
+            local set = AutoWeapons._selSet
+            if not (set and set[inst.Name]) then return end
+            task.defer(function()   -- dejá asentar el reparent antes de re-chequear have()
+                if AutoWeapons._selList and not AutoWeapons.have(AutoWeapons._selList) then AutoWeapons.nextRun = 0 end
+            end)
+        end
+        local ch = LP.Character
+        if ch then watchConns[#watchConns + 1] = ch.ChildRemoved:Connect(onRemoved) end
+        local bp = LP:FindFirstChild("Backpack")
+        if bp then watchConns[#watchConns + 1] = bp.ChildRemoved:Connect(onRemoved) end
+    end
+    LP.CharacterAdded:Connect(function() task.wait(0.3); armUnequipWatch() end)
+    task.defer(armUnequipWatch)
+
     -- DRIVER (llamado por main con throttle). Si no tengo ninguna seleccionada, busco pickup y lo agarro.
     AutoWeapons.busy = false
     AutoWeapons.nextRun = 0
     function AutoWeapons.tick(names, posSpoof)
+        if names and #names > 0 then                          -- guardá la selección viva (la lee el watcher)
+            AutoWeapons._selList = names
+            local s = {}; for _, n in ipairs(names) do s[n] = true end; AutoWeapons._selSet = s
+        end
         if AutoWeapons.busy or not names or #names == 0 then return end
         local now = os.clock()
         if now < AutoWeapons.nextRun then return end
@@ -2925,6 +2972,8 @@ return function(require, LIP, Lib)
             Callback = function() Strafe.pickCrosshair() end })
         ts:AddButton("Clear Target", function() Strafe.clearManual() end)
         ts:AddToggle("Spectate", { Text = "Spectate Target", Default = false })
+        ts:AddKeybind("SpectateKey", { Text = "Spectate Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Spectate; if t then t:SetValue(a) end end })
 
         local sp = RS:AddPanel("Server Position", { Column = 3 })
         sp:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
@@ -2968,7 +3017,9 @@ return function(require, LIP, Lib)
         rm:AddSlider("PredictBase", { Text = "Predict Base", Min = 0, Max = 0.4, Default = 0.10, Decimals = 2, Suffix = "s",
             Tooltip = "Lead constante (comp de ping), aplicado aún quieto" })
         rm:AddSlider("PredictAmp", { Text = "Predict Amp", Min = 0, Max = 0.4, Default = 0.15, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead extra que escala con la velocidad del target" })
+            Tooltip = "Lead extra (tiempo) modulado por la CONFIANZA del movimiento: smooth/lineal=full, random=~0" })
+        rm:AddSlider("LeadCap", { Text = "Lead Cap", Min = 60, Max = 1000, Default = 400, Suffix = "st/s",
+            Tooltip = "Tope de velocidad para el lead (CAP, no zero). Subir para fast movers (fly/vehículo ~300+). El void ya está guarded aparte." })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
         rm:AddSlider("HistMax", { Text = "Sample Cap", Min = 60, Max = 500, Default = 200, Suffix = " smp",
@@ -3424,8 +3475,22 @@ return function(require, LIP, Lib)
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
         end
 
-        -- spectator (override de cámara al target manual)
-        if T.Spectate and T.Spectate.Value then Strafe.spectate(cam) end
+        -- spectator: cámara al humanoide del target manual. CLEANUP: si Spectate off O no hay target válido →
+        -- restaurar CameraSubject a tu propio humanoide (si no, la cámara queda pegada al target al apagar
+        -- Spectate / Target Strafe). Salvo en desync/weld: ahí la cámara la maneja Spoof (no pisar).
+        do
+            local specHum
+            if T.Spectate and T.Spectate.Value then
+                local tp = Strafe.manualPlayer(); local tc = tp and tp.Character
+                specHum = tc and tc:FindFirstChildOfClass("Humanoid")
+            end
+            if specHum then
+                pcall(function() if cam.CameraSubject ~= specHum then cam.CameraSubject = specHum end end)
+            elseif not (LIP.spoofOn or LIP.connRep) then
+                local myHum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+                if myHum and cam.CameraSubject ~= myHum then pcall(function() cam.CameraSubject = myHum end) end
+            end
+        end
 
         -- auto/rapid fire (op14 directo con ammo tracking; funciona ragdolleado)
         Weapon.tickAuto()

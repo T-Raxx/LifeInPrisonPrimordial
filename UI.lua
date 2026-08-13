@@ -92,6 +92,8 @@ return function(require, LIP, Lib)
             Callback = function() Strafe.pickCrosshair() end })
         ts:AddButton("Clear Target", function() Strafe.clearManual() end)
         ts:AddToggle("Spectate", { Text = "Spectate Target", Default = false })
+        ts:AddKeybind("SpectateKey", { Text = "Spectate Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Spectate; if t then t:SetValue(a) end end })
 
         local sp = RS:AddPanel("Server Position", { Column = 3 })
         sp:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
@@ -135,7 +137,9 @@ return function(require, LIP, Lib)
         rm:AddSlider("PredictBase", { Text = "Predict Base", Min = 0, Max = 0.4, Default = 0.10, Decimals = 2, Suffix = "s",
             Tooltip = "Lead constante (comp de ping), aplicado aún quieto" })
         rm:AddSlider("PredictAmp", { Text = "Predict Amp", Min = 0, Max = 0.4, Default = 0.15, Decimals = 2, Suffix = "s",
-            Tooltip = "Lead extra que escala con la velocidad del target" })
+            Tooltip = "Lead extra (tiempo) modulado por la CONFIANZA del movimiento: smooth/lineal=full, random=~0" })
+        rm:AddSlider("LeadCap", { Text = "Lead Cap", Min = 60, Max = 1000, Default = 400, Suffix = "st/s",
+            Tooltip = "Tope de velocidad para el lead (CAP, no zero). Subir para fast movers (fly/vehículo ~300+). El void ya está guarded aparte." })
         rm:AddToggle("FireResolved", { Text = "Fire on Resolved", Default = false,
             Tooltip = "Autofire dispara a la pos RESUELTA (didDefensive). RIESGO HBE. OFF = HBE-safe." })
         rm:AddSlider("HistMax", { Text = "Sample Cap", Min = 60, Max = 500, Default = 200, Suffix = " smp",

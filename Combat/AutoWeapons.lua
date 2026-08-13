@@ -89,13 +89,25 @@ return function(require, LIP, Lib)
             Spoof.camToChar(cam)
         end
         LIP.awGrabbing = false
-        task.wait(0.15)
-        -- AUTO-EQUIPAR el arma recién agarrada (el op12 la manda al Backpack → equiparla al personaje)
-        do
-            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        -- AUTO-EQUIPAR: el op12 manda el arma al Backpack ASYNC (server→cliente), NO instantáneo → POLLEAR hasta
+        -- que aparezca (~1.2s max) en vez de un check FIJO a 0.15s (perdía la carrera cuando el server tardaba
+        -- = por qué el equip "dejó de funcionar"). Al aparecer: EquipTool + reintento hasta que quede hija del
+        -- Character (EquipTool puede no pegar al primer intento si el humanoide está ocupado).
+        local hum, t
+        local deadline = os.clock() + 1.2
+        repeat
+            hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
             local bp = LP:FindFirstChild("Backpack")
-            local t = (bp and bp:FindFirstChild(name)) or (LP.Character and LP.Character:FindFirstChild(name))
-            if hum and t and t:IsA("Tool") then pcall(function() hum:EquipTool(t) end) end
+            t = (bp and bp:FindFirstChild(name)) or (LP.Character and LP.Character:FindFirstChild(name))
+            if hum and t and t:IsA("Tool") then break end
+            task.wait()
+        until os.clock() > deadline
+        if hum and t and t:IsA("Tool") then
+            for _ = 1, 3 do
+                if t.Parent == LP.Character then break end   -- ya equipada
+                pcall(function() hum:EquipTool(t) end)
+                task.wait(0.06)
+            end
         end
         return (model.Parent == nil) or (AutoWeapons.have({ name }) ~= nil)
     end
@@ -109,10 +121,37 @@ return function(require, LIP, Lib)
         if LIP.Library and LIP.Library.Notify then LIP.Library:Notify({ Title = title, Description = desc, Time = 4 }) end
     end
 
+    -- FAST RE-GRAB (evento, no poll): detectá el instante en que te quitan la tool (Character/Backpack
+    -- ChildRemoved) → si sale una SELECCIONADA y ya NO tengo ninguna → re-grab YA (nextRun=0), sin esperar
+    -- el poll de 1s. Un unequip normal (Character→Backpack) NO dispara: have() te ve la del Backpack.
+    local watchConns = {}
+    local function armUnequipWatch()
+        for _, c in ipairs(watchConns) do pcall(function() c:Disconnect() end) end
+        watchConns = {}
+        local function onRemoved(inst)
+            if not (inst and inst:IsA("Tool")) then return end
+            local set = AutoWeapons._selSet
+            if not (set and set[inst.Name]) then return end
+            task.defer(function()   -- dejá asentar el reparent antes de re-chequear have()
+                if AutoWeapons._selList and not AutoWeapons.have(AutoWeapons._selList) then AutoWeapons.nextRun = 0 end
+            end)
+        end
+        local ch = LP.Character
+        if ch then watchConns[#watchConns + 1] = ch.ChildRemoved:Connect(onRemoved) end
+        local bp = LP:FindFirstChild("Backpack")
+        if bp then watchConns[#watchConns + 1] = bp.ChildRemoved:Connect(onRemoved) end
+    end
+    LP.CharacterAdded:Connect(function() task.wait(0.3); armUnequipWatch() end)
+    task.defer(armUnequipWatch)
+
     -- DRIVER (llamado por main con throttle). Si no tengo ninguna seleccionada, busco pickup y lo agarro.
     AutoWeapons.busy = false
     AutoWeapons.nextRun = 0
     function AutoWeapons.tick(names, posSpoof)
+        if names and #names > 0 then                          -- guardá la selección viva (la lee el watcher)
+            AutoWeapons._selList = names
+            local s = {}; for _, n in ipairs(names) do s[n] = true end; AutoWeapons._selSet = s
+        end
         if AutoWeapons.busy or not names or #names == 0 then return end
         local now = os.clock()
         if now < AutoWeapons.nextRun then return end
