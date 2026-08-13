@@ -44,8 +44,8 @@ return function(require, LIP, Lib)
             Tooltip = "Stream de op14 mientras mantenés mouse1, CAPEADO al firerate del arma (exceder = unequip). El daño extra viene del Bullet Multiplier, no de disparar más rápido." })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
             Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON. Capeado al firerate." })
-        c2:AddSlider("AutoFireRate", { Text = "Fire Rate Cap", Min = 1, Max = 120, Default = 120, Suffix = "/s",
-            Tooltip = "TOPE manual opcional. El autofire ya obedece el firerate REAL del arma (mantené mouse1 1 vez para calibrarlo). Bajá esto solo si querés disparar más lento. El DPS lo da el Bullet Multiplier." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate Cap", Min = 0.5, Max = 30, Default = 30, Decimals = 2, Suffix = "/s",
+            Tooltip = "TOPE de disparos/s (con DECIMALES: p/ SPAS ~1.42/s). El autofire capea a min(firerate observado, esto). Bajá para escopetas lentas (evita unequip). Cap máx 30/s." })
         c2:AddToggle("AutoReload", { Text = "Auto Reload", Default = true,
             Tooltip = "Recarga sola al agotar el cargador (op42→espera ReloadTime→op40, timing real). Solo en Auto Fire." })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })
@@ -65,7 +65,9 @@ return function(require, LIP, Lib)
         vd:AddSlider("VoidInTime", { Text = "In Void", Min = 0.1, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s",
             Tooltip = "Tiempo escondido en el void (disparo pausado)" })
         vd:AddSlider("VoidOutTime", { Text = "Out Void", Min = 0.1, Max = 2, Default = 0.3, Decimals = 2, Suffix = "s",
-            Tooltip = "Tiempo en tu pos real (disparás desde acá)" })
+            Tooltip = "Tiempo en tu pos real (disparás desde acá). Con Auto Time ON, es lo ÚNICO que seteás." })
+        vd:AddToggle("VoidAutoTime", { Text = "Auto Time (per weapon)", Default = true,
+            Tooltip = "In Void = auto según el firerate del arma equipada (1 disparo por ciclo). Solo Out Void configurable. OFF = usa el slider In Void manual." })
         vd:AddToggle("VoidShootOut", { Text = "Shoot Out Only", Default = true,
             Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
@@ -163,6 +165,9 @@ return function(require, LIP, Lib)
         rm:AddSlider("RRAccuracy", { Text = "Accuracy", Min = 0, Max = 1, Default = 0.5, Decimals = 2,
             Tooltip = "Min resolver confidence to fire (0 = off, higher = holds fire on shaky resolves)",
             Callback = function() end })
+        rm:AddSlider("VoidRange", { Text = "Void Range", Min = 7000, Max = 500000, Default = 50000, Suffix = "st",
+            Tooltip = "Umbral |x|+|z| para tratar una pos como VOID (confianza 0). El void-spam real va a ~9e5; subilo si un target LEJOS legítimo (12k+) no se resuelve. Bajalo si querés detectar void más cerca.",
+            Callback = function(v) if CONF then CONF.voidManhattan = v end end })
         rm:AddSlider("CwDom", { Text = "W: Dominance", Min = 0, Max = 1, Default = 0.45, Decimals = 2,
             Callback = function(v) if CONF then CONF.wDom = v end end })
         rm:AddSlider("CwStab", { Text = "W: Stability", Min = 0, Max = 1, Default = 0.35, Decimals = 2,

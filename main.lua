@@ -243,7 +243,17 @@ return function(require, LIP, Lib)
                                   resolveMethod = O.ResolverMethod.Value }
                 if voidSpamOn then
                     -- VOID SPAM sobre el strafe: OUT = strafe-orbit (dispara), IN = void (esconde); force-void en reload
-                    local phase = Void.voidStep({ inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
+                    -- AUTO TIME (por arma): el ciclo IN+OUT = período del firerate del arma → 1 disparo por ciclo.
+                    -- OUT = ventana de disparo (slider, lo único configurable); IN = resto del período (auto).
+                    local outT = O.VoidOutTime.Value
+                    local inT
+                    if T.VoidAutoTime and T.VoidAutoTime.Value then
+                        local period = math.max(LIP.observedFirerate or 0, 1 / math.max(O.AutoFireRate.Value or 30, 0.01))
+                        inT = math.max(0.05, period - outT)
+                    else
+                        inT = O.VoidInTime.Value
+                    end
+                    local phase = Void.voidStep({ inTime = inT, outTime = outT,
                                                   voidReload = T.VoidReload and T.VoidReload.Value })
                     if phase == "out" then
                         Strafe.tick(st, strafeOpts)

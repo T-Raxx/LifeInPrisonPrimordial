@@ -210,13 +210,15 @@ return function(require, LIP, Lib)
         -- AUTOFIRE: NO disparar sin un target válido cacheado → si no, buildBullet raycastea la cámara y
         -- salen balas al vacío (tracers rojos = no registran). RapidFire (mouse1) sí dispara a la mira.
         if autoOn and not rapidOn and not LIP.cachedHitPart then LIP.fireAccum = 0; lastTick = now; return end
+        -- MARGEN = 1.00 (neutro): el usuario probó en vivo que 0.99 (más rápido) casi no unequipa pero 1.06
+        -- (más lento) SÍ te quita el arma → firar EXACTO al firerate observado, ni más rápido ni más lento.
         local rate
         if LIP.observedFirerate and LIP.observedFirerate > 0.01 then
-            rate = 1 / (LIP.observedFirerate * 0.99)
+            rate = 1 / LIP.observedFirerate
         else
-            rate = 8
+            rate = 8   -- sin calibrar (arma recién equipada): rate seguro; el usuario bajá AutoFireRate p/ escopetas
         end
-        rate = math.min(rate, O("AutoFireRate") or 120)
+        rate = math.min(rate, O("AutoFireRate") or 30)
         -- CONFIDENCE GATE (solo con Resolver on): escala el firerate efectivo por la confianza fusionada.
         -- conf < floor (slider Accuracy) → m=0 = aguanta fuego; floor..floor+0.3 → goteo eased (smoothstep); arriba → full.
         local m = 1

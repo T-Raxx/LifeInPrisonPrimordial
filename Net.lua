@@ -44,7 +44,11 @@ return function(require, LIP, Lib)
                         local now = os.clock()
                         if D._lastRealShot then
                             local dt = now - D._lastRealShot
-                            if dt > 0.02 and dt < 2 then D.observedFirerate = dt end
+                            -- FLOOR 0.07s (era 0.02): un dt < 70ms NO es un firerate real — es un pellet-burst de
+                            -- escopeta (SPAS/DB manda N op14 juntos) o un doble-click. Aprenderlo envenenaba
+                            -- observedFirerate a 20-50/s → el autoshoot disparaba rapidísimo → unequip por el
+                            -- "1 disparo manual rompe todo". Rechazamos los gaps espurios.
+                            if dt > 0.07 and dt < 2 then D.observedFirerate = dt end
                         end
                         D._lastRealShot = now
                     end

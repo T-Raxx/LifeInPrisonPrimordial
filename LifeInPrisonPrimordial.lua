@@ -131,7 +131,11 @@ return function(require, LIP, Lib)
                         local now = os.clock()
                         if D._lastRealShot then
                             local dt = now - D._lastRealShot
-                            if dt > 0.02 and dt < 2 then D.observedFirerate = dt end
+                            -- FLOOR 0.07s (era 0.02): un dt < 70ms NO es un firerate real — es un pellet-burst de
+                            -- escopeta (SPAS/DB manda N op14 juntos) o un doble-click. Aprenderlo envenenaba
+                            -- observedFirerate a 20-50/s → el autoshoot disparaba rapidísimo → unequip por el
+                            -- "1 disparo manual rompe todo". Rechazamos los gaps espurios.
+                            if dt > 0.07 and dt < 2 then D.observedFirerate = dt end
                         end
                         D._lastRealShot = now
                     end
@@ -740,7 +744,7 @@ return function(require, LIP, Lib)
     -- la pos real (jitter de pocos studs) acumula vecinos. El radio ENCOGE con la distancia = resolución far.
     Strafe.DEN = { forgiveness = 14.4, outOfVoidBonus = 13, distPenalty = 3.2, minMatches = 3, window = 3.0, voidManhattan = 7000 }
     -- CONFIANZA DE DISPARO fusionada: pesos + umbrales (todo live-tuneable). wDom+wStab+wResid = 1.0.
-    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 3, voidManhattan = 7000,
+    Strafe.CONF = { wDom = 0.45, wStab = 0.35, wResid = 0.20, stabThresh = 25, stabK = 3, voidManhattan = 50000,
                     predMaxSpeed = 60, hcWindow = 0.35, hcRate = 0.10, hcRelax = 0.40,
                     revisitBonus = 0.30, revisitMin = 4, revisitScale = 8, backtrackWindow = 0.15, histMax = 200,
                     chaseAmp = 10, chaseFreq = 2.5, ampMin = 6, ampMax = 30, freqMin = 0.5, freqMax = 4.0,
@@ -1468,13 +1472,15 @@ return function(require, LIP, Lib)
         -- AUTOFIRE: NO disparar sin un target válido cacheado → si no, buildBullet raycastea la cámara y
         -- salen balas al vacío (tracers rojos = no registran). RapidFire (mouse1) sí dispara a la mira.
         if autoOn and not rapidOn and not LIP.cachedHitPart then LIP.fireAccum = 0; lastTick = now; return end
+        -- MARGEN = 1.00 (neutro): el usuario probó en vivo que 0.99 (más rápido) casi no unequipa pero 1.06
+        -- (más lento) SÍ te quita el arma → firar EXACTO al firerate observado, ni más rápido ni más lento.
         local rate
         if LIP.observedFirerate and LIP.observedFirerate > 0.01 then
-            rate = 1 / (LIP.observedFirerate * 0.99)
+            rate = 1 / LIP.observedFirerate
         else
-            rate = 8
+            rate = 8   -- sin calibrar (arma recién equipada): rate seguro; el usuario bajá AutoFireRate p/ escopetas
         end
-        rate = math.min(rate, O("AutoFireRate") or 120)
+        rate = math.min(rate, O("AutoFireRate") or 30)
         -- CONFIDENCE GATE (solo con Resolver on): escala el firerate efectivo por la confianza fusionada.
         -- conf < floor (slider Accuracy) → m=0 = aguanta fuego; floor..floor+0.3 → goteo eased (smoothstep); arriba → full.
         local m = 1
@@ -2924,8 +2930,8 @@ return function(require, LIP, Lib)
             Tooltip = "Stream de op14 mientras mantenés mouse1, CAPEADO al firerate del arma (exceder = unequip). El daño extra viene del Bullet Multiplier, no de disparar más rápido." })
         c2:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
             Tooltip = "Dispara al target auto (sin click). SOLO con Target Strafe ON. Capeado al firerate." })
-        c2:AddSlider("AutoFireRate", { Text = "Fire Rate Cap", Min = 1, Max = 120, Default = 120, Suffix = "/s",
-            Tooltip = "TOPE manual opcional. El autofire ya obedece el firerate REAL del arma (mantené mouse1 1 vez para calibrarlo). Bajá esto solo si querés disparar más lento. El DPS lo da el Bullet Multiplier." })
+        c2:AddSlider("AutoFireRate", { Text = "Fire Rate Cap", Min = 0.5, Max = 30, Default = 30, Decimals = 2, Suffix = "/s",
+            Tooltip = "TOPE de disparos/s (con DECIMALES: p/ SPAS ~1.42/s). El autofire capea a min(firerate observado, esto). Bajá para escopetas lentas (evita unequip). Cap máx 30/s." })
         c2:AddToggle("AutoReload", { Text = "Auto Reload", Default = true,
             Tooltip = "Recarga sola al agotar el cargador (op42→espera ReloadTime→op40, timing real). Solo en Auto Fire." })
         c2:AddSlider("FireRange", { Text = "Fire Range", Min = 20, Max = 500, Default = 200, Suffix = "studs" })
@@ -2945,7 +2951,9 @@ return function(require, LIP, Lib)
         vd:AddSlider("VoidInTime", { Text = "In Void", Min = 0.1, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s",
             Tooltip = "Tiempo escondido en el void (disparo pausado)" })
         vd:AddSlider("VoidOutTime", { Text = "Out Void", Min = 0.1, Max = 2, Default = 0.3, Decimals = 2, Suffix = "s",
-            Tooltip = "Tiempo en tu pos real (disparás desde acá)" })
+            Tooltip = "Tiempo en tu pos real (disparás desde acá). Con Auto Time ON, es lo ÚNICO que seteás." })
+        vd:AddToggle("VoidAutoTime", { Text = "Auto Time (per weapon)", Default = true,
+            Tooltip = "In Void = auto según el firerate del arma equipada (1 disparo por ciclo). Solo Out Void configurable. OFF = usa el slider In Void manual." })
         vd:AddToggle("VoidShootOut", { Text = "Shoot Out Only", Default = true,
             Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
@@ -3043,6 +3051,9 @@ return function(require, LIP, Lib)
         rm:AddSlider("RRAccuracy", { Text = "Accuracy", Min = 0, Max = 1, Default = 0.5, Decimals = 2,
             Tooltip = "Min resolver confidence to fire (0 = off, higher = holds fire on shaky resolves)",
             Callback = function() end })
+        rm:AddSlider("VoidRange", { Text = "Void Range", Min = 7000, Max = 500000, Default = 50000, Suffix = "st",
+            Tooltip = "Umbral |x|+|z| para tratar una pos como VOID (confianza 0). El void-spam real va a ~9e5; subilo si un target LEJOS legítimo (12k+) no se resuelve. Bajalo si querés detectar void más cerca.",
+            Callback = function(v) if CONF then CONF.voidManhattan = v end end })
         rm:AddSlider("CwDom", { Text = "W: Dominance", Min = 0, Max = 1, Default = 0.45, Decimals = 2,
             Callback = function(v) if CONF then CONF.wDom = v end end })
         rm:AddSlider("CwStab", { Text = "W: Stability", Min = 0, Max = 1, Default = 0.35, Decimals = 2,
@@ -3455,7 +3466,17 @@ return function(require, LIP, Lib)
                                   resolveMethod = O.ResolverMethod.Value }
                 if voidSpamOn then
                     -- VOID SPAM sobre el strafe: OUT = strafe-orbit (dispara), IN = void (esconde); force-void en reload
-                    local phase = Void.voidStep({ inTime = O.VoidInTime.Value, outTime = O.VoidOutTime.Value,
+                    -- AUTO TIME (por arma): el ciclo IN+OUT = período del firerate del arma → 1 disparo por ciclo.
+                    -- OUT = ventana de disparo (slider, lo único configurable); IN = resto del período (auto).
+                    local outT = O.VoidOutTime.Value
+                    local inT
+                    if T.VoidAutoTime and T.VoidAutoTime.Value then
+                        local period = math.max(LIP.observedFirerate or 0, 1 / math.max(O.AutoFireRate.Value or 30, 0.01))
+                        inT = math.max(0.05, period - outT)
+                    else
+                        inT = O.VoidInTime.Value
+                    end
+                    local phase = Void.voidStep({ inTime = inT, outTime = outT,
                                                   voidReload = T.VoidReload and T.VoidReload.Value })
                     if phase == "out" then
                         Strafe.tick(st, strafeOpts)
