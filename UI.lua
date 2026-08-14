@@ -13,6 +13,7 @@ return function(require, LIP, Lib)
         local Void    = require("Movement.Void")
         local Util    = require("Combat.Utility")
         local AutoWeapons = require("Combat.AutoWeapons")
+        local Roadkill = require("Movement.Roadkill")
         local HitFX   = require("Visuals.HitEffects")
 
         --========================= RAGE =========================--
@@ -320,6 +321,18 @@ return function(require, LIP, Lib)
         v3:AddToggle("AutoArrest", { Text = "Auto Arrest (op57)", Default = false,
             Tooltip = "Esposa al enemigo cercano (necesita Handcuffs; Police). Validación 8-studs es client-side" })
         v3:AddButton("Detonate C4 (op44)", function() Niche.detonateC4() end)
+
+        -- EXPERIMENTAL: roadkill (server-side collision vehículo↔jugador). Varios métodos, disparo manual.
+        local RK = Misc:AddSection("Experimental · Roadkill", "Embestir un target con vehículo/cuerpo owneado (server-side collision)", { Columns = 1 })
+        local rk1 = RK:AddPanel("Roadkill", { Column = 1 })
+        rk1:AddDropdown("RKMethod", { Text = "Method", Values = { "PhysRep", "VehicleRam", "SelfPhysRep", "BringTarget" }, Default = "PhysRep",
+            Tooltip = "PhysRep = connection weld del vehículo al target (sin auto-fling, el más prometedor). VehicleRam = teleport+velocidad (te flingea). SelfPhysRep = tu cuerpo como proyectil. BringTarget = escribir la CFrame del target (dudoso, no lo owneás)." })
+        rk1:AddSlider("RKVelocity", { Text = "Velocity", Min = 100, Max = 5000, Default = 800, Suffix = "st/s",
+            Tooltip = "Velocidad de la embestida. Roadkill server-side suele tener umbral de velocidad." })
+        rk1:AddSlider("RKDuration", { Text = "Duration", Min = 0.1, Max = 2, Default = 0.5, Decimals = 2, Suffix = "s",
+            Tooltip = "Cuánto dura el ram sostenido (la colisión necesita contacto en movimiento varios frames)." })
+        rk1:AddKeybind("RKKey", { Text = "Roadkill Key", Mode = "Toggle", Callback = function() Roadkill.fire() end })
+        rk1:AddButton("Fire Roadkill", function() Roadkill.fire() end)
 
         -- Auto Weapons: teleport a un pickup suelto + grab (op12) + volver. Multi-select con búsqueda.
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })
