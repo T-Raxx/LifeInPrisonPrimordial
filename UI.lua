@@ -73,6 +73,8 @@ return function(require, LIP, Lib)
             Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
             Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
+        vd:AddToggle("AntiDelta", { Text = "Anti Delta", Default = false,
+            Tooltip = "Mueve el origen del void al KILL PLANE (FallenPartsDestroyHeight) → todos los patrones pasan por ahí. Un delteo que te weldea/dragea cae bajo el plane = destruido. REQUIERE Pos Spoof (sin él te teleportás crudo y morís vos)." })
         vd:AddList("VoidPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Jitter",
             Tooltip = "Non-pattern (Random/Teleport) = unpredecible pero PROMEDIABLE. Pattern (Jitter/StaticBreak) = anti-centroide. Nebula = far↔map a distancias RIDÍCULAS (300M ↔ spots random del mapa estáticos/jitter): irresolvible." })
         vd:AddSlider("VoidDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",

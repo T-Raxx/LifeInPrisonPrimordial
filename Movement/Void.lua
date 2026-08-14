@@ -36,6 +36,14 @@ return function(require, LIP, Lib)
     local nebT, nebPhase, nebSpot, nebFar, nebStatic = 0, "far", nil, nil, true
     local function patternCF(anchor, dist, pattern)
         anchor = anchor or ORIGIN
+        -- ANTI-DELTA: mueve el origen al KILL PLANE (FallenPartsDestroyHeight) → todos los patrones pasan por ahí.
+        -- Con Pos Spoof (cuerpo real arriba, safe) el server te ve al borde del kill plane; un delteo que te
+        -- weldea/dragea cae bajo el plane = destruido. Requiere Pos Spoof (sin él te teleportás crudo y morís vos).
+        local antiDelta = T("AntiDelta")
+        if antiDelta then
+            local killY = (Workspace.FallenPartsDestroyHeight or -500) + 3   -- justo ARRIBA del plane (vos safe)
+            anchor = Vector3.new(anchor.X, killY, anchor.Z)
+        end
         local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)   -- anti-aim rotacional XYZ
         local now = os.clock()
         local off
@@ -88,7 +96,7 @@ return function(require, LIP, Lib)
             off = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist)
         end
         local pos = anchor + off
-        if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío (mata)
+        if not antiDelta and pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío (salvo anti-delta, que VA al kill plane)
         return CFrame.new(pos) * rot
     end
     Void.patternCF = patternCF   -- expuesto para CFrame Desync (reusa con anchor = pos real)

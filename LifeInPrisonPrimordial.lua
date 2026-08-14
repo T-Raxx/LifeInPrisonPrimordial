@@ -2259,6 +2259,14 @@ return function(require, LIP, Lib)
     local nebT, nebPhase, nebSpot, nebFar, nebStatic = 0, "far", nil, nil, true
     local function patternCF(anchor, dist, pattern)
         anchor = anchor or ORIGIN
+        -- ANTI-DELTA: mueve el origen al KILL PLANE (FallenPartsDestroyHeight) → todos los patrones pasan por ahí.
+        -- Con Pos Spoof (cuerpo real arriba, safe) el server te ve al borde del kill plane; un delteo que te
+        -- weldea/dragea cae bajo el plane = destruido. Requiere Pos Spoof (sin él te teleportás crudo y morís vos).
+        local antiDelta = T("AntiDelta")
+        if antiDelta then
+            local killY = (Workspace.FallenPartsDestroyHeight or -500) + 3   -- justo ARRIBA del plane (vos safe)
+            anchor = Vector3.new(anchor.X, killY, anchor.Z)
+        end
         local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)   -- anti-aim rotacional XYZ
         local now = os.clock()
         local off
@@ -2311,7 +2319,7 @@ return function(require, LIP, Lib)
             off = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist)
         end
         local pos = anchor + off
-        if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío (mata)
+        if not antiDelta and pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío (salvo anti-delta, que VA al kill plane)
         return CFrame.new(pos) * rot
     end
     Void.patternCF = patternCF   -- expuesto para CFrame Desync (reusa con anchor = pos real)
@@ -3522,6 +3530,8 @@ return function(require, LIP, Lib)
             Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
             Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
+        vd:AddToggle("AntiDelta", { Text = "Anti Delta", Default = false,
+            Tooltip = "Mueve el origen del void al KILL PLANE (FallenPartsDestroyHeight) → todos los patrones pasan por ahí. Un delteo que te weldea/dragea cae bajo el plane = destruido. REQUIERE Pos Spoof (sin él te teleportás crudo y morís vos)." })
         vd:AddList("VoidPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Jitter",
             Tooltip = "Non-pattern (Random/Teleport) = unpredecible pero PROMEDIABLE. Pattern (Jitter/StaticBreak) = anti-centroide. Nebula = far↔map a distancias RIDÍCULAS (300M ↔ spots random del mapa estáticos/jitter): irresolvible." })
         vd:AddSlider("VoidDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
