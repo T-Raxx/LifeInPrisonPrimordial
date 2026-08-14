@@ -94,6 +94,18 @@ return function(require, LIP, Lib)
         cfd:AddSlider("CFDDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
             Tooltip = "Radio del jitter alrededor de tu pos real (Random/Jitter/StaticBreak). Nebula usa Far Dist/Map Radius del panel Void." })
 
+        local tmr = RS:AddPanel("Timer", { Column = 2 })
+        tmr:AddToggle("Timer", { Text = "Timer", Default = false,
+            Tooltip = "Acelera tu simulación (StepPhysics) → time() más rápido → rapidfire + reload rápido LEGAL (única rapidfire viable; op14-spam = unequip). Causa FPS drops + lag de replicación (combatir con spam de tiros + Connection Weld)." })
+        tmr:AddKeybind("TimerKey", { Text = "Timer Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Timer; if t then t:SetValue(a) end end })
+        tmr:AddSlider("TimerStatic", { Text = "Static Mult", Min = 1, Max = 3, Default = 1, Decimals = 2, Suffix = "x",
+            Tooltip = "Mult constante cuando NO estás en Void Spam. 1 = off." })
+        tmr:AddSlider("TimerOut", { Text = "Out Mult", Min = 1, Max = 3, Default = 2, Decimals = 2, Suffix = "x",
+            Tooltip = "Mult DINÁMICO en la ventana OUT del Void Spam (rapidfire mientras disparás). In Void = 1x (escondido, sin acelerar → replicación normal del hide)." })
+        tmr:AddSlider("TimerReload", { Text = "Reload Mult", Min = 1, Max = 3, Default = 2, Decimals = 2, Suffix = "x",
+            Tooltip = "Mult mientras recargás (override, puede pasar in-void con Void Reload). Recarga rápida." })
+
         --== Col 3: Target Strafe + Server Position ==--
         local ts = RS:AddPanel("Target Strafe", { Column = 3 })
         ts:AddToggle("TargetStrafe", { Text = "Target Strafe", Default = false,

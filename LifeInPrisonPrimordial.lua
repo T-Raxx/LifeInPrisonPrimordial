@@ -2573,6 +2573,73 @@ return function(require, LIP, Lib)
 end
 
 end)()
+_MODS["Movement.Timer"] = (function()
+-- Movement/Timer.lua — FACTORY. Game-speed timer (idéntico al de Minecraft/vape): acelera la SIMULACIÓN local
+-- vía StepPhysics selectivo sobre tu rootpart → tu time() avanza más rápido → el fire loop del arma
+-- (`if firerate <= time()-lastfire`) y el reload (ambos time()-based) clarean más rápido en tiempo REAL →
+-- rapidfire + reload rápido LEGAL (GST=f22(time()) consistente, deltas legales → server acepta, sin unequip).
+-- op14-spam directo NO sirve (server valida el delta del GST → unequip). Timer = la única rapidfire viable.
+--
+-- DINÁMICO (pedido usuario): el mult depende de la fase para minimizar el lag de replicación que causa la
+-- aceleración → solo acelera en la ventana de disparo, el void te esconde durante el lag:
+--   · reloading         → TimerReload  (recarga rápida, override; puede pasar in-void con Void Reload)
+--   · void spam OUT      → TimerOut     (rapidfire en la ventana de disparo)
+--   · void spam IN       → 1            (escondido, sin acelerar → replicación normal del hide)
+--   · sin void spam      → TimerStatic  (mult manual constante)
+-- Caveats (aceptados): FPS drops por los pasos extra de física + lag de replicación (se combate con spam de
+-- tiros + Connection Weld). El AC de teleports está muerto → StepPhysics del movimiento no flaggea.
+return function(require, LIP, Lib)
+    local RunService = game:GetService("RunService")
+    local Workspace  = game:GetService("Workspace")
+    local LP = game:GetService("Players").LocalPlayer
+    local Timer = {}
+
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+
+    -- fflags necesarios para StepPhysics manual (una vez, al activar)
+    local fflagsSet = false
+    local function ensureFflags()
+        if fflagsSet then return end
+        pcall(function()
+            setfflag("SimEnableStepPhysics", "True")
+            setfflag("SimEnableStepPhysicsSelective", "True")
+        end)
+        fflagsSet = true
+    end
+
+    -- mult DINÁMICO según la fase actual (reload > void-out > void-in > static)
+    function Timer.currentMult()
+        if not T("Timer") then return 1 end
+        if LIP.reloading then return O("TimerReload") or 1 end
+        if LIP.voidSpamOn then
+            if LIP.voidPhase == "out" then return O("TimerOut") or 1
+            else return 1 end                                  -- IN void (o transición): normal, sin acelerar
+        end
+        return O("TimerStatic") or 1
+    end
+
+    function Timer.init()
+        LIP.track(RunService.RenderStepped:Connect(function(dt)
+            if not T("Timer") then return end
+            ensureFflags()
+            local mult = Timer.currentMult()
+            if not mult or mult <= 1 then return end
+            local c = LP.Character
+            local root = c and c:FindFirstChild("HumanoidRootPart")
+            if not root then return end
+            pcall(function()
+                RunService:Pause()
+                Workspace:StepPhysics(dt * (mult - 1), { root })   -- pasos extra SOLO en tu rootpart
+                RunService:Run()
+            end)
+        end))
+    end
+
+    return Timer
+end
+
+end)()
 _MODS["Visuals.ESP"] = (function()
 -- Visuals/ESP.lua — FACTORY. ESP Drawing API + Highlight (chams). Client-side puro = cero ban risk.
 -- LiF usa R6 (Head/Torso/Left Arm/Right Arm/Left Leg/Right Leg + HumanoidRootPart).
@@ -3156,6 +3223,18 @@ return function(require, LIP, Lib)
         cfd:AddSlider("CFDDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
             Tooltip = "Radio del jitter alrededor de tu pos real (Random/Jitter/StaticBreak). Nebula usa Far Dist/Map Radius del panel Void." })
 
+        local tmr = RS:AddPanel("Timer", { Column = 2 })
+        tmr:AddToggle("Timer", { Text = "Timer", Default = false,
+            Tooltip = "Acelera tu simulación (StepPhysics) → time() más rápido → rapidfire + reload rápido LEGAL (única rapidfire viable; op14-spam = unequip). Causa FPS drops + lag de replicación (combatir con spam de tiros + Connection Weld)." })
+        tmr:AddKeybind("TimerKey", { Text = "Timer Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Timer; if t then t:SetValue(a) end end })
+        tmr:AddSlider("TimerStatic", { Text = "Static Mult", Min = 1, Max = 3, Default = 1, Decimals = 2, Suffix = "x",
+            Tooltip = "Mult constante cuando NO estás en Void Spam. 1 = off." })
+        tmr:AddSlider("TimerOut", { Text = "Out Mult", Min = 1, Max = 3, Default = 2, Decimals = 2, Suffix = "x",
+            Tooltip = "Mult DINÁMICO en la ventana OUT del Void Spam (rapidfire mientras disparás). In Void = 1x (escondido, sin acelerar → replicación normal del hide)." })
+        tmr:AddSlider("TimerReload", { Text = "Reload Mult", Min = 1, Max = 3, Default = 2, Decimals = 2, Suffix = "x",
+            Tooltip = "Mult mientras recargás (override, puede pasar in-void con Void Reload). Recarga rápida." })
+
         --== Col 3: Target Strafe + Server Position ==--
         local ts = RS:AddPanel("Target Strafe", { Column = 3 })
         ts:AddToggle("TargetStrafe", { Text = "Target Strafe", Default = false,
@@ -3454,6 +3533,7 @@ return function(require, LIP, Lib)
     local Vehicle = require("Movement.Vehicle")
     local Void    = require("Movement.Void")
     local CFrameDesync = require("Movement.CFrameDesync")
+    local Timer   = require("Movement.Timer")
     local HitFX   = require("Visuals.HitEffects")
     local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
@@ -3479,6 +3559,7 @@ return function(require, LIP, Lib)
     Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
     CFrameDesync.init()  -- desync self-anchored (Spoof.init idempotente)
+    Timer.init()     -- game-speed timer (StepPhysics) → rapidfire + fast reload dinámico
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
     CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 

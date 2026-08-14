@@ -19,6 +19,7 @@ return function(require, LIP, Lib)
     local Vehicle = require("Movement.Vehicle")
     local Void    = require("Movement.Void")
     local CFrameDesync = require("Movement.CFrameDesync")
+    local Timer   = require("Movement.Timer")
     local HitFX   = require("Visuals.HitEffects")
     local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
@@ -44,6 +45,7 @@ return function(require, LIP, Lib)
     Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
     CFrameDesync.init()  -- desync self-anchored (Spoof.init idempotente)
+    Timer.init()     -- game-speed timer (StepPhysics) → rapidfire + fast reload dinámico
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
     CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 
