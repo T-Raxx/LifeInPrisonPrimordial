@@ -90,6 +90,43 @@ return function(require, LIP, Lib)
                     end)
                     task.wait()
                 end
+
+            elseif method == "WeldFling" then
+                -- FLING sin auto-fling: weld DENTRO del target (setPhysRep → server te ve en él) + velocidad al
+                -- target, y spoofeás TU velocidad a 0 cada frame → lo flingueás pero vos quedás quieto.
+                local r = myHRP(); if not r then return end
+                while os.clock() - t0 < dur do
+                    local h = tgtHRP(); if not h then break end
+                    pcall(function()
+                        Spoof.setPhysRep(h)
+                        h.AssemblyLinearVelocity = Vector3.new(0, vel, 0)   -- flinguealo (arriba)
+                        r.AssemblyLinearVelocity = Vector3.zero             -- vos quieto (no volás)
+                    end)
+                    task.wait()
+                end
+                Spoof.unweld()
+
+            elseif method == "PropFling" then
+                -- ownear la part SUELTA más cercana (prop/caja/arma) + flinguearla al target a velocidad
+                local prop, best = nil, 1e9
+                local myp = myHRP() and myHRP().Position
+                if myp then
+                    for _, d in ipairs(Workspace:GetDescendants()) do
+                        if d:IsA("BasePart") and not d.Anchored and d.AssemblyRootPart == d then
+                            local anc = d:FindFirstAncestorOfClass("Model")
+                            if not (anc and Players:GetPlayerFromCharacter(anc)) then
+                                local dd = (d.Position - myp).Magnitude
+                                if dd < best then best = dd; prop = d end
+                            end
+                        end
+                    end
+                end
+                if not prop then return notify("sin props sueltos cerca") end
+                while os.clock() - t0 < dur do
+                    local h = tgtHRP(); if not h then break end
+                    pcall(function() prop.AssemblyLinearVelocity = (h.Position - prop.Position).Unit * vel end)
+                    task.wait()
+                end
             end
         end)
     end

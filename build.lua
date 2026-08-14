@@ -21,6 +21,7 @@ local ORDER = {
     "Movement/CFrameDesync.lua",
     "Movement/Timer.lua",
     "Movement/Roadkill.lua",
+    "Movement/VelDesync.lua",
     "Visuals/ESP.lua",
     "Visuals/HitEffects.lua",
     "Visuals/CrosshairHUD.lua",

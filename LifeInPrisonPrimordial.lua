@@ -2755,11 +2755,87 @@ return function(require, LIP, Lib)
                     end)
                     task.wait()
                 end
+
+            elseif method == "WeldFling" then
+                -- FLING sin auto-fling: weld DENTRO del target (setPhysRep → server te ve en él) + velocidad al
+                -- target, y spoofeás TU velocidad a 0 cada frame → lo flingueás pero vos quedás quieto.
+                local r = myHRP(); if not r then return end
+                while os.clock() - t0 < dur do
+                    local h = tgtHRP(); if not h then break end
+                    pcall(function()
+                        Spoof.setPhysRep(h)
+                        h.AssemblyLinearVelocity = Vector3.new(0, vel, 0)   -- flinguealo (arriba)
+                        r.AssemblyLinearVelocity = Vector3.zero             -- vos quieto (no volás)
+                    end)
+                    task.wait()
+                end
+                Spoof.unweld()
+
+            elseif method == "PropFling" then
+                -- ownear la part SUELTA más cercana (prop/caja/arma) + flinguearla al target a velocidad
+                local prop, best = nil, 1e9
+                local myp = myHRP() and myHRP().Position
+                if myp then
+                    for _, d in ipairs(Workspace:GetDescendants()) do
+                        if d:IsA("BasePart") and not d.Anchored and d.AssemblyRootPart == d then
+                            local anc = d:FindFirstAncestorOfClass("Model")
+                            if not (anc and Players:GetPlayerFromCharacter(anc)) then
+                                local dd = (d.Position - myp).Magnitude
+                                if dd < best then best = dd; prop = d end
+                            end
+                        end
+                    end
+                end
+                if not prop then return notify("sin props sueltos cerca") end
+                while os.clock() - t0 < dur do
+                    local h = tgtHRP(); if not h then break end
+                    pcall(function() prop.AssemblyLinearVelocity = (h.Position - prop.Position).Unit * vel end)
+                    task.wait()
+                end
             end
         end)
     end
 
     return Roadkill
+end
+
+end)()
+_MODS["Movement.VelDesync"] = (function()
+-- Movement/VelDesync.lua — FACTORY. VELOCITY DESYNC: seteás una AssemblyLinearVelocity ENORME cada frame en
+-- dirección ALTERNADA (±) que rota lento → el server extrapola tu pos LEJOS a la tasa del replicator (network
+-- ownership) sin escribir CFrame → tu pos SERVERSIDE queda lejos/jittereando de la clientside todo el tiempo.
+-- Es el side-effect del walkfling PERO sin flingear (no colisionás con nadie: horizontal + alternado net~0
+-- clientside → no te fuiste literalmente, solo el server te ve lejos). Evasión: los enemigos te ven desyncado.
+-- Sin CFrame write → el AC de CFrame no se toca (y el de teleport está muerto). Toggle + magnitud.
+return function(require, LIP, Lib)
+    local RunService = game:GetService("RunService")
+    local Players    = game:GetService("Players")
+    local LP = Players.LocalPlayer
+    local VD = {}
+
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+
+    local seed, sign = 0, 1
+    function VD.init()
+        LIP.track(RunService.Heartbeat:Connect(function()
+            if not T("VelDesync") then return end
+            -- no pisar el desync/spoof/strafe/void (esos ya manejan la pos por CFrame)
+            if LIP.spoofOn or LIP.connRep then return end
+            local c = LP.Character
+            local root = c and c:FindFirstChild("HumanoidRootPart")
+            if not root then return end
+            local mag = O("VDMagnitude") or 5000
+            seed = seed + 0.15
+            sign = -sign
+            -- dirección HORIZONTAL rotante (golden-ish), alternando signo → net clientside ~0, el server extrapola
+            -- lejos cada frame en direcciones alternadas = serverside desyncado sin lanzarte de verdad.
+            local dir = Vector3.new(math.cos(seed), 0, math.sin(seed))
+            pcall(function() root.AssemblyLinearVelocity = dir * (mag * sign) end)
+        end))
+    end
+
+    return VD
 end
 
 end)()
@@ -3575,16 +3651,23 @@ return function(require, LIP, Lib)
         v3:AddButton("Detonate C4 (op44)", function() Niche.detonateC4() end)
 
         -- EXPERIMENTAL: roadkill (server-side collision vehículo↔jugador). Varios métodos, disparo manual.
-        local RK = Misc:AddSection("Experimental · Roadkill", "Embestir un target con vehículo/cuerpo owneado (server-side collision)", { Columns = 1 })
-        local rk1 = RK:AddPanel("Roadkill", { Column = 1 })
-        rk1:AddDropdown("RKMethod", { Text = "Method", Values = { "PhysRep", "VehicleRam", "SelfPhysRep", "BringTarget" }, Default = "PhysRep",
-            Tooltip = "PhysRep = connection weld del vehículo al target (sin auto-fling, el más prometedor). VehicleRam = teleport+velocidad (te flingea). SelfPhysRep = tu cuerpo como proyectil. BringTarget = escribir la CFrame del target (dudoso, no lo owneás)." })
+        local RK = Misc:AddSection("Experimental · Physics", "Roadkill / fling / velocity desync (network ownership)", { Columns = 2 })
+        local rk1 = RK:AddPanel("Roadkill / Fling", { Column = 1 })
+        rk1:AddDropdown("RKMethod", { Text = "Method", Values = { "PhysRep", "VehicleRam", "SelfPhysRep", "BringTarget", "WeldFling", "PropFling" }, Default = "PhysRep",
+            Tooltip = "PhysRep/VehicleRam/SelfPhysRep = roadkill (vehículo). BringTarget = mover el target (dudoso). WeldFling = weld dentro del target + velocidad, spoof tu vel a 0 (lo flingueás sin volar). PropFling = flinguear la part suelta más cercana al target." })
         rk1:AddSlider("RKVelocity", { Text = "Velocity", Min = 100, Max = 5000, Default = 800, Suffix = "st/s",
             Tooltip = "Velocidad de la embestida. Roadkill server-side suele tener umbral de velocidad." })
         rk1:AddSlider("RKDuration", { Text = "Duration", Min = 0.1, Max = 2, Default = 0.5, Decimals = 2, Suffix = "s",
             Tooltip = "Cuánto dura el ram sostenido (la colisión necesita contacto en movimiento varios frames)." })
         rk1:AddKeybind("RKKey", { Text = "Roadkill Key", Mode = "Toggle", Callback = function() Roadkill.fire() end })
         rk1:AddButton("Fire Roadkill", function() Roadkill.fire() end)
+        local rk2 = RK:AddPanel("Velocity Desync", { Column = 2 })
+        rk2:AddToggle("VelDesync", { Text = "Velocity Desync", Default = false,
+            Tooltip = "Velocidad enorme alternada cada frame → el server te extrapola LEJOS (tasa del replicator) sin escribir CFrame → serverside desyncado todo el tiempo (evasión, walkfling-like sin flingear). No corre si hay spoof/weld activo (esos ya manejan la pos por CFrame)." })
+        rk2:AddKeybind("VelDesyncKey", { Text = "Vel Desync Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.VelDesync; if t then t:SetValue(a) end end })
+        rk2:AddSlider("VDMagnitude", { Text = "Magnitude", Min = 500, Max = 50000, Default = 5000, Suffix = "st/s",
+            Tooltip = "Magnitud de la velocidad. Más = más lejos serverside = más desync." })
 
         -- Auto Weapons: teleport a un pickup suelto + grab (op12) + volver. Multi-select con búsqueda.
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })
@@ -3672,6 +3755,7 @@ return function(require, LIP, Lib)
     local Void    = require("Movement.Void")
     local CFrameDesync = require("Movement.CFrameDesync")
     local Timer   = require("Movement.Timer")
+    local VelDesync = require("Movement.VelDesync")
     local HitFX   = require("Visuals.HitEffects")
     local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
@@ -3698,6 +3782,7 @@ return function(require, LIP, Lib)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
     CFrameDesync.init()  -- desync self-anchored (Spoof.init idempotente)
     Timer.init()     -- game-speed timer (StepPhysics) → rapidfire + fast reload dinámico
+    VelDesync.init() -- velocity desync (serverside far via replicator, sin flingear)
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
     CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 
