@@ -28,11 +28,14 @@ return function(require, LIP, Lib)
 
     -- patrones de void (TODOS altos — clamp Y≥30 para NUNCA tocar el vacío, que mata).
     -- Rotación XYZ random SIEMPRE. Origen absoluto (0,100,0).
-    -- estado de los patrones. Origen ABSOLUTO (0,100,0). `dist` ahora = RADIUS (1-100 studs, close-range pro).
+    -- estado de los patrones. `anchor` = base (ORIGIN absoluto para void/idle; pos real para CFrame Desync).
+    -- `dist` = RADIUS (1-100 close) para Random/Teleport/Jitter/StaticBreak; Nebula usa FarDist/MapRadius.
     local tpAnchor, tpT = nil, 0
     local jitP1, jitP2, jitReseed, jitFlip = nil, nil, 0, false
     local sbAnchor, sbT = nil, 0
-    local function patternCF(dist, pattern)
+    local nebT, nebPhase, nebSpot, nebFar, nebStatic = 0, "far", nil, nil, true
+    local function patternCF(anchor, dist, pattern)
+        anchor = anchor or ORIGIN
         local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)   -- anti-aim rotacional XYZ
         local now = os.clock()
         local off
@@ -59,13 +62,36 @@ return function(require, LIP, Lib)
             end
             if (now - sbT) > 0.5 then off = Vector3.new(-sbAnchor.X, sbAnchor.Y, -sbAnchor.Z)   -- BREAK (flick opuesto)
             else off = sbAnchor end                                                              -- STATIC (bait)
+        elseif pattern == "Nebula" then
+            -- FAR↔MAP a distancias RIDÍCULAS: FAR (~0.15s) = dir random 3D * FarDist (300M, un-hittable por
+            -- latencia); MAP (~0.3s) = spot random cerca del anchor dentro de MapRadius, SOSTENIDO 0.3s. Cada
+            -- spot es STATIC (rompe predicts: te lockean quieto y saltás) o con jitter chico (rompe centroide).
+            -- Deltas 300M↔mapa = irresolvible. FarDist/MapRadius por slider.
+            local FarD = O("FarDist") or 3e8
+            local MapR = O("MapRadius") or 3000
+            if now >= nebT then
+                if nebPhase == "far" then
+                    nebPhase = "map"; nebT = now + 0.3
+                    nebSpot = Vector3.new(rndSigned() * MapR, rnd() * 50, rndSigned() * MapR)
+                    nebStatic = (rnd() < 0.5)
+                else
+                    nebPhase = "far"; nebT = now + 0.15
+                    local dx, dy, dz = rndSigned(), rndSigned(), rndSigned()
+                    local m = math.sqrt(dx*dx + dy*dy + dz*dz); if m < 1e-6 then m = 1 end
+                    nebFar = Vector3.new(dx/m, math.abs(dy/m), dz/m) * FarD   -- Y+ (nunca al vacío)
+                end
+            end
+            if nebPhase == "far" then off = nebFar or Vector3.new(FarD, FarD, 0)
+            elseif nebStatic then off = nebSpot or Vector3.zero                            -- ESTÁTICO (rompe predicts)
+            else off = (nebSpot or Vector3.zero) + Vector3.new(rndSigned() * 5, 0, rndSigned() * 5) end  -- jitter (rompe centroide)
         else -- "Random" (NON-PATTERN, default): offset XYZ random cada frame dentro del radius
             off = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist)
         end
-        local pos = ORIGIN + off
+        local pos = anchor + off
         if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío (mata)
         return CFrame.new(pos) * rot
     end
+    Void.patternCF = patternCF   -- expuesto para CFrame Desync (reusa con anchor = pos real)
 
     -- PRESETS PRO (VoidPreset): pattern + radius + timing in/out. Non-pattern (Legit/Chaos/Blink) vs pattern
     -- anti-centroide (Jitter/Peek). applyPreset setea las Options (mismo mecanismo que Strafe.applyPreset).
@@ -89,7 +115,7 @@ return function(require, LIP, Lib)
         local root = myRoot(); local cam = Workspace.CurrentCamera
         if not root then Spoof.stop(cam); return end
         local dist = opts.dist or 1000
-        local goCF = patternCF(dist, opts.pattern)
+        local goCF = patternCF(ORIGIN, dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
         LIP.tightFollow = false
@@ -157,7 +183,7 @@ return function(require, LIP, Lib)
     function Void.tickVoidPos(opts)
         local root = myRoot(); local cam = Workspace.CurrentCamera
         if not root then return end
-        local goCF = patternCF(opts.dist or 1000, opts.pattern)
+        local goCF = patternCF(ORIGIN, opts.dist or 1000, opts.pattern)
         LIP.spoofFakePos = goCF.Position
         LIP.tightFollow = false
         spoofTo(root, cam, goCF, opts.posSpoof)

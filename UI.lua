@@ -72,13 +72,27 @@ return function(require, LIP, Lib)
             Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
             Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
-        vd:AddList("VoidPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak" }, Default = "Jitter",
-            Tooltip = "Non-pattern (Random/Teleport) = unpredecible pero PROMEDIABLE por un centroide. Pattern (Jitter/StaticBreak) = anti-centroide: el promedio enemigo cae en el vacío." })
+        vd:AddList("VoidPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Jitter",
+            Tooltip = "Non-pattern (Random/Teleport) = unpredecible pero PROMEDIABLE. Pattern (Jitter/StaticBreak) = anti-centroide. Nebula = far↔map a distancias RIDÍCULAS (300M ↔ spots random del mapa estáticos/jitter): irresolvible." })
         vd:AddSlider("VoidDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
-            Tooltip = "Radio del jitter alrededor del origen (close-range pro). El patrón protege, no la distancia." })
+            Tooltip = "Radio del jitter alrededor del origen (close-range pro, para Random/Jitter/StaticBreak). El patrón protege, no la distancia." })
+        vd:AddSlider("FarDist", { Text = "Far Dist", Min = 1000000, Max = 500000000, Default = 300000000, Suffix = "st",
+            Tooltip = "Distancia de la fase FAR de Nebula (300M default). Ultra-lejos = un-hittable por latencia. Si tan lejos no replica (Roblox cullea CFrames extremos), bajalo." })
+        vd:AddSlider("MapRadius", { Text = "Map Radius", Min = 100, Max = 10000, Default = 3000, Suffix = "st",
+            Tooltip = "Spread de los spots random del mapa en la fase MAP de Nebula (sostenidos 0.3s, static o jitter)." })
         vd:AddDropdown("VoidPreset", { Text = "Preset", Values = { "Legit", "Jitter", "Peek", "Blink", "Chaos" }, Default = "Jitter",
             Tooltip = "Presets pro: setean pattern+radius+timing. Legit=sutil, Jitter/Peek=anti-centroide (centroide=aire), Blink=teleport, Chaos=random rápido.",
             Callback = function(v) Void.applyPreset(v) end })
+
+        local cfd = RS:AddPanel("CFrame Desync", { Column = 2 })
+        cfd:AddToggle("CFrameDesync", { Text = "CFrame Desync", Default = false,
+            Tooltip = "Desync CONTINUO self-anchored: el server te ve desyncado RELATIVO a tu pos REAL (no al origen absoluto). Full customizable. Excluyente con Strafe/Idle/Godmode." })
+        cfd:AddKeybind("CFrameDesyncKey", { Text = "Toggle Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.CFrameDesync; if t then t:SetValue(a) end end })
+        cfd:AddList("CFDPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Random",
+            Tooltip = "Mismo set de patrones que void/idle pero anchor = tu pos real. Random 1-100 = sutil; Nebula = te vas 300M desde vos y volvés a spots random." })
+        cfd:AddSlider("CFDDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
+            Tooltip = "Radio del jitter alrededor de tu pos real (Random/Jitter/StaticBreak). Nebula usa Far Dist/Map Radius del panel Void." })
 
         --== Col 3: Target Strafe + Server Position ==--
         local ts = RS:AddPanel("Target Strafe", { Column = 3 })
@@ -113,8 +127,8 @@ return function(require, LIP, Lib)
         local idl = RS:AddPanel("Idle State", { Column = 3 })
         idl:AddToggle("IdleState", { Text = "Idle State", Default = false,
             Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando. (Antes se llamaba Void Spam.)" })
-        idl:AddList("IdlePattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak" }, Default = "Jitter",
-            Tooltip = "Non-pattern (Random/Teleport) vs Pattern anti-centroide (Jitter/StaticBreak)." })
+        idl:AddList("IdlePattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Jitter",
+            Tooltip = "Non-pattern (Random/Teleport) vs Pattern anti-centroide (Jitter/StaticBreak) vs Nebula (far↔map ridículo)." })
         idl:AddSlider("IdleDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
             Tooltip = "Radio del jitter alrededor del origen (close-range pro)." })
 

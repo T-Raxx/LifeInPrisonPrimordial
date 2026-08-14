@@ -18,6 +18,7 @@ return function(require, LIP, Lib)
     local Move    = require("Movement.Movement")
     local Vehicle = require("Movement.Vehicle")
     local Void    = require("Movement.Void")
+    local CFrameDesync = require("Movement.CFrameDesync")
     local HitFX   = require("Visuals.HitEffects")
     local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
@@ -42,6 +43,7 @@ return function(require, LIP, Lib)
     Vehicle.init()   -- vehicle speed
     Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
+    CFrameDesync.init()  -- desync self-anchored (Spoof.init idempotente)
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
     CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 
@@ -164,6 +166,7 @@ return function(require, LIP, Lib)
         -- Void Spam SOLO con Target Strafe (compone): OUT = strafe-orbit (dispara), IN = void (esconde).
         local voidSpamOn = T.VoidSpam and T.VoidSpam.Value and strafeOn
         local idleOn     = T.IdleState and T.IdleState.Value     -- viejo void = anti-aim idle continuo
+        local cfDesyncOn = T.CFrameDesync and T.CFrameDesync.Value  -- desync self-anchored (sub-tab propia)
         LIP.voidSpamOn   = voidSpamOn
         LIP.voidShootOut = (not T.VoidShootOut) or T.VoidShootOut.Value    -- default on
         if not voidSpamOn then LIP.voidShootOk = true; LIP.voidPhase = nil end
@@ -274,6 +277,10 @@ return function(require, LIP, Lib)
             if LIP.godBase then Godmode.stop() end
             Void.tick({ dist = O.IdleDist.Value, pattern = O.IdlePattern:GetValue(),
                         posSpoof = posSpoof, connExploit = connExp })
+        elseif cfDesyncOn then
+            -- CFRAME DESYNC: desync continuo self-anchored (anchor = tu pos real). Full customizable, sub-tab propia.
+            if LIP.godBase then Godmode.stop() end
+            CFrameDesync.tick({ dist = O.CFDDist.Value, pattern = O.CFDPattern:GetValue(), posSpoof = posSpoof })
         else
             if LIP.godBase then Godmode.stop() end
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
