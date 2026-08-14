@@ -343,10 +343,14 @@ return function(require, LIP, Lib)
         local rk3 = RK:AddPanel("Prop Aura", { Column = 1 })
         rk3:AddToggle("PropAura", { Text = "Prop Aura (server-side)", Default = false,
             Tooltip = "Reclama las N parts SUELTAS más cercanas (owneadas por proximidad) y las hace ORBITAR tu HRP → el server las reps orbitando = OTROS lo ven (aura REAL, no un Drawing). A Speed alto la colisión puede pegar a enemigos." })
-        rk3:AddSlider("PropAuraCount", { Text = "Count", Min = 1, Max = 20, Default = 6, Suffix = " props" })
+        rk3:AddSlider("PropAuraCount", { Text = "Count", Min = 1, Max = 60, Default = 8, Suffix = " props" })
         rk3:AddSlider("PropAuraRadius", { Text = "Radius", Min = 3, Max = 40, Default = 12, Suffix = "studs" })
         rk3:AddSlider("PropAuraSpeed", { Text = "Speed", Min = 1, Max = 30, Default = 4 })
         rk3:AddSlider("PropAuraHeight", { Text = "Height", Min = -10, Max = 20, Default = 2, Suffix = "studs" })
+        rk3:AddSlider("PropAuraMaxMass", { Text = "Max Mass", Min = 20, Max = 2000, Default = 400,
+            Tooltip = "Masa máxima de un prop reclamado. Bajo = solo cosas livianas (menos jitter, sin autos/estructural)." })
+        rk3:AddToggle("PropAuraCrates", { Text = "Crates Only", Default = false,
+            Tooltip = "Solo reclama props con nombre de caja (crate/box/barrel/pallet). OFF = cualquier prop válido (excluye puertas/aspas/ventanas por filtro de joints+nombre+masa)." })
 
         -- Auto Weapons: teleport a un pickup suelto + grab (op12) + volver. Multi-select con búsqueda.
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })

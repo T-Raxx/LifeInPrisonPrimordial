@@ -2844,11 +2844,12 @@ end
 
 end)()
 _MODS["Movement.PropAura"] = (function()
--- Movement/PropAura.lua — FACTORY. AURA SERVER-SIDE: reclama las N parts SUELTAS (unanchored, owneadas por
--- proximidad = network ownership) más cercanas y las hace ORBITAR tu HRP escribiéndoles la CFrame cada frame.
--- Como owneás su física, el server las reps orbitando → los DEMÁS lo ven (aura real, no un Drawing). Confirmado
--- que los props se mueven (PropFling). Radius/Speed/Count por slider. Ofensivo opcional: a Speed alto la
--- colisión con enemigos puede pegarles (server-side). Suelta las props al apagar (les devuelve la velocidad 0).
+-- Movement/PropAura.lua — FACTORY. AURA SERVER-SIDE: reclama parts SUELTAS (unanchored, owneadas por
+-- proximidad = network ownership) y las hace ORBITAR tu HRP escribiéndoles la CFrame cada frame. Como owneás
+-- su física, el server las reps orbitando → los DEMÁS lo ven (aura REAL, choca gente, mueve autos — confirmado).
+-- FILTRO: solo props "buenos" (masa/tamaño acotados, no estructurales por nombre, no puertas/hinges) para no
+-- arrancar puertas del mapa ni traer basura (jarrones/aspas). CLAIM STICKY: mantiene los mismos props, solo
+-- rellena hasta N (no re-escanea todo cada frame → estable, sin traer basura de a poco).
 return function(require, LIP, Lib)
     local RunService = game:GetService("RunService")
     local Workspace  = game:GetService("Workspace")
@@ -2859,23 +2860,42 @@ return function(require, LIP, Lib)
     local function O(f) local o = Lib.Options[f]; return o and o.Value end
     local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
 
-    local claimed = {}   -- {BasePart...} actualmente en órbita
+    local claimed = {}   -- {BasePart...} en órbita (sticky)
     local ang = 0
 
+    -- nombres estructurales a EXCLUIR (puertas/ventanas/ventiladores/vidrios/etc = anclados o hinged al mapa)
+    local BADNAME = { "door", "window", "gate", "fan", "blade", "hinge", "glass", "wall", "floor", "roof", "fence", "sign", "light", "lamp" }
+    local CRATE   = { "crate", "box", "barrel", "pallet", "container", "cargo" }
+    local function nameHits(name, list)
+        local n = name:lower()
+        for _, w in ipairs(list) do if n:find(w, 1, true) then return true end end
+        return false
+    end
+
+    -- prop válido: assembly libre real (root unanchored), sin joints (no hinged al mapa), masa/tamaño acotados,
+    -- nombre no estructural. Con CratesOnly = solo nombres de caja.
     local function isFreeProp(d, chars)
         if not (d:IsA("BasePart") and not d.Anchored) then return false end
-        if d.AssemblyRootPart ~= d then return false end       -- solo roots de assemblies libres
+        if d.AssemblyRootPart ~= d then return false end              -- solo el root del assembly
         local anc = d:FindFirstAncestorOfClass("Model")
-        if anc and chars[anc] then return false end            -- no personajes
+        if anc and chars[anc] then return false end                   -- no personajes
+        if #d:GetJoints() > 0 then return false end                   -- sin joints/constraints = NO hinged al mapa (puertas/aspas)
+        local mass = d:GetMass()
+        if mass < 0.5 or mass > (O("PropAuraMaxMass") or 400) then return false end   -- ni aspas diminutas ni estructural
+        local sz = d.Size.Magnitude
+        if sz < 1.5 or sz > 60 then return false end
+        if nameHits(d.Name, BADNAME) then return false end            -- excluir estructurales por nombre
+        if T("PropAuraCrates") and not nameHits(d.Name, CRATE) then return false end  -- solo cajas si el toggle
         return true
     end
-    -- las N parts sueltas más cercanas a `pos`
-    local function findProps(n, pos)
+
+    -- las N parts válidas más cercanas a `pos`, excluyendo las ya en `have`
+    local function findProps(n, pos, have)
         local chars = {}
         for _, p in ipairs(Players:GetPlayers()) do if p.Character then chars[p.Character] = true end end
         local cand = {}
         for _, d in ipairs(Workspace:GetDescendants()) do
-            if isFreeProp(d, chars) then
+            if not have[d] and isFreeProp(d, chars) then
                 cand[#cand + 1] = { d, (d.Position - pos).Magnitude }
             end
         end
@@ -2899,21 +2919,27 @@ return function(require, LIP, Lib)
             local speed  = O("PropAuraSpeed") or 3
             local height = O("PropAuraHeight") or 2
 
-            -- limpiar props muertos + (re)reclamar si faltan (se re-escanea barato cada ~0.5s vía count mismatch)
-            local live = {}
-            for _, p in ipairs(claimed) do if p and p.Parent and not p.Anchored then live[#live + 1] = p end end
+            -- STICKY: limpiar muertos, mantener el resto, rellenar hasta N con props nuevos (no re-escaneo total)
+            local live, have = {}, {}
+            for _, p in ipairs(claimed) do
+                if p and p.Parent and not p.Anchored then live[#live + 1] = p; have[p] = true end
+            end
             claimed = live
-            if #claimed < n then claimed = findProps(n, root.Position) end
+            if #claimed < n then
+                for _, p in ipairs(findProps(n - #claimed, root.Position, have)) do claimed[#claimed + 1] = p end
+            end
+            while #claimed > n do table.remove(claimed) end            -- si N bajó, soltar el excedente
 
             ang = ang + speed * dt
             local m = #claimed
+            local base = root.Position
             for i = 1, m do
                 local p = claimed[i]
                 if p and p.Parent then
                     local a = ang + (i / m) * 6.2831853
-                    local pos = root.Position + Vector3.new(math.cos(a) * radius, height, math.sin(a) * radius)
+                    local pos = base + Vector3.new(math.cos(a) * radius, height, math.sin(a) * radius)
                     pcall(function()
-                        p.CFrame = CFrame.lookAt(pos, root.Position)   -- owneado → el server lo reps orbitando
+                        p.CFrame = CFrame.new(pos)                     -- sin lookAt (menos jitter de rotación)
                         p.AssemblyLinearVelocity  = Vector3.zero
                         p.AssemblyAngularVelocity = Vector3.zero
                     end)
@@ -3758,10 +3784,14 @@ return function(require, LIP, Lib)
         local rk3 = RK:AddPanel("Prop Aura", { Column = 1 })
         rk3:AddToggle("PropAura", { Text = "Prop Aura (server-side)", Default = false,
             Tooltip = "Reclama las N parts SUELTAS más cercanas (owneadas por proximidad) y las hace ORBITAR tu HRP → el server las reps orbitando = OTROS lo ven (aura REAL, no un Drawing). A Speed alto la colisión puede pegar a enemigos." })
-        rk3:AddSlider("PropAuraCount", { Text = "Count", Min = 1, Max = 20, Default = 6, Suffix = " props" })
+        rk3:AddSlider("PropAuraCount", { Text = "Count", Min = 1, Max = 60, Default = 8, Suffix = " props" })
         rk3:AddSlider("PropAuraRadius", { Text = "Radius", Min = 3, Max = 40, Default = 12, Suffix = "studs" })
         rk3:AddSlider("PropAuraSpeed", { Text = "Speed", Min = 1, Max = 30, Default = 4 })
         rk3:AddSlider("PropAuraHeight", { Text = "Height", Min = -10, Max = 20, Default = 2, Suffix = "studs" })
+        rk3:AddSlider("PropAuraMaxMass", { Text = "Max Mass", Min = 20, Max = 2000, Default = 400,
+            Tooltip = "Masa máxima de un prop reclamado. Bajo = solo cosas livianas (menos jitter, sin autos/estructural)." })
+        rk3:AddToggle("PropAuraCrates", { Text = "Crates Only", Default = false,
+            Tooltip = "Solo reclama props con nombre de caja (crate/box/barrel/pallet). OFF = cualquier prop válido (excluye puertas/aspas/ventanas por filtro de joints+nombre+masa)." })
 
         -- Auto Weapons: teleport a un pickup suelto + grab (op12) + volver. Multi-select con búsqueda.
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })
