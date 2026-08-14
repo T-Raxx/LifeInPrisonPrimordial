@@ -297,6 +297,8 @@ return function(require, LIP, Lib)
         v2:AddButton("Self Ragdoll", function() Ragdoll.toggle() end)
         v2:AddKeybind("RagdollKey", { Text = "Ragdoll Key", Mode = "Toggle", Callback = function() Ragdoll.toggle() end })
         v2:AddToggle("RagdollLock", { Text = "Permanent Ragdoll", Default = false })
+        v2:AddToggle("AntiTaze", { Text = "Anti Taze / Ragdoll", Default = false,
+            Tooltip = "Resiste el taze/fling enemigo: recover instantáneo (saca el Humanoid de Physics) + guard de velocidad (≥31 → el propio check del juego rechaza el RagdollImpulse). No cuando Godmode/Permanent Ragdoll (self-ragdoll intencional)." })
         v2:AddToggle("Godmode", { Text = "Godmode (ragdoll)", Default = false,
             Tooltip = "Self-ragdoll + mueve el assembly lejos (hitbox real fuera). Dispará con AutoFire (op14 directo bypasea el gate de ragdoll). Equipá el arma ANTES." })
         v2:AddDropdown("GodPreset", { Text = "Preset", Values = { "High", "ExtremeHigh", "Jitter", "FarJitter" }, Default = "High",
