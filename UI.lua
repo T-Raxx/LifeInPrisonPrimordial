@@ -323,16 +323,23 @@ return function(require, LIP, Lib)
         v3:AddButton("Detonate C4 (op44)", function() Niche.detonateC4() end)
 
         -- EXPERIMENTAL: roadkill (server-side collision vehículo↔jugador). Varios métodos, disparo manual.
-        local RK = Misc:AddSection("Experimental · Roadkill", "Embestir un target con vehículo/cuerpo owneado (server-side collision)", { Columns = 1 })
-        local rk1 = RK:AddPanel("Roadkill", { Column = 1 })
-        rk1:AddDropdown("RKMethod", { Text = "Method", Values = { "PhysRep", "VehicleRam", "SelfPhysRep", "BringTarget" }, Default = "PhysRep",
-            Tooltip = "PhysRep = connection weld del vehículo al target (sin auto-fling, el más prometedor). VehicleRam = teleport+velocidad (te flingea). SelfPhysRep = tu cuerpo como proyectil. BringTarget = escribir la CFrame del target (dudoso, no lo owneás)." })
+        local RK = Misc:AddSection("Experimental · Physics", "Roadkill / fling / velocity desync (network ownership)", { Columns = 2 })
+        local rk1 = RK:AddPanel("Roadkill / Fling", { Column = 1 })
+        rk1:AddDropdown("RKMethod", { Text = "Method", Values = { "PhysRep", "VehicleRam", "SelfPhysRep", "BringTarget", "WeldFling", "PropFling" }, Default = "PhysRep",
+            Tooltip = "PhysRep/VehicleRam/SelfPhysRep = roadkill (vehículo). BringTarget = mover el target (dudoso). WeldFling = weld dentro del target + velocidad, spoof tu vel a 0 (lo flingueás sin volar). PropFling = flinguear la part suelta más cercana al target." })
         rk1:AddSlider("RKVelocity", { Text = "Velocity", Min = 100, Max = 5000, Default = 800, Suffix = "st/s",
             Tooltip = "Velocidad de la embestida. Roadkill server-side suele tener umbral de velocidad." })
         rk1:AddSlider("RKDuration", { Text = "Duration", Min = 0.1, Max = 2, Default = 0.5, Decimals = 2, Suffix = "s",
             Tooltip = "Cuánto dura el ram sostenido (la colisión necesita contacto en movimiento varios frames)." })
         rk1:AddKeybind("RKKey", { Text = "Roadkill Key", Mode = "Toggle", Callback = function() Roadkill.fire() end })
         rk1:AddButton("Fire Roadkill", function() Roadkill.fire() end)
+        local rk2 = RK:AddPanel("Velocity Desync", { Column = 2 })
+        rk2:AddToggle("VelDesync", { Text = "Velocity Desync", Default = false,
+            Tooltip = "Velocidad enorme alternada cada frame → el server te extrapola LEJOS (tasa del replicator) sin escribir CFrame → serverside desyncado todo el tiempo (evasión, walkfling-like sin flingear). No corre si hay spoof/weld activo (esos ya manejan la pos por CFrame)." })
+        rk2:AddKeybind("VelDesyncKey", { Text = "Vel Desync Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.VelDesync; if t then t:SetValue(a) end end })
+        rk2:AddSlider("VDMagnitude", { Text = "Magnitude", Min = 500, Max = 50000, Default = 5000, Suffix = "st/s",
+            Tooltip = "Magnitud de la velocidad. Más = más lejos serverside = más desync." })
 
         -- Auto Weapons: teleport a un pickup suelto + grab (op12) + volver. Multi-select con búsqueda.
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })
