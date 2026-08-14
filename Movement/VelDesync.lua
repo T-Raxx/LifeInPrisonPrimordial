@@ -24,11 +24,15 @@ return function(require, LIP, Lib)
             if not root then return end
             local mag = O("VDMagnitude") or 5000
             seed = seed + 0.15
-            sign = -sign
-            -- dirección HORIZONTAL rotante (golden-ish), alternando signo → net clientside ~0, el server extrapola
-            -- lejos cada frame en direcciones alternadas = serverside desyncado sin lanzarte de verdad.
+            -- FIX (antes te volaba): PINEAR la CFrame clientside cada frame (no te movés — el AC de CFrame está
+            -- muerto) + setear la velocidad enorme → el server tiene (posReal, velHuge) → extrapola LEJOS entre
+            -- updates de red = tu pos serverside JITTEREA lejos (desync) mientras tu cuerpo queda quieto.
             local dir = Vector3.new(math.cos(seed), 0, math.sin(seed))
-            pcall(function() root.AssemblyLinearVelocity = dir * (mag * sign) end)
+            local real = root.Position
+            pcall(function()
+                root.CFrame = CFrame.new(real)                 -- pin clientside
+                root.AssemblyLinearVelocity = dir * mag        -- server extrapola lejos = desync
+            end)
         end))
     end
 
