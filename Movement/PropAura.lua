@@ -33,11 +33,12 @@ return function(require, LIP, Lib)
         if d.AssemblyRootPart ~= d then return false end              -- solo el root del assembly
         local anc = d:FindFirstAncestorOfClass("Model")
         if anc and chars[anc] then return false end                   -- no personajes
-        if #d:GetJoints() > 0 then return false end                   -- sin joints/constraints = NO hinged al mapa (puertas/aspas)
+        -- (NO filtramos por joints: las cajas tienen welds del modelo agrupado → se excluían y solo quedaban
+        --  ladrillos sueltos no-replicantes. Los estructurales se filtran por nombre + masa/tamaño.)
         local mass = d:GetMass()
-        if mass < 0.5 or mass > (O("PropAuraMaxMass") or 400) then return false end   -- ni aspas diminutas ni estructural
+        if mass < 0.5 or mass > (O("PropAuraMaxMass") or 400) then return false end   -- ni diminuto ni estructural pesado
         local sz = d.Size.Magnitude
-        if sz < 1.5 or sz > 60 then return false end
+        if sz < 2 or sz > 60 then return false end                    -- excluye pedacitos de ladrillo diminutos
         if nameHits(d.Name, BADNAME) then return false end            -- excluir estructurales por nombre
         if T("PropAuraCrates") and not nameHits(d.Name, CRATE) then return false end  -- solo cajas si el toggle
         return true

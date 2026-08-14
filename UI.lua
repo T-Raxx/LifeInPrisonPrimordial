@@ -113,9 +113,10 @@ return function(require, LIP, Lib)
             Tooltip = "Desync: el server te ve orbitando; cuerpo/cámara reales quietos" })
         ts:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
             Callback = function(a) local t = Lib.Toggles.TargetStrafe; if t then t:SetValue(a) end end })
-        ts:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind", "Spiral" }, Default = "Normal",
+        ts:AddDropdown("StrafePreset", { Text = "Preset", Values = { "Normal", "Random", "Behind", "Spiral", "Inside" }, Default = "Normal",
             Callback = function(v) Strafe.applyPreset(v) end })
-        ts:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind", "Spiral" }, Default = "Normal" })
+        ts:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind", "Spiral", "Inside" }, Default = "Normal",
+            Tooltip = "Inside = dentro del target (offset 0) → el server te ve EN él = cero mismatch de rango al disparar (el más estable, pedido del usuario)." })
         ts:AddSlider("StrafeRadius", { Text = "Radius", Min = 4, Max = 150, Default = 10, Decimals = 1, Suffix = "studs" })
         ts:AddSlider("StrafeSpeed",  { Text = "Speed", Min = 1, Max = 40, Default = 4 })
         ts:AddSlider("StrafeHeight", { Text = "Height", Min = -50, Max = 50, Default = 0 })

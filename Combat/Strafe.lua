@@ -462,7 +462,10 @@ return function(require, LIP, Lib)
         end
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
         local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
-        if mode == "Behind" then
+        if mode == "Inside" then
+            -- DENTRO del target (offset 0): el server te ve EN el target → cero mismatch de rango al disparar.
+            return CFrame.new(center + Vector3.new(0, h, 0))
+        elseif mode == "Behind" then
             local look = tLook or Vector3.new(0, 0, -1)
             local goPos = center - look * R + Vector3.new(0, h, 0)
             return CFrame.lookAt(goPos, center)
@@ -492,7 +495,9 @@ return function(require, LIP, Lib)
         local tRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
         local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
-        if mode == "Behind" and tRoot then
+        if mode == "Inside" then
+            return Vector3.new(0, h, 0)                             -- dentro del target (offset 0)
+        elseif mode == "Behind" and tRoot then
             local lv = tRoot.CFrame.LookVector
             local flat = Vector3.new(lv.X, 0, lv.Z)
             if flat.Magnitude < 1e-3 then flat = Vector3.new(0, 0, -1) end
@@ -515,7 +520,9 @@ return function(require, LIP, Lib)
         end
         local R, spd, h = opts.radius or 10, opts.speed or 4, opts.height or 0
         local mode = (T("AutoMode") and LIP.strafeMode) or opts.mode or "Normal"
-        if mode == "Behind" then
+        if mode == "Inside" then
+            return CFrame.new(0, h, 0)                               -- DENTRO del target (offset 0, con posSpoof no flinguea)
+        elseif mode == "Behind" then
             return CFrame.new(0, h, R)                               -- fijo R atrás
         elseif mode == "Spiral" then
             wseed = wseed + spd * 0.03
