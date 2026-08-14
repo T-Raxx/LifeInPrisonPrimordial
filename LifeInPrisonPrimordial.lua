@@ -9278,10 +9278,14 @@ return function(GV)\r\
         local lib = self:_ensureParticleLib()\r\
         -- MULTI-SELECT: el flag ahora es un SET {name=true} (varios presets a la vez). Compat legacy: si es\r\
         -- string, un solo preset. Emitimos TODOS los seleccionados desde el mismo Part pooled.\r\
-        local sel = self:_flag(\"ParticlePreset\", { sparks = true })\r\
+        local sel = self:_flag(\"ParticlePreset\", \"sparks\")\r\
         local names = {}\r\
         if type(sel) == \"table\" then\r\
-            for name, on in pairs(sel) do if on then names[#names + 1] = name end end\r\
+            if sel[1] ~= nil then\r\
+                for _, name in ipairs(sel) do names[#names + 1] = name end   -- multi GetValue = ARRAY {\"sparks\",...}\r\
+            else\r\
+                for name, on in pairs(sel) do if on then names[#names + 1] = name end end   -- set {name=true} legacy\r\
+            end\r\
         elseif type(sel) == \"string\" then\r\
             names[1] = sel\r\
         end\r\
@@ -11200,7 +11204,7 @@ do local chunk = "return function(GV)\r\
     add{ tab = TAB, group = \"Hit Particles\", side = \"Left\", flag = \"Combat_ParticlePreset\", type = \"dropdown\",\r\
         text = \"Preset\", multi = true,\r\
         values = { \"bubble\", \"sparks\", \"orbs\", \"air\", \"blood\", \"light\", \"lightning\", \"blackflash\", \"gravity\", \"meteor\" },\r\
-        default = { sparks = true }, dependsOn = \"Combat_Particle\" }\r\
+        default = { \"sparks\" }, dependsOn = \"Combat_Particle\" }\r\
     add{ tab = TAB, group = \"Hit Particles\", side = \"Left\", flag = \"Combat_ParticleBehindWalls\", type = \"toggle\",\r\
         text = \"Behind walls\", default = false, dependsOn = \"Combat_Particle\" }\r\
     GV.pushCF(S, { toggle = \"Combat_Particle\", base = \"Combat_ParticleColor\", text = \"Particle color\",\r\
