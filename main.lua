@@ -331,6 +331,8 @@ return function(require, LIP, Lib)
 
         -- permanent ragdoll (si no está godmode, que ya maneja el ragdoll)
         if not godOn and T.RagdollLock and T.RagdollLock.Value then Ragdoll.tickLock() end
+        -- ANTI-TAZE: resiste el fling/ragdoll enemigo. No cuando godmode/ragdoll-lock (esos son self-ragdoll intencional).
+        if T.AntiTaze and T.AntiTaze.Value and not godOn and not (T.RagdollLock and T.RagdollLock.Value) then Ragdoll.tickAntiTaze() end
     end))
 
     pcall(function() if Window.AddSettingsTab then Window:AddSettingsTab() end end)

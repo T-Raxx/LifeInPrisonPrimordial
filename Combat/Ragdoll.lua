@@ -39,5 +39,27 @@ return function(require, LIP, Lib)
         LIP.fire(OP)
     end
 
+    -- ANTI-TAZE/RAGDOLL: resiste el taze/fling enemigo. El fling llega por RagdollImpulse.OnClientEvent (decompile
+    -- 7900) → tu cliente hace ApplyImpulse a TU part, guardado por (IsRagdoll ∧ part tuya ∧ vel<30). Dos capas:
+    --  1) RECOVER: saca el Humanoid de Physics (ChangeState GettingUp) + PlatformStand false + attr "Ragdoll" false
+    --     → IsRagdoll false → el guard del juego skipea el impulse (`if not p1.IsRagdoll then return`).
+    --  2) ANTI-FLING backup: mientras seguís ragdolleado, mantené la vel del torso ≥31 (alternando ±Y, net~0) → el
+    --     guard `vel<30` del juego rechaza el ApplyImpulse igual. Solo actúa cuando te ragdollean (no spamea).
+    local atSign = 1
+    function Ragdoll.tickAntiTaze()
+        if not isRagdolled() then return end           -- solo cuando te tazean/ragdollean
+        local ch = LP.Character
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        local root = ch and ch:FindFirstChild("HumanoidRootPart")
+        if not (hum and root) then return end
+        atSign = -atSign
+        pcall(function() root.AssemblyLinearVelocity = Vector3.new(0, 31 * atSign, 0) end)  -- anti-fling (vel≥30 → skip)
+        pcall(function()
+            hum.PlatformStand = false
+            if ch:GetAttribute("Ragdoll") ~= nil then ch:SetAttribute("Ragdoll", false) end
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end)
+    end
+
     return Ragdoll
 end
