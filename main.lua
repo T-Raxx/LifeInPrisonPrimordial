@@ -21,6 +21,7 @@ return function(require, LIP, Lib)
     local CFrameDesync = require("Movement.CFrameDesync")
     local Timer   = require("Movement.Timer")
     local VelDesync = require("Movement.VelDesync")
+    local PropAura = require("Movement.PropAura")
     local HitFX   = require("Visuals.HitEffects")
     local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
@@ -48,6 +49,7 @@ return function(require, LIP, Lib)
     CFrameDesync.init()  -- desync self-anchored (Spoof.init idempotente)
     Timer.init()     -- game-speed timer (StepPhysics) → rapidfire + fast reload dinámico
     VelDesync.init() -- velocity desync (serverside far via replicator, sin flingear)
+    PropAura.init()  -- aura server-side: N props sueltos owneados orbitando
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
     CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 

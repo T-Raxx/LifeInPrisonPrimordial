@@ -335,11 +335,18 @@ return function(require, LIP, Lib)
         rk1:AddButton("Fire Roadkill", function() Roadkill.fire() end)
         local rk2 = RK:AddPanel("Velocity Desync", { Column = 2 })
         rk2:AddToggle("VelDesync", { Text = "Velocity Desync", Default = false,
-            Tooltip = "Velocidad enorme alternada cada frame → el server te extrapola LEJOS (tasa del replicator) sin escribir CFrame → serverside desyncado todo el tiempo (evasión, walkfling-like sin flingear). No corre si hay spoof/weld activo (esos ya manejan la pos por CFrame)." })
+            Tooltip = "PINEA tu CFrame clientside (no volás) + setea velocidad enorme → el server extrapola tu pos LEJOS entre updates = desync jitter serverside (evasión, walkfling-like sin flingear). Fix del que te volaba. No corre si hay spoof/weld activo." })
         rk2:AddKeybind("VelDesyncKey", { Text = "Vel Desync Key", Mode = "Toggle",
             Callback = function(a) local t = Lib.Toggles.VelDesync; if t then t:SetValue(a) end end })
         rk2:AddSlider("VDMagnitude", { Text = "Magnitude", Min = 500, Max = 50000, Default = 5000, Suffix = "st/s",
             Tooltip = "Magnitud de la velocidad. Más = más lejos serverside = más desync." })
+        local rk3 = RK:AddPanel("Prop Aura", { Column = 1 })
+        rk3:AddToggle("PropAura", { Text = "Prop Aura (server-side)", Default = false,
+            Tooltip = "Reclama las N parts SUELTAS más cercanas (owneadas por proximidad) y las hace ORBITAR tu HRP → el server las reps orbitando = OTROS lo ven (aura REAL, no un Drawing). A Speed alto la colisión puede pegar a enemigos." })
+        rk3:AddSlider("PropAuraCount", { Text = "Count", Min = 1, Max = 20, Default = 6, Suffix = " props" })
+        rk3:AddSlider("PropAuraRadius", { Text = "Radius", Min = 3, Max = 40, Default = 12, Suffix = "studs" })
+        rk3:AddSlider("PropAuraSpeed", { Text = "Speed", Min = 1, Max = 30, Default = 4 })
+        rk3:AddSlider("PropAuraHeight", { Text = "Height", Min = -10, Max = 20, Default = 2, Suffix = "studs" })
 
         -- Auto Weapons: teleport a un pickup suelto + grab (op12) + volver. Multi-select con búsqueda.
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })

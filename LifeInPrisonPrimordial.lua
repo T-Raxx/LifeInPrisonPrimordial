@@ -2827,15 +2827,102 @@ return function(require, LIP, Lib)
             if not root then return end
             local mag = O("VDMagnitude") or 5000
             seed = seed + 0.15
-            sign = -sign
-            -- dirección HORIZONTAL rotante (golden-ish), alternando signo → net clientside ~0, el server extrapola
-            -- lejos cada frame en direcciones alternadas = serverside desyncado sin lanzarte de verdad.
+            -- FIX (antes te volaba): PINEAR la CFrame clientside cada frame (no te movés — el AC de CFrame está
+            -- muerto) + setear la velocidad enorme → el server tiene (posReal, velHuge) → extrapola LEJOS entre
+            -- updates de red = tu pos serverside JITTEREA lejos (desync) mientras tu cuerpo queda quieto.
             local dir = Vector3.new(math.cos(seed), 0, math.sin(seed))
-            pcall(function() root.AssemblyLinearVelocity = dir * (mag * sign) end)
+            local real = root.Position
+            pcall(function()
+                root.CFrame = CFrame.new(real)                 -- pin clientside
+                root.AssemblyLinearVelocity = dir * mag        -- server extrapola lejos = desync
+            end)
         end))
     end
 
     return VD
+end
+
+end)()
+_MODS["Movement.PropAura"] = (function()
+-- Movement/PropAura.lua — FACTORY. AURA SERVER-SIDE: reclama las N parts SUELTAS (unanchored, owneadas por
+-- proximidad = network ownership) más cercanas y las hace ORBITAR tu HRP escribiéndoles la CFrame cada frame.
+-- Como owneás su física, el server las reps orbitando → los DEMÁS lo ven (aura real, no un Drawing). Confirmado
+-- que los props se mueven (PropFling). Radius/Speed/Count por slider. Ofensivo opcional: a Speed alto la
+-- colisión con enemigos puede pegarles (server-side). Suelta las props al apagar (les devuelve la velocidad 0).
+return function(require, LIP, Lib)
+    local RunService = game:GetService("RunService")
+    local Workspace  = game:GetService("Workspace")
+    local Players    = game:GetService("Players")
+    local LP = Players.LocalPlayer
+    local PA = {}
+
+    local function O(f) local o = Lib.Options[f]; return o and o.Value end
+    local function T(f) local t = Lib.Toggles[f]; return t and t.Value end
+
+    local claimed = {}   -- {BasePart...} actualmente en órbita
+    local ang = 0
+
+    local function isFreeProp(d, chars)
+        if not (d:IsA("BasePart") and not d.Anchored) then return false end
+        if d.AssemblyRootPart ~= d then return false end       -- solo roots de assemblies libres
+        local anc = d:FindFirstAncestorOfClass("Model")
+        if anc and chars[anc] then return false end            -- no personajes
+        return true
+    end
+    -- las N parts sueltas más cercanas a `pos`
+    local function findProps(n, pos)
+        local chars = {}
+        for _, p in ipairs(Players:GetPlayers()) do if p.Character then chars[p.Character] = true end end
+        local cand = {}
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            if isFreeProp(d, chars) then
+                cand[#cand + 1] = { d, (d.Position - pos).Magnitude }
+            end
+        end
+        table.sort(cand, function(a, b) return a[2] < b[2] end)
+        local out = {}
+        for i = 1, math.min(n, #cand) do out[i] = cand[i][1] end
+        return out
+    end
+
+    function PA.init()
+        LIP.track(RunService.Heartbeat:Connect(function(dt)
+            if not T("PropAura") then
+                if #claimed > 0 then claimed = {} end
+                return
+            end
+            local c = LP.Character
+            local root = c and c:FindFirstChild("HumanoidRootPart")
+            if not root then return end
+            local n      = math.floor(O("PropAuraCount") or 6)
+            local radius = O("PropAuraRadius") or 12
+            local speed  = O("PropAuraSpeed") or 3
+            local height = O("PropAuraHeight") or 2
+
+            -- limpiar props muertos + (re)reclamar si faltan (se re-escanea barato cada ~0.5s vía count mismatch)
+            local live = {}
+            for _, p in ipairs(claimed) do if p and p.Parent and not p.Anchored then live[#live + 1] = p end end
+            claimed = live
+            if #claimed < n then claimed = findProps(n, root.Position) end
+
+            ang = ang + speed * dt
+            local m = #claimed
+            for i = 1, m do
+                local p = claimed[i]
+                if p and p.Parent then
+                    local a = ang + (i / m) * 6.2831853
+                    local pos = root.Position + Vector3.new(math.cos(a) * radius, height, math.sin(a) * radius)
+                    pcall(function()
+                        p.CFrame = CFrame.lookAt(pos, root.Position)   -- owneado → el server lo reps orbitando
+                        p.AssemblyLinearVelocity  = Vector3.zero
+                        p.AssemblyAngularVelocity = Vector3.zero
+                    end)
+                end
+            end
+        end))
+    end
+
+    return PA
 end
 
 end)()
@@ -3663,11 +3750,18 @@ return function(require, LIP, Lib)
         rk1:AddButton("Fire Roadkill", function() Roadkill.fire() end)
         local rk2 = RK:AddPanel("Velocity Desync", { Column = 2 })
         rk2:AddToggle("VelDesync", { Text = "Velocity Desync", Default = false,
-            Tooltip = "Velocidad enorme alternada cada frame → el server te extrapola LEJOS (tasa del replicator) sin escribir CFrame → serverside desyncado todo el tiempo (evasión, walkfling-like sin flingear). No corre si hay spoof/weld activo (esos ya manejan la pos por CFrame)." })
+            Tooltip = "PINEA tu CFrame clientside (no volás) + setea velocidad enorme → el server extrapola tu pos LEJOS entre updates = desync jitter serverside (evasión, walkfling-like sin flingear). Fix del que te volaba. No corre si hay spoof/weld activo." })
         rk2:AddKeybind("VelDesyncKey", { Text = "Vel Desync Key", Mode = "Toggle",
             Callback = function(a) local t = Lib.Toggles.VelDesync; if t then t:SetValue(a) end end })
         rk2:AddSlider("VDMagnitude", { Text = "Magnitude", Min = 500, Max = 50000, Default = 5000, Suffix = "st/s",
             Tooltip = "Magnitud de la velocidad. Más = más lejos serverside = más desync." })
+        local rk3 = RK:AddPanel("Prop Aura", { Column = 1 })
+        rk3:AddToggle("PropAura", { Text = "Prop Aura (server-side)", Default = false,
+            Tooltip = "Reclama las N parts SUELTAS más cercanas (owneadas por proximidad) y las hace ORBITAR tu HRP → el server las reps orbitando = OTROS lo ven (aura REAL, no un Drawing). A Speed alto la colisión puede pegar a enemigos." })
+        rk3:AddSlider("PropAuraCount", { Text = "Count", Min = 1, Max = 20, Default = 6, Suffix = " props" })
+        rk3:AddSlider("PropAuraRadius", { Text = "Radius", Min = 3, Max = 40, Default = 12, Suffix = "studs" })
+        rk3:AddSlider("PropAuraSpeed", { Text = "Speed", Min = 1, Max = 30, Default = 4 })
+        rk3:AddSlider("PropAuraHeight", { Text = "Height", Min = -10, Max = 20, Default = 2, Suffix = "studs" })
 
         -- Auto Weapons: teleport a un pickup suelto + grab (op12) + volver. Multi-select con búsqueda.
         local AW = Misc:AddSection("Auto Weapons", "Recoge armas sueltas del mapa (teleport + grab)", { Columns = 2 })
@@ -3756,6 +3850,7 @@ return function(require, LIP, Lib)
     local CFrameDesync = require("Movement.CFrameDesync")
     local Timer   = require("Movement.Timer")
     local VelDesync = require("Movement.VelDesync")
+    local PropAura = require("Movement.PropAura")
     local HitFX   = require("Visuals.HitEffects")
     local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
@@ -3783,6 +3878,7 @@ return function(require, LIP, Lib)
     CFrameDesync.init()  -- desync self-anchored (Spoof.init idempotente)
     Timer.init()     -- game-speed timer (StepPhysics) → rapidfire + fast reload dinámico
     VelDesync.init() -- velocity desync (serverside far via replicator, sin flingear)
+    PropAura.init()  -- aura server-side: N props sueltos owneados orbitando
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
     CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 
