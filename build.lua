@@ -18,6 +18,7 @@ local ORDER = {
     "Movement/Movement.lua",
     "Movement/Vehicle.lua",
     "Movement/Void.lua",
+    "Movement/CFrameDesync.lua",
     "Visuals/ESP.lua",
     "Visuals/HitEffects.lua",
     "Visuals/CrosshairHUD.lua",

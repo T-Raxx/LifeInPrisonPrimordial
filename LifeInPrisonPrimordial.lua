@@ -2222,11 +2222,14 @@ return function(require, LIP, Lib)
 
     -- patrones de void (TODOS altos — clamp Y≥30 para NUNCA tocar el vacío, que mata).
     -- Rotación XYZ random SIEMPRE. Origen absoluto (0,100,0).
-    -- estado de los patrones. Origen ABSOLUTO (0,100,0). `dist` ahora = RADIUS (1-100 studs, close-range pro).
+    -- estado de los patrones. `anchor` = base (ORIGIN absoluto para void/idle; pos real para CFrame Desync).
+    -- `dist` = RADIUS (1-100 close) para Random/Teleport/Jitter/StaticBreak; Nebula usa FarDist/MapRadius.
     local tpAnchor, tpT = nil, 0
     local jitP1, jitP2, jitReseed, jitFlip = nil, nil, 0, false
     local sbAnchor, sbT = nil, 0
-    local function patternCF(dist, pattern)
+    local nebT, nebPhase, nebSpot, nebFar, nebStatic = 0, "far", nil, nil, true
+    local function patternCF(anchor, dist, pattern)
+        anchor = anchor or ORIGIN
         local rot = CFrame.Angles(rnd() * 6.2831, rnd() * 6.2831, rnd() * 6.2831)   -- anti-aim rotacional XYZ
         local now = os.clock()
         local off
@@ -2253,13 +2256,36 @@ return function(require, LIP, Lib)
             end
             if (now - sbT) > 0.5 then off = Vector3.new(-sbAnchor.X, sbAnchor.Y, -sbAnchor.Z)   -- BREAK (flick opuesto)
             else off = sbAnchor end                                                              -- STATIC (bait)
+        elseif pattern == "Nebula" then
+            -- FAR↔MAP a distancias RIDÍCULAS: FAR (~0.15s) = dir random 3D * FarDist (300M, un-hittable por
+            -- latencia); MAP (~0.3s) = spot random cerca del anchor dentro de MapRadius, SOSTENIDO 0.3s. Cada
+            -- spot es STATIC (rompe predicts: te lockean quieto y saltás) o con jitter chico (rompe centroide).
+            -- Deltas 300M↔mapa = irresolvible. FarDist/MapRadius por slider.
+            local FarD = O("FarDist") or 3e8
+            local MapR = O("MapRadius") or 3000
+            if now >= nebT then
+                if nebPhase == "far" then
+                    nebPhase = "map"; nebT = now + 0.3
+                    nebSpot = Vector3.new(rndSigned() * MapR, rnd() * 50, rndSigned() * MapR)
+                    nebStatic = (rnd() < 0.5)
+                else
+                    nebPhase = "far"; nebT = now + 0.15
+                    local dx, dy, dz = rndSigned(), rndSigned(), rndSigned()
+                    local m = math.sqrt(dx*dx + dy*dy + dz*dz); if m < 1e-6 then m = 1 end
+                    nebFar = Vector3.new(dx/m, math.abs(dy/m), dz/m) * FarD   -- Y+ (nunca al vacío)
+                end
+            end
+            if nebPhase == "far" then off = nebFar or Vector3.new(FarD, FarD, 0)
+            elseif nebStatic then off = nebSpot or Vector3.zero                            -- ESTÁTICO (rompe predicts)
+            else off = (nebSpot or Vector3.zero) + Vector3.new(rndSigned() * 5, 0, rndSigned() * 5) end  -- jitter (rompe centroide)
         else -- "Random" (NON-PATTERN, default): offset XYZ random cada frame dentro del radius
             off = Vector3.new(rndSigned() * dist, rnd() * dist * 0.5, rndSigned() * dist)
         end
-        local pos = ORIGIN + off
+        local pos = anchor + off
         if pos.Y < 30 then pos = Vector3.new(pos.X, 30 + math.abs(pos.Y), pos.Z) end   -- NUNCA al vacío (mata)
         return CFrame.new(pos) * rot
     end
+    Void.patternCF = patternCF   -- expuesto para CFrame Desync (reusa con anchor = pos real)
 
     -- PRESETS PRO (VoidPreset): pattern + radius + timing in/out. Non-pattern (Legit/Chaos/Blink) vs pattern
     -- anti-centroide (Jitter/Peek). applyPreset setea las Options (mismo mecanismo que Strafe.applyPreset).
@@ -2283,7 +2309,7 @@ return function(require, LIP, Lib)
         local root = myRoot(); local cam = Workspace.CurrentCamera
         if not root then Spoof.stop(cam); return end
         local dist = opts.dist or 1000
-        local goCF = patternCF(dist, opts.pattern)
+        local goCF = patternCF(ORIGIN, dist, opts.pattern)
         LIP.spoofFakePos = goCF.Position
 
         LIP.tightFollow = false
@@ -2351,7 +2377,7 @@ return function(require, LIP, Lib)
     function Void.tickVoidPos(opts)
         local root = myRoot(); local cam = Workspace.CurrentCamera
         if not root then return end
-        local goCF = patternCF(opts.dist or 1000, opts.pattern)
+        local goCF = patternCF(ORIGIN, opts.dist or 1000, opts.pattern)
         LIP.spoofFakePos = goCF.Position
         LIP.tightFollow = false
         spoofTo(root, cam, goCF, opts.posSpoof)
@@ -2495,6 +2521,55 @@ return function(require, LIP, Lib)
     end
 
     return Void
+end
+
+end)()
+_MODS["Movement.CFrameDesync"] = (function()
+-- Movement/CFrameDesync.lua — FACTORY. Desync CONTINUO (estilo idle/void) pero ANCHOR = tu HRP REAL (self-based),
+-- no el origen absoluto (0,100,0). Full customizable (pattern/dist/timing propios, sub-tab dedicada). Reusa
+-- Void.patternCF con anchor = tu pos real → apareces desyncado RELATIVO a donde estás (Random 1-100 = sutil;
+-- Nebula/far = te vas 300M desde vos). Respeta el master Pos Spoof (LIP.posSpoof): ON = desync (cuerpo/cámara
+-- reales quietos), OFF = teleport crudo del cuerpo real. Compone con el mismo Spoof que Void/Strafe.
+return function(require, LIP, Lib)
+    local Players   = game:GetService("Players")
+    local Workspace = game:GetService("Workspace")
+    local LP = Players.LocalPlayer
+    local Spoof = require("Combat.Spoof")
+    local Void  = require("Movement.Void")   -- reusa patternCF (misma lógica de patrones)
+    local CFD = {}
+
+    local function myRoot() local c = LP.Character; return c and c:FindFirstChild("HumanoidRootPart") end
+
+    -- desync self-anchored: goCF = patternCF(tu_pos_real, dist, pattern). Igual que Void.tick pero anchor = self.
+    function CFD.tick(opts)
+        local root = myRoot(); local cam = Workspace.CurrentCamera
+        if not root then Spoof.stop(cam); return end
+        local anchor = root.Position                       -- ANCHOR = tu pos REAL (restaurada por RenderStepped)
+        local goCF = Void.patternCF(anchor, opts.dist or 30, opts.pattern or "Random")
+        LIP.spoofFakePos = goCF.Position
+        LIP.tightFollow = false
+        if opts.posSpoof ~= false then
+            -- DESYNC: server te ve en goCF (desyncado de tu pos real), cuerpo/cámara reales quietos.
+            if LIP.connRep then Spoof.unweld() end
+            local realCF = Spoof.captureReal(root)
+            LIP.cachedRoot   = root
+            LIP.spoofRealCF  = realCF
+            LIP.spoofOn      = true
+            LIP.spoofVel     = root.AssemblyLinearVelocity
+            LIP.spoofRestore = realCF
+            Spoof.camToLocal(cam, realCF)
+            pcall(function() root.CFrame = goCF end)
+        else
+            -- teleport crudo del cuerpo real (riesgoso; respeta Pos Spoof OFF)
+            if LIP.spoofOn or LIP.connRep then Spoof.stop(cam) end
+            pcall(function() root.CFrame = goCF; root.AssemblyLinearVelocity = Vector3.zero end)
+        end
+    end
+
+    function CFD.stop() Spoof.stop(Workspace.CurrentCamera) end
+    function CFD.init() Spoof.init() end   -- Spoof.init idempotente (compartido con Void/Strafe)
+
+    return CFD
 end
 
 end)()
@@ -3059,13 +3134,27 @@ return function(require, LIP, Lib)
             Tooltip = "Solo dispara OUT del void; pausa el disparo mientras estás IN void." })
         vd:AddToggle("VoidReload", { Text = "Void Reload", Default = false,
             Tooltip = "Recarga el arma mientras estás IN void (escondido) cuando el cargador se agota." })
-        vd:AddList("VoidPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak" }, Default = "Jitter",
-            Tooltip = "Non-pattern (Random/Teleport) = unpredecible pero PROMEDIABLE por un centroide. Pattern (Jitter/StaticBreak) = anti-centroide: el promedio enemigo cae en el vacío." })
+        vd:AddList("VoidPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Jitter",
+            Tooltip = "Non-pattern (Random/Teleport) = unpredecible pero PROMEDIABLE. Pattern (Jitter/StaticBreak) = anti-centroide. Nebula = far↔map a distancias RIDÍCULAS (300M ↔ spots random del mapa estáticos/jitter): irresolvible." })
         vd:AddSlider("VoidDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
-            Tooltip = "Radio del jitter alrededor del origen (close-range pro). El patrón protege, no la distancia." })
+            Tooltip = "Radio del jitter alrededor del origen (close-range pro, para Random/Jitter/StaticBreak). El patrón protege, no la distancia." })
+        vd:AddSlider("FarDist", { Text = "Far Dist", Min = 1000000, Max = 500000000, Default = 300000000, Suffix = "st",
+            Tooltip = "Distancia de la fase FAR de Nebula (300M default). Ultra-lejos = un-hittable por latencia. Si tan lejos no replica (Roblox cullea CFrames extremos), bajalo." })
+        vd:AddSlider("MapRadius", { Text = "Map Radius", Min = 100, Max = 10000, Default = 3000, Suffix = "st",
+            Tooltip = "Spread de los spots random del mapa en la fase MAP de Nebula (sostenidos 0.3s, static o jitter)." })
         vd:AddDropdown("VoidPreset", { Text = "Preset", Values = { "Legit", "Jitter", "Peek", "Blink", "Chaos" }, Default = "Jitter",
             Tooltip = "Presets pro: setean pattern+radius+timing. Legit=sutil, Jitter/Peek=anti-centroide (centroide=aire), Blink=teleport, Chaos=random rápido.",
             Callback = function(v) Void.applyPreset(v) end })
+
+        local cfd = RS:AddPanel("CFrame Desync", { Column = 2 })
+        cfd:AddToggle("CFrameDesync", { Text = "CFrame Desync", Default = false,
+            Tooltip = "Desync CONTINUO self-anchored: el server te ve desyncado RELATIVO a tu pos REAL (no al origen absoluto). Full customizable. Excluyente con Strafe/Idle/Godmode." })
+        cfd:AddKeybind("CFrameDesyncKey", { Text = "Toggle Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.CFrameDesync; if t then t:SetValue(a) end end })
+        cfd:AddList("CFDPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Random",
+            Tooltip = "Mismo set de patrones que void/idle pero anchor = tu pos real. Random 1-100 = sutil; Nebula = te vas 300M desde vos y volvés a spots random." })
+        cfd:AddSlider("CFDDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
+            Tooltip = "Radio del jitter alrededor de tu pos real (Random/Jitter/StaticBreak). Nebula usa Far Dist/Map Radius del panel Void." })
 
         --== Col 3: Target Strafe + Server Position ==--
         local ts = RS:AddPanel("Target Strafe", { Column = 3 })
@@ -3100,8 +3189,8 @@ return function(require, LIP, Lib)
         local idl = RS:AddPanel("Idle State", { Column = 3 })
         idl:AddToggle("IdleState", { Text = "Idle State", Default = false,
             Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando. (Antes se llamaba Void Spam.)" })
-        idl:AddList("IdlePattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak" }, Default = "Jitter",
-            Tooltip = "Non-pattern (Random/Teleport) vs Pattern anti-centroide (Jitter/StaticBreak)." })
+        idl:AddList("IdlePattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Jitter",
+            Tooltip = "Non-pattern (Random/Teleport) vs Pattern anti-centroide (Jitter/StaticBreak) vs Nebula (far↔map ridículo)." })
         idl:AddSlider("IdleDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
             Tooltip = "Radio del jitter alrededor del origen (close-range pro)." })
 
@@ -3364,6 +3453,7 @@ return function(require, LIP, Lib)
     local Move    = require("Movement.Movement")
     local Vehicle = require("Movement.Vehicle")
     local Void    = require("Movement.Void")
+    local CFrameDesync = require("Movement.CFrameDesync")
     local HitFX   = require("Visuals.HitEffects")
     local CrossHUD = require("Visuals.CrosshairHUD")
     local UI      = require("UI")
@@ -3388,6 +3478,7 @@ return function(require, LIP, Lib)
     Vehicle.init()   -- vehicle speed
     Strafe.init()    -- Spoof.init (hook __index + restore RenderStepped, compartido con Void)
     Void.init()      -- void spam + visualizador (Spoof.init idempotente)
+    CFrameDesync.init()  -- desync self-anchored (Spoof.init idempotente)
     HitFX.init()     -- hitsounds / killsounds / hitmarker (op46)
     CrossHUD.init()  -- labels de estado del ragebot abajo del crosshair
 
@@ -3510,6 +3601,7 @@ return function(require, LIP, Lib)
         -- Void Spam SOLO con Target Strafe (compone): OUT = strafe-orbit (dispara), IN = void (esconde).
         local voidSpamOn = T.VoidSpam and T.VoidSpam.Value and strafeOn
         local idleOn     = T.IdleState and T.IdleState.Value     -- viejo void = anti-aim idle continuo
+        local cfDesyncOn = T.CFrameDesync and T.CFrameDesync.Value  -- desync self-anchored (sub-tab propia)
         LIP.voidSpamOn   = voidSpamOn
         LIP.voidShootOut = (not T.VoidShootOut) or T.VoidShootOut.Value    -- default on
         if not voidSpamOn then LIP.voidShootOk = true; LIP.voidPhase = nil end
@@ -3620,6 +3712,10 @@ return function(require, LIP, Lib)
             if LIP.godBase then Godmode.stop() end
             Void.tick({ dist = O.IdleDist.Value, pattern = O.IdlePattern:GetValue(),
                         posSpoof = posSpoof, connExploit = connExp })
+        elseif cfDesyncOn then
+            -- CFRAME DESYNC: desync continuo self-anchored (anchor = tu pos real). Full customizable, sub-tab propia.
+            if LIP.godBase then Godmode.stop() end
+            CFrameDesync.tick({ dist = O.CFDDist.Value, pattern = O.CFDPattern:GetValue(), posSpoof = posSpoof })
         else
             if LIP.godBase then Godmode.stop() end
             if LIP.spoofOn or LIP.connRep then Strafe.stop() end
