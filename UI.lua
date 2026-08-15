@@ -47,25 +47,25 @@ return function(require, LIP, Lib)
         dep(p:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
             Callback = function(a) local t = Lib.Toggles.TargetStrafe; if t then t:SetValue(a) end end }), "Ragebot")
         dep(p:AddKeybind("SetTargetKey", { Text = "Set Target (crosshair)", Mode = "Toggle",
-            Callback = function() Strafe.pickCrosshair() end }), "TargetStrafe")
-        dep(p:AddToggle("Spectate", { Text = "View Target", Default = false }), "TargetStrafe")
+            Callback = function() Strafe.pickCrosshair() end }), "Ragebot")
+        dep(p:AddToggle("Spectate", { Text = "View Target", Default = false }), "Ragebot")
         dep(p:AddKeybind("SpectateKey", { Text = "Spectate Key", Mode = "Toggle",
-            Callback = function(a) local t = Lib.Toggles.Spectate; if t then t:SetValue(a) end end }), "TargetStrafe")
-        dep(p:AddButton("Clear Target", function() Strafe.clearManual() end), "TargetStrafe")
-        dep(p:AddLabel("Server Position", { Header = true }), "TargetStrafe")
+            Callback = function(a) local t = Lib.Toggles.Spectate; if t then t:SetValue(a) end end }), "Ragebot")
+        dep(p:AddButton("Clear Target", function() Strafe.clearManual() end), "Ragebot")
+        dep(p:AddLabel("Server Position", { Header = true }), "Ragebot")
         dep(p:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
-            Tooltip = "ON = desync (cuerpo real quieto). Con Connection Weld ON = ancla la cámara a tu pos real (vista estable, harmonía). OFF (solo desync) = mueve el cuerpo real." }), "TargetStrafe")
+            Tooltip = "ON = desync (cuerpo real quieto). Con Connection Weld ON = ancla la cámara a tu pos real (vista estable, harmonía). OFF (solo desync) = mueve el cuerpo real." }), "Ragebot")
         dep(p:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
-            Tooltip = "WELD real al target: tu cuerpo se pega a él (target.CFrame*offset, sigue rotación) + PhysicsRepRootPart = su HRP → replica SIN delay ni flicker. Es el método de posición (ignora Pos Spoof). Radius = distancia atrás/órbita (sin fling)." }), "TargetStrafe")
-        dep(p:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" }), "TargetStrafe")
+            Tooltip = "WELD real al target: tu cuerpo se pega a él (target.CFrame*offset, sigue rotación) + PhysicsRepRootPart = su HRP → replica SIN delay ni flicker. Es el método de posición (ignora Pos Spoof). Radius = distancia atrás/órbita (sin fling)." }), "Ragebot")
+        dep(p:AddToggle("VoidViz", { Text = "Indicator", Default = true, Tooltip = "Part + icono + tracer a la pos que ve el server" }), "Ragebot")
             :AddColorPicker("VizColor", { Default = Color3.fromRGB(202, 151, 161) })
         dep(p:AddToggle("StrafeBait", { Text = "Bait", Default = false,
-            Tooltip = "Cada 1-3s (random) salta a un spot random por 0.3s" }), "TargetStrafe")
+            Tooltip = "Cada 1-3s (random) salta a un spot random por 0.3s" }), "Ragebot")
         dep(p:AddDropdown("StrafeMode", { Text = "Mode", Values = { "Normal", "Random", "Behind", "Spiral", "Inside" }, Default = "Inside",
-            Tooltip = "Inside = dentro del target (offset 0) → el server te ve EN él = cero mismatch de rango al disparar (el más estable)." }), "TargetStrafe")
-        dep(p:AddSlider("StrafeRadius", { Text = "Radius", Min = 0, Max = 150, Default = 10, Decimals = 1, Suffix = "studs" }), "TargetStrafe")
-        dep(p:AddSlider("StrafeSpeed", { Text = "Speed", Min = 1, Max = 40, Default = 4 }), "TargetStrafe")
-        dep(p:AddSlider("StrafeHeight", { Text = "Height", Min = -50, Max = 50, Default = 0 }), "TargetStrafe")
+            Tooltip = "Inside = dentro del target (offset 0) → el server te ve EN él = cero mismatch de rango al disparar (el más estable)." }), "Ragebot")
+        dep(p:AddSlider("StrafeRadius", { Text = "Radius", Min = 0, Max = 150, Default = 10, Decimals = 1, Suffix = "studs" }), "Ragebot")
+        dep(p:AddSlider("StrafeSpeed", { Text = "Speed", Min = 1, Max = 40, Default = 4 }), "Ragebot")
+        dep(p:AddSlider("StrafeHeight", { Text = "Height", Min = -50, Max = 50, Default = 0 }), "Ragebot")
 
         dep(p:AddLabel("Auto Fire", { Header = true }), "Ragebot")
         dep(p:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
