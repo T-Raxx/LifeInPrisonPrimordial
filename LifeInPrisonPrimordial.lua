@@ -1480,7 +1480,15 @@ return function(require, LIP, Lib)
         local tool = firearm()
         local handle = tool and tool:FindFirstChild("Handle")
         local muzzleAtt = handle and handle:FindFirstChild("Muzzle")
-        local muzzle = (muzzleAtt and muzzleAtt.WorldPosition) or origin
+        -- MUZZLE: cuando spoofeás, la Muzzle del tool sigue en tu cuerpo REAL clientside → origin spoofeado +
+        -- muzzle real = INCONSISTENCIA → el server te ve en otro lado = tracers rojos (no registra). Consistente:
+        -- muzzle = origin (spoofeado) cuando spoofeás; la Muzzle real solo cuando NO hay spoof.
+        local muzzle
+        if (LIP.spoofOn or LIP.connRep) then
+            muzzle = origin
+        else
+            muzzle = (muzzleAtt and muzzleAtt.WorldPosition) or origin
+        end
         if hitPart then
             local center = hitPart.Position   -- CENTRO exacto + objspace ZERO = HBE-safe (dentro del hitbox)
             return { origin, muzzle, center, hitPart, center, Vector3.zero }
