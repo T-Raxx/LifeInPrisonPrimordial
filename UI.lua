@@ -25,8 +25,8 @@ return function(require, LIP, Lib)
 
         --== Col 1: RAGEBOT (árbol; todo dep del master salvo Silent Aim) ==--
         local p = RS:AddPanel("Ragebot", { Column = 1 })
-        p:AddToggle("Ragebot", { Text = "Ragebot", Default = false,
-            Tooltip = "MASTER del ragebot: gatea Target Strafe / Auto Fire / Void Spam / Timer / CFrame Desync / Idle State. Silent Aim manual es aparte." })
+        p:AddToggle("Ragebot", { Text = "Ragebot", Default = true,
+            Tooltip = "MASTER del ragebot: gatea Target Strafe / Auto Fire / Void Spam / Timer / CFrame Desync / Idle State. Los sub-toggles siguen OFF por default (armado, nada corre hasta prender una feature). Apagalo como off-switch. Silent Aim manual es aparte." })
 
         p:AddLabel("Silent Aim", { Header = true })
         p:AddToggle("SilentAim", { Text = "Silent Aim", Default = false,
