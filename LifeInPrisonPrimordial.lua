@@ -3499,18 +3499,18 @@ return function(require, LIP, Lib)
         p:AddToggle("FFCheck", { Text = "ForceField Check", Default = true,
             Tooltip = "Si el target tiene ForceField (spawn protection) o murió → te escondés (idle) y no disparás hasta que respawnee / se le quite el FF. Ignore temporal." })
 
-        p:AddLabel("Target Strafe", { Header = true })
+        dep(p:AddLabel("Target Strafe", { Header = true }), "Ragebot")
         dep(p:AddToggle("TargetStrafe", { Text = "Target Strafe", Default = false,
             Tooltip = "Desync: el server te ve orbitando; cuerpo/cámara reales quietos" }), "Ragebot")
-        p:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
-            Callback = function(a) local t = Lib.Toggles.TargetStrafe; if t then t:SetValue(a) end end })
+        dep(p:AddKeybind("StrafeKey", { Text = "Strafe Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.TargetStrafe; if t then t:SetValue(a) end end }), "Ragebot")
         dep(p:AddKeybind("SetTargetKey", { Text = "Set Target (crosshair)", Mode = "Toggle",
             Callback = function() Strafe.pickCrosshair() end }), "TargetStrafe")
         dep(p:AddToggle("Spectate", { Text = "View Target", Default = false }), "TargetStrafe")
-        p:AddKeybind("SpectateKey", { Text = "Spectate Key", Mode = "Toggle",
-            Callback = function(a) local t = Lib.Toggles.Spectate; if t then t:SetValue(a) end end })
+        dep(p:AddKeybind("SpectateKey", { Text = "Spectate Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Spectate; if t then t:SetValue(a) end end }), "TargetStrafe")
         dep(p:AddButton("Clear Target", function() Strafe.clearManual() end), "TargetStrafe")
-        p:AddLabel("Server Position", { Header = true })
+        dep(p:AddLabel("Server Position", { Header = true }), "TargetStrafe")
         dep(p:AddToggle("PosSpoof", { Text = "Pos Spoof", Default = true,
             Tooltip = "ON = desync (cuerpo real quieto). Con Connection Weld ON = ancla la cámara a tu pos real (vista estable, harmonía). OFF (solo desync) = mueve el cuerpo real." }), "TargetStrafe")
         dep(p:AddToggle("ConnExploit", { Text = "Connection Weld", Default = false,
@@ -3525,7 +3525,7 @@ return function(require, LIP, Lib)
         dep(p:AddSlider("StrafeSpeed", { Text = "Speed", Min = 1, Max = 40, Default = 4 }), "TargetStrafe")
         dep(p:AddSlider("StrafeHeight", { Text = "Height", Min = -50, Max = 50, Default = 0 }), "TargetStrafe")
 
-        p:AddLabel("Auto Fire", { Header = true })
+        dep(p:AddLabel("Auto Fire", { Header = true }), "Ragebot")
         dep(p:AddToggle("AutoFire", { Text = "Auto Fire", Default = false,
             Tooltip = "Dispara al target auto (sin click, usa silent aim por default). SOLO con Target Strafe ON. Capeado al firerate." }), "Ragebot")
         dep(p:AddSlider("AutoFireRate", { Text = "Max Rate", Min = 0.5, Max = 30, Default = 30, Decimals = 2, Suffix = "/s",
@@ -3540,7 +3540,7 @@ return function(require, LIP, Lib)
         dep(p:AddToggle("RapidFire", { Text = "Rapid Fire", Default = false,
             Tooltip = "Stream de op14 mientras mantenés mouse1, CAPEADO al firerate del arma (exceder = unequip)." }), "AutoFire")
         dep(p:AddButton("Force Reload", function() Weapon.instantReload() end), "AutoFire")
-        p:AddKeybind("ReloadKey", { Text = "Reload Key", Mode = "Toggle", Callback = function() Weapon.instantReload() end })
+        dep(p:AddKeybind("ReloadKey", { Text = "Reload Key", Mode = "Toggle", Callback = function() Weapon.instantReload() end }), "AutoFire")
         dep(p:AddSlider("ReloadAmmo", { Text = "Mag Size", Min = 1, Max = 120, Default = 15,
             Tooltip = "Cargador de tu arma (se auto-detecta si recargás con R 1 vez)" }), "AutoFire")
         dep(p:AddSlider("ReloadTime", { Text = "Reload Time", Min = 0.3, Max = 3, Default = 1.2, Decimals = 1, Suffix = "s" }), "AutoFire")
@@ -3548,7 +3548,7 @@ return function(require, LIP, Lib)
         dep(p:AddSlider("ShotgunPellets", { Text = "Shotgun Pellets", Min = 1, Max = 16, Default = 8,
             Tooltip = "Pellets por tiro para escopetas (SPAS/DB). El autofire manda N pellets = registra." }), "AutoFire")
 
-        p:AddLabel("Void Spam", { Header = true })
+        dep(p:AddLabel("Void Spam", { Header = true }), "Ragebot")
         dep(p:AddToggle("VoidSpam", { Text = "Void Spam", Default = false,
             Tooltip = "SOLO con Target Strafe ON. Oscila OUT (strafe-orbit al target, disparás) ↔ IN void (server te ve lejos, esconde). Rompe el resolver de PREDICCIÓN enemigo." }), "Ragebot")
         dep(p:AddSlider("VoidInTime", { Text = "In Void", Min = 0.01, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s",
@@ -3572,11 +3572,11 @@ return function(require, LIP, Lib)
         dep(p:AddSlider("MapRadius", { Text = "Map Radius", Min = 100, Max = 10000, Default = 3000, Suffix = "st",
             Tooltip = "Spread de los spots random del mapa en la fase MAP de Nebula (sostenidos 0.3s, static o jitter)." }), "VoidSpam")
 
-        p:AddLabel("Timer", { Header = true })
+        dep(p:AddLabel("Timer", { Header = true }), "Ragebot")
         dep(p:AddToggle("Timer", { Text = "Timer", Default = false,
             Tooltip = "Acelera tu simulación (StepPhysics) → time() más rápido → rapidfire + reload rápido LEGAL. Causa FPS drops + lag de replicación (combatir con spam de tiros + Connection Weld)." }), "Ragebot")
-        p:AddKeybind("TimerKey", { Text = "Timer Key", Mode = "Toggle",
-            Callback = function(a) local t = Lib.Toggles.Timer; if t then t:SetValue(a) end end })
+        dep(p:AddKeybind("TimerKey", { Text = "Timer Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.Timer; if t then t:SetValue(a) end end }), "Ragebot")
         dep(p:AddSlider("TimerStatic", { Text = "Static Mult", Min = 1, Max = 3, Default = 1, Decimals = 2, Suffix = "x",
             Tooltip = "Mult constante cuando NO estás en Void Spam. 1 = off." }), "Timer")
         dep(p:AddSlider("TimerOut", { Text = "Out Mult", Min = 1, Max = 3, Default = 2, Decimals = 2, Suffix = "x",
@@ -3584,17 +3584,17 @@ return function(require, LIP, Lib)
         dep(p:AddSlider("TimerReload", { Text = "Reload Mult", Min = 1, Max = 3, Default = 2, Decimals = 2, Suffix = "x",
             Tooltip = "Mult mientras recargás (override). Recarga rápida." }), "Timer")
 
-        p:AddLabel("CFrame Desync", { Header = true })
+        dep(p:AddLabel("CFrame Desync", { Header = true }), "Ragebot")
         dep(p:AddToggle("CFrameDesync", { Text = "CFrame Desync", Default = false,
             Tooltip = "Desync CONTINUO self-anchored: el server te ve desyncado RELATIVO a tu pos REAL (no al origen absoluto). Excluyente con Strafe/Idle/Godmode." }), "Ragebot")
-        p:AddKeybind("CFrameDesyncKey", { Text = "Toggle Key", Mode = "Toggle",
-            Callback = function(a) local t = Lib.Toggles.CFrameDesync; if t then t:SetValue(a) end end })
+        dep(p:AddKeybind("CFrameDesyncKey", { Text = "Toggle Key", Mode = "Toggle",
+            Callback = function(a) local t = Lib.Toggles.CFrameDesync; if t then t:SetValue(a) end end }), "Ragebot")
         dep(p:AddList("CFDPattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Random",
             Tooltip = "Mismo set de patrones que void/idle pero anchor = tu pos real. Random 1-100 = sutil; Nebula usa Far Dist/Map Radius del void." }), "CFrameDesync")
         dep(p:AddSlider("CFDDist", { Text = "Radius", Min = 1, Max = 100, Default = 30, Suffix = "studs",
             Tooltip = "Radio del jitter alrededor de tu pos real (Random/Jitter/StaticBreak)." }), "CFrameDesync")
 
-        p:AddLabel("Idle State", { Header = true })
+        dep(p:AddLabel("Idle State", { Header = true }), "Ragebot")
         dep(p:AddToggle("IdleState", { Text = "Idle State", Default = false,
             Tooltip = "Anti-aim CONTINUO (no dispara): el server te ve teleportando lejos con el pattern todo el tiempo. Para esconderte cuando NO estás tirando." }), "Ragebot")
         dep(p:AddList("IdlePattern", { Values = { "Random", "Teleport", "Jitter", "StaticBreak", "Nebula" }, Default = "Jitter",
