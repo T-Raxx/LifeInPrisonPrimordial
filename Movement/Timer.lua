@@ -34,6 +34,7 @@ return function(require, LIP, Lib)
 
     -- mult DINÁMICO según la fase actual (reload > void-out > void-in > static)
     function Timer.currentMult()
+        if not T("Ragebot") then return 1 end   -- gateado por el master ragebot (el Timer vive en el árbol)
         if not T("Timer") then return 1 end
         if LIP.reloading then return O("TimerReload") or 1 end
         if LIP.voidSpamOn then

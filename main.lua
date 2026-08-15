@@ -166,13 +166,15 @@ return function(require, LIP, Lib)
                           ffCheck = T.FFCheck and T.FFCheck.Value }
         local cam = Workspace.CurrentCamera
 
-        local strafeOn   = T.TargetStrafe and T.TargetStrafe.Value
-        local autoOn     = T.AutoFire and T.AutoFire.Value
+        -- RAGEBOT MASTER: gatea el árbol (strafe/autofire/void/idle/cframe-desync/timer). Silent Aim + Resolver aparte.
+        local rage       = T.Ragebot and T.Ragebot.Value
+        local strafeOn   = rage and T.TargetStrafe and T.TargetStrafe.Value
+        local autoOn     = rage and T.AutoFire and T.AutoFire.Value
         local godOn      = T.Godmode and T.Godmode.Value
         -- Void Spam SOLO con Target Strafe (compone): OUT = strafe-orbit (dispara), IN = void (esconde).
-        local voidSpamOn = T.VoidSpam and T.VoidSpam.Value and strafeOn
-        local idleOn     = T.IdleState and T.IdleState.Value     -- viejo void = anti-aim idle continuo
-        local cfDesyncOn = T.CFrameDesync and T.CFrameDesync.Value  -- desync self-anchored (sub-tab propia)
+        local voidSpamOn = rage and T.VoidSpam and T.VoidSpam.Value and strafeOn
+        local idleOn     = rage and T.IdleState and T.IdleState.Value     -- viejo void = anti-aim idle continuo
+        local cfDesyncOn = rage and T.CFrameDesync and T.CFrameDesync.Value  -- desync self-anchored
         LIP.voidSpamOn   = voidSpamOn
         LIP.voidShootOut = (not T.VoidShootOut) or T.VoidShootOut.Value    -- default on
         if not voidSpamOn then LIP.voidShootOk = true; LIP.voidPhase = nil end

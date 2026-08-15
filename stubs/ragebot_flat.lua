@@ -10,7 +10,6 @@ local function dep(w, parent) if w and w.DependsOn then pcall(function() w:Depen
 -- ═══ Col 1: RAGEBOT ═══
 local p = sec:AddPanel("Ragebot", { Column = 1 })
 p:AddToggle("Ragebot", { Text = "Ragebot", Default = false, Tooltip = "MASTER del ragebot" })
-p:AddKeybind("RagebotKey", { Text = "Ragebot Key", Mode = "Toggle" })
 -- Silent Aim SEPARADO del ragebot (autofire ya usa silent por default; esto es para mouse1 manual)
 p:AddToggle("SilentAim", { Text = "Silent Aim (manual)", Default = true, Tooltip = "Silent aim al target en disparo manual. Separado del ragebot (el autofire ya lo usa)." })
 
@@ -39,7 +38,6 @@ dep(p:AddSlider("AutoFireRate", { Text = "Max Rate", Min = 0, Max = 30, Default 
 dep(p:AddToggle("VoidSpam", { Text = "Void Spam", Default = false }), "Ragebot")
 dep(p:AddSlider("VoidInTime", { Text = "In Void", Min = 0.01, Max = 2, Default = 0.4, Decimals = 2, Suffix = "s" }), "VoidSpam")
 dep(p:AddSlider("VoidOutTime", { Text = "Out Of Void", Min = 0.01, Max = 2, Default = 0.13, Decimals = 2, Suffix = "s" }), "VoidSpam")
-dep(p:AddDropdown("VoidPreset", { Text = "Void Preset", Values = { "Legit", "Jitter", "Peek", "Blink", "Chaos" }, Default = "Jitter" }), "VoidSpam")
 dep(p:AddToggle("AntiDelta", { Text = "Anti Delta", Default = false }), "VoidSpam")
 dep(p:AddToggle("VoidAutoTime", { Text = "Adjust Void To Shot Delay", Default = true }), "VoidSpam")
 dep(p:AddToggle("VoidReload", { Text = "Idle Reload", Default = false }), "VoidSpam")
